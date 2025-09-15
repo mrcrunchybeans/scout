@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/option_item.dart';
-
+class InterventionOption extends OptionItem {
+  final String? defaultGrantId;
+  const InterventionOption(super.id, super.name, this.defaultGrantId);
+}
 class LookupsService {
   final _db = FirebaseFirestore.instance;
 

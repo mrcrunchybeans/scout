@@ -21,10 +21,21 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
   int qty = 1;
   ForUseType? _forUse;
+
+  // Interventions (simple OptionItem list for dropdown)
   OptionItem? _intervention;
   List<OptionItem>? _interventions;
 
+  // interventionId -> defaultGrantId
+  final Map<String, String?> _interventionGrantById = {};
+  // grantId -> grant name
+  final Map<String, String> _grantNamesById = {};
+
+  // Optional notes
   final _notes = TextEditingController();
+
+  // NEW: date/time the item was used (defaults to now)
+  DateTime _usedAt = DateTime.now();
 
   @override
   void initState() {
@@ -33,9 +44,78 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
   }
 
   Future<void> _load() async {
-    final list = await _lookups.interventions();
+    // Load interventions (names/ids for dropdown)
+    final interventionsList = await _lookups.interventions();
+
+    // Load defaultGrantId per intervention
+    final interventionsSnap = await _db
+        .collection('interventions')
+        .where('active', isEqualTo: true)
+        .get();
+
+    // Load grant names for the badge
+    final grantsSnap = await _db
+        .collection('grants')
+        .where('active', isEqualTo: true)
+        .get();
+
     if (!mounted) return;
-    setState(() => _interventions = list);
+    setState(() {
+      _interventions = interventionsList;
+
+      for (final d in interventionsSnap.docs) {
+        final data = d.data();
+        _interventionGrantById[d.id] = data['defaultGrantId'] as String?;
+      }
+      for (final d in grantsSnap.docs) {
+        final data = d.data();
+        _grantNamesById[d.id] = (data['name'] ?? '') as String;
+      }
+    });
+  }
+
+  String? _selectedGrantId() {
+    final id = _intervention?.id;
+    if (id == null) return null;
+    return _interventionGrantById[id];
+  }
+
+  String? _selectedGrantName() {
+    final gid = _selectedGrantId();
+    if (gid == null) return null;
+    return _grantNamesById[gid] ?? gid;
+  }
+
+  String _formatUsedAt(BuildContext context) {
+    final l = MaterialLocalizations.of(context);
+    final dateStr = l.formatFullDate(_usedAt);
+    final timeStr = TimeOfDay.fromDateTime(_usedAt).format(context);
+    return '$dateStr • $timeStr';
+  }
+
+  Future<void> _pickUsedAt() async {
+    final ctx = context;
+    final initialDate = _usedAt;
+    final date = await showDatePicker(
+      context: ctx,
+      initialDate: initialDate,
+      firstDate: DateTime(DateTime.now().year - 1),
+      lastDate: DateTime(DateTime.now().year + 1),
+    );
+    if (date == null) return;
+    if (!ctx.mounted) return;
+
+    final initialTime = TimeOfDay.fromDateTime(initialDate);
+    final time = await showTimePicker(
+      context: ctx,
+      initialTime: initialTime,
+    );
+    if (time == null) return;
+    if (!ctx.mounted) return;
+
+    setState(() {
+      _usedAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    });
   }
 
   Future<void> _logUse() async {
@@ -53,18 +133,18 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
       tx.update(itemRef, {
         'qtyOnHand': newQty,
         'updatedAt': FieldValue.serverTimestamp(),
-        'lastUsedAt': FieldValue.serverTimestamp(),
+        'lastUsedAt': Timestamp.fromDate(_usedAt), // reflect actual use time
       });
 
       tx.set(usageRef, {
         'itemId': widget.itemId,
         'qtyUsed': qty,
-        'usedAt': FieldValue.serverTimestamp(),
-        'interventionId': _intervention?.id,    // NEW: what it was used for
-        'forUseType': _forUse?.name,            // 'staff' | 'patient'
+        'usedAt': Timestamp.fromDate(_usedAt), // <-- use selected date/time
+        'interventionId': _intervention?.id,
+        'forUseType': _forUse?.name, // 'staff' | 'patient'
         'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+        'grantId': _selectedGrantId(), // auto-filled from intervention
         'userId': null,
-        // keep room for future: departmentId, grantId (derive from intervention if needed)
       });
     });
   }
@@ -128,8 +208,29 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                       .toList(),
                   onChanged: (v) => setState(() => _intervention = v),
                   decoration: const InputDecoration(labelText: 'Intervention *'),
-                  validator: (_) => _intervention == null ? 'Required' : null,
                 ),
+
+                // Grant badge (read-only, derived)
+                if (_selectedGrantId() != null) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.local_atm, size: 18),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        ),
+                        child: Text(
+                          'Grant: ${_selectedGrantName()}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
 
                 const SizedBox(height: 8),
 
@@ -146,6 +247,20 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                 ),
 
                 const SizedBox(height: 8),
+
+                // NEW: When it was used
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.event),
+                  title: const Text('When'),
+                  subtitle: Text(_formatUsedAt(context)),
+                  trailing: TextButton.icon(
+                    onPressed: _pickUsedAt,
+                    icon: const Icon(Icons.edit_calendar),
+                    label: const Text('Change'),
+                  ),
+                  onTap: _pickUsedAt,
+                ),
 
                 // Optional notes
                 TextField(
