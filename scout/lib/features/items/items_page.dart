@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:scout/features/items/new_item_page.dart';
 
 import '../../dev/seed_lookups.dart';
 import 'quick_use_sheet.dart';
@@ -13,18 +14,6 @@ class ItemsPage extends StatefulWidget {
 class _ItemsPageState extends State<ItemsPage> {
   final _db = FirebaseFirestore.instance;
   bool _busy = false; // show spinner & disable menu while seeding
-
-  Future<void> _addSampleItem() async {
-    final doc = _db.collection('items').doc();
-    await doc.set({
-      'name': 'Granola Bars',
-      'unit': 'each',
-      'qtyOnHand': 24,
-      'minQty': 12,
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -110,11 +99,26 @@ class _ItemsPageState extends State<ItemsPage> {
           ),
         ],
       ),
+
+      // FAB: only "New item"
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addSampleItem,
-        label: const Text('Add sample'),
-        icon: const Icon(Icons.add),
+        heroTag: 'new',
+        onPressed: () async {
+          final ctx = context; // capture BuildContext
+          final created = await Navigator.of(ctx).push<bool>(
+            MaterialPageRoute(builder: (_) => const NewItemPage()),
+          );
+          if (!ctx.mounted) return;
+          if (created == true) {
+            ScaffoldMessenger.of(ctx).showSnackBar(
+              const SnackBar(content: Text('Item created')),
+            );
+          }
+        },
+        label: const Text('New item'),
+        icon: const Icon(Icons.add_box),
       ),
+
       body: StreamBuilder<QuerySnapshot>(
         stream: itemsQuery.snapshots(),
         builder: (context, snap) {
@@ -126,8 +130,41 @@ class _ItemsPageState extends State<ItemsPage> {
           }
           final docs = snap.data?.docs ?? [];
           if (docs.isEmpty) {
-            return const Center(child: Text('No items yet. Tap “Add sample”.'));
+            // Nicer empty state that nudges to create the first item
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.inventory_2_outlined, size: 56),
+                    const SizedBox(height: 12),
+                    const Text('No items yet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    const Text('Tap “New item” to add your first inventory item.'),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.add_box),
+                      label: const Text('New item'),
+                      onPressed: () async {
+                        final ctx = context;
+                        final created = await Navigator.of(ctx).push<bool>(
+                          MaterialPageRoute(builder: (_) => const NewItemPage()),
+                        );
+                        if (!ctx.mounted) return;
+                        if (created == true) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(content: Text('Item created')),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
           }
+
           return ListView.separated(
             itemCount: docs.length,
             separatorBuilder: (_, __) => const Divider(height: 1),

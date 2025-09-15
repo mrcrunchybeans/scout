@@ -20,12 +20,11 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
   final _lookups = LookupsService();
 
   int qty = 1;
-  OptionItem? _loc;
-  OptionItem? _grant;
   ForUseType? _forUse;
+  OptionItem? _intervention;
+  List<OptionItem>? _interventions;
 
-  List<OptionItem>? _locs;
-  List<OptionItem>? _grants;
+  final _notes = TextEditingController();
 
   @override
   void initState() {
@@ -34,12 +33,9 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
   }
 
   Future<void> _load() async {
-    final results = await Future.wait([_lookups.locations(), _lookups.grants()]);
+    final list = await _lookups.interventions();
     if (!mounted) return;
-    setState(() {
-      _locs = results[0];
-      _grants = results[1];
-    });
+    setState(() => _interventions = list);
   }
 
   Future<void> _logUse() async {
@@ -64,18 +60,25 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
         'itemId': widget.itemId,
         'qtyUsed': qty,
         'usedAt': FieldValue.serverTimestamp(),
-        'whereLocationId': _loc?.id,
-        'grantId': _grant?.id,
-        'forUseType': _forUse?.name, // 'staff' | 'patient'
+        'interventionId': _intervention?.id,    // NEW: what it was used for
+        'forUseType': _forUse?.name,            // 'staff' | 'patient'
+        'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
         'userId': null,
+        // keep room for future: departmentId, grantId (derive from intervention if needed)
       });
     });
   }
 
   @override
+  void dispose() {
+    _notes.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final loading = (_locs == null || _grants == null);
-    final canSubmit = !loading && _loc != null && qty > 0;
+    final loading = _interventions == null;
+    final canSubmit = !loading && _intervention != null && qty > 0;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -117,31 +120,20 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
                 const SizedBox(height: 12),
 
-                // Location
+                // Intervention (required)
                 DropdownButtonFormField<OptionItem>(
-                  initialValue: _loc,
-                  items: _locs!
+                  initialValue: _intervention,
+                  items: _interventions!
                       .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
                       .toList(),
-                  onChanged: (v) => setState(() => _loc = v),
-                  decoration: const InputDecoration(labelText: 'Where (location)'),
+                  onChanged: (v) => setState(() => _intervention = v),
+                  decoration: const InputDecoration(labelText: 'Intervention *'),
+                  validator: (_) => _intervention == null ? 'Required' : null,
                 ),
 
                 const SizedBox(height: 8),
 
-                // Grant
-                DropdownButtonFormField<OptionItem>(
-                  initialValue: _grant,
-                  items: _grants!
-                      .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
-                      .toList(),
-                  onChanged: (v) => setState(() => _grant = v),
-                  decoration: const InputDecoration(labelText: 'Grant (optional)'),
-                ),
-
-                const SizedBox(height: 8),
-
-                // ForUseType (staff/patient)
+                // ForUseType (staff/patient) — optional
                 SegmentedButton<ForUseType>(
                   segments: const [
                     ButtonSegment(value: ForUseType.staff, label: Text('Staff')),
@@ -153,15 +145,27 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                   multiSelectionEnabled: false,
                 ),
 
+                const SizedBox(height: 8),
+
+                // Optional notes
+                TextField(
+                  controller: _notes,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Notes (optional)',
+                    hintText: 'e.g., patient room, unit, or context',
+                  ),
+                ),
+
                 const SizedBox(height: 16),
 
-                // Log use button (disabled until required fields chosen)
+                // Log use
                 FilledButton.icon(
                   icon: const Icon(Icons.check),
                   label: const Text('Log use'),
                   onPressed: canSubmit
                       ? () async {
-                          final ctx = context; // capture same BuildContext
+                          final ctx = context;
                           try {
                             await _logUse();
                             if (!ctx.mounted) return;
@@ -189,13 +193,8 @@ class _NumberDialog extends StatefulWidget {
 
 class _NumberDialogState extends State<_NumberDialog> {
   final c = TextEditingController(text: '1');
-
   @override
-  void dispose() {
-    c.dispose();
-    super.dispose();
-  }
-
+  void dispose() { c.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return AlertDialog(

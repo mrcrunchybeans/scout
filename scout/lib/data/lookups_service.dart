@@ -23,4 +23,5 @@ class LookupsService {
   Future<List<OptionItem>> locations()  => _loadAndSort('locations');
   Future<List<OptionItem>> grants()     => _loadAndSort('grants');
   Future<List<OptionItem>> departments()=> _loadAndSort('departments');
+  Future<List<OptionItem>> interventions()  => _loadAndSort('interventions');
 }

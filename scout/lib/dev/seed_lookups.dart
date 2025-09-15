@@ -34,6 +34,15 @@ const _locations = [
   {'name': 'Tea for the Soul Cart',        'code': 'TFS-CART','kind': 'mobile',  'active': true},
 ];
 
+const _interventions = [
+  {'name': 'Tea for the Soul',        'code': 'TFS',   'active': true},
+  {'name': 'Bounce Back',             'code': 'BB',    'active': true},
+  {'name': 'Grief Group (supplies)',  'code': 'GGS',   'active': true},
+  {'name': 'Bereavement Care',        'code': 'BC',    'active': true},
+  {'name': 'Code Lavender',          'code': 'CL',    'active': true},
+  {'name': 'Other',                   'code': 'OTHER', 'active': true},
+];
+
 // ---- Public helpers ----
 
 /// Original behavior: only inserts when a collection is empty.
@@ -57,6 +66,7 @@ Future<void> seedLookups() async {
   await addIfEmpty('departments', _departments);
   await addIfEmpty('grants', _grants);
   await addIfEmpty('locations', _locations);
+  await addIfEmpty('interventions', _interventions);
 }
 
 /// Recommended reseed: *upsert* by `code`, using `code` as the doc ID.
@@ -83,6 +93,7 @@ Future<void> reseedLookupsMerge() async {
   await upsert('departments', _departments);
   await upsert('grants', _grants);
   await upsert('locations', _locations);
+  await upsert('interventions', _interventions);
 }
 
 /// Destructive reset: clears all docs in the three collections,
