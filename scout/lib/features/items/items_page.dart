@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../dev/seed_lookups.dart';
+import 'quick_use_sheet.dart';
+
 class ItemsPage extends StatefulWidget {
   const ItemsPage({super.key});
   @override
@@ -9,9 +12,10 @@ class ItemsPage extends StatefulWidget {
 
 class _ItemsPageState extends State<ItemsPage> {
   final _db = FirebaseFirestore.instance;
+  bool _busy = false; // show spinner & disable menu while seeding
 
   Future<void> _addSampleItem() async {
-    final doc = _db.collection('items').doc(); // auto id
+    final doc = _db.collection('items').doc();
     await doc.set({
       'name': 'Granola Bars',
       'unit': 'each',
@@ -19,41 +23,6 @@ class _ItemsPageState extends State<ItemsPage> {
       'minQty': 12,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  Future<void> _logUse({
-    required String itemId,
-    required num qty,
-  }) async {
-    final itemRef = _db.collection('items').doc(itemId);
-    final usageRef = _db.collection('usage_logs').doc();
-
-    await _db.runTransaction((tx) async {
-      final snap = await tx.get(itemRef);
-      if (!snap.exists) throw Exception('Item not found');
-
-      final data = snap.data() as Map<String, dynamic>;
-      final currentQty = (data['qtyOnHand'] ?? 0) as num;
-      final newQty = currentQty - qty;
-      if (newQty < 0) throw Exception('Insufficient stock');
-
-      tx.update(itemRef, {
-        'qtyOnHand': newQty,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'lastUsedAt': FieldValue.serverTimestamp(),
-      });
-
-      tx.set(usageRef, {
-        'itemId': itemId,
-        'qtyUsed': qty,
-        'usedAt': FieldValue.serverTimestamp(),
-        // placeholders for future fields:
-        'whereLocationId': null,
-        'grantId': null,
-        'forUseType': null, // 'staff' | 'patient'
-        'userId': null,
-      });
     });
   }
 
@@ -65,7 +34,82 @@ class _ItemsPageState extends State<ItemsPage> {
         .limit(50);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('SCOUT — Items')),
+      appBar: AppBar(
+        title: const Text('SCOUT — Items'),
+        actions: [
+          if (_busy)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: Center(
+                child: SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+          PopupMenuButton<String>(
+            tooltip: 'Lookup tools',
+            enabled: !_busy,
+            onSelected: (key) async {
+              setState(() => _busy = true);
+              try {
+                if (key == 'seed-once') {
+                  await seedLookups();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Seeded (only empty collections).')),
+                  );
+                } else if (key == 'reseed-merge') {
+                  await reseedLookupsMerge();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Lookups upserted by code.')),
+                  );
+                } else if (key == 'reset-seed') {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      title: const Text('Reset & seed lookups?'),
+                      content: const Text('This will DELETE all lookup docs, then reseed.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('Reset'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true) {
+                    await resetAndSeedLookups();
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Lookups reset & seeded.')),
+                    );
+                  }
+                }
+              } catch (e) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error: $e')),
+                );
+              } finally {
+                if (mounted) setState(() => _busy = false);
+              }
+            },
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(value: 'seed-once',    child: Text('Seed (only if empty)')),
+              PopupMenuItem(value: 'reseed-merge', child: Text('Reseed (merge by code)')),
+              PopupMenuItem(value: 'reset-seed',   child: Text('Reset & seed (destructive)')),
+            ],
+            icon: const Icon(Icons.settings),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addSampleItem,
         label: const Text('Add sample'),
@@ -74,6 +118,9 @@ class _ItemsPageState extends State<ItemsPage> {
       body: StreamBuilder<QuerySnapshot>(
         stream: itemsQuery.snapshots(),
         builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(child: Text('Firestore error: ${snap.error}'));
+          }
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -94,38 +141,16 @@ class _ItemsPageState extends State<ItemsPage> {
               return ListTile(
                 title: Text(name),
                 subtitle: Text('On hand: $qty • Min: $minQty'),
-                trailing: Wrap(
-                  spacing: 8,
-                  children: [
-                    IconButton(
-                      tooltip: 'Use 1',
-                      icon: const Icon(Icons.remove_circle_outline),
-                      onPressed: () async {
-                        try {
-                          await _logUse(itemId: d.id, qty: 1);
-                        } catch (e) {
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Error: $e')),
-                          );
-                        }
-                      },
-                    ),
-                    IconButton(
-                      tooltip: 'Use 5',
-                      icon: const Icon(Icons.remove_circle),
-                      onPressed: () async {
-                        try {
-                          await _logUse(itemId: d.id, qty: 5);
-                        } catch (e) {
-                          if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Error: $e')),
-                          );
-                        }
-                      },
-                    ),
-                  ],
+                trailing: IconButton(
+                  tooltip: 'Quick use',
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () async {
+                    await showModalBottomSheet<bool>(
+                      context: context,
+                      isScrollControlled: true,
+                      builder: (_) => QuickUseSheet(itemId: d.id, itemName: name),
+                    );
+                  },
                 ),
               );
             },
