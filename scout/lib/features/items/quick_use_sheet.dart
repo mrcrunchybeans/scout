@@ -15,6 +15,26 @@ class QuickUseSheet extends StatefulWidget {
   State<QuickUseSheet> createState() => _QuickUseSheetState();
 }
 
+// ---- Lot model (local) ----
+class LotInfo {
+  final String id;
+  final String baseUnit;
+  final num qtyRemaining;
+  final String? lotCode;
+  final DateTime? expiresAt;
+  final DateTime? openAt;
+  final int? expiresAfterOpenDays;
+  LotInfo({
+    required this.id,
+    required this.baseUnit,
+    required this.qtyRemaining,
+    this.lotCode,
+    this.expiresAt,
+    this.openAt,
+    this.expiresAfterOpenDays,
+  });
+}
+
 class _QuickUseSheetState extends State<QuickUseSheet> {
   final _db = FirebaseFirestore.instance;
   final _lookups = LookupsService();
@@ -31,10 +51,17 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
   // grantId -> grant name
   final Map<String, String> _grantNamesById = {};
 
+  // Item base unit (how staff think/record usage), defaults to 'each'
+  String _baseUnit = 'each';
+
+  // Lots for this item (FEFO sorted)
+  List<LotInfo>? _lots;
+  LotInfo? _lot;
+
   // Optional notes
   final _notes = TextEditingController();
 
-  // NEW: date/time the item was used (defaults to now)
+  // Date/time used (defaults to now)
   DateTime _usedAt = DateTime.now();
 
   @override
@@ -43,26 +70,65 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     _load();
   }
 
+  // ---- Loading helpers ----
+  Future<List<LotInfo>> _loadLots(String itemId) async {
+    final q = await _db.collection('items').doc(itemId).collection('lots').get();
+    final list = q.docs.map((d) {
+      final m = d.data();
+      return LotInfo(
+        id: d.id,
+        lotCode: m['lotCode'] as String?,
+        baseUnit: (m['baseUnit'] ?? 'each') as String,
+        qtyRemaining: (m['qtyRemaining'] ?? 0) as num,
+        expiresAt: (m['expiresAt'] is Timestamp) ? (m['expiresAt'] as Timestamp).toDate() : null,
+        openAt: (m['openAt'] is Timestamp) ? (m['openAt'] as Timestamp).toDate() : null,
+        expiresAfterOpenDays: (m['expiresAfterOpenDays'] as num?)?.toInt(),
+      );
+    }).toList();
+
+    // FEFO: earliest effective expiration first (nulls last)
+    int effMs(LotInfo l) {
+      DateTime? eff;
+      if (l.openAt != null && l.expiresAfterOpenDays != null) {
+        eff = l.openAt!.add(Duration(days: l.expiresAfterOpenDays!));
+        if (l.expiresAt != null && l.expiresAt!.isBefore(eff)) eff = l.expiresAt;
+      } else {
+        eff = l.expiresAt;
+      }
+      return eff == null ? 1 << 30 : eff.millisecondsSinceEpoch;
+    }
+
+    list.sort((a, b) => effMs(a).compareTo(effMs(b)));
+    return list;
+  }
+
   Future<void> _load() async {
-    // Load interventions (names/ids for dropdown)
+    // Interventions (for dropdown)
     final interventionsList = await _lookups.interventions();
 
-    // Load defaultGrantId per intervention
+    // Default grant per intervention
     final interventionsSnap = await _db
         .collection('interventions')
         .where('active', isEqualTo: true)
         .get();
 
-    // Load grant names for the badge
+    // Grant names (for badge)
     final grantsSnap = await _db
         .collection('grants')
         .where('active', isEqualTo: true)
         .get();
 
+    // Item baseUnit
+    final itemSnap = await _db.collection('items').doc(widget.itemId).get();
+    final itemData = itemSnap.data() ?? {};
+    final baseUnit = (itemData['baseUnit'] ?? 'each') as String;
+
+    // Lots
+    final lots = await _loadLots(widget.itemId);
+
     if (!mounted) return;
     setState(() {
       _interventions = interventionsList;
-
       for (final d in interventionsSnap.docs) {
         final data = d.data();
         _interventionGrantById[d.id] = data['defaultGrantId'] as String?;
@@ -71,9 +137,15 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
         final data = d.data();
         _grantNamesById[d.id] = (data['name'] ?? '') as String;
       }
+      _baseUnit = baseUnit;
+
+      // Only show lots with remaining > 0
+      _lots = lots.where((l) => l.qtyRemaining > 0).toList();
+      _lot = _lots!.isNotEmpty ? _lots!.first : null; // FEFO default
     });
   }
 
+  // ---- Grant helpers ----
   String? _selectedGrantId() {
     final id = _intervention?.id;
     if (id == null) return null;
@@ -86,6 +158,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     return _grantNamesById[gid] ?? gid;
   }
 
+  // ---- Date helpers ----
   String _formatUsedAt(BuildContext context) {
     final l = MaterialLocalizations.of(context);
     final dateStr = l.formatFullDate(_usedAt);
@@ -100,7 +173,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
       context: ctx,
       initialDate: initialDate,
       firstDate: DateTime(DateTime.now().year - 1),
-      lastDate: DateTime(DateTime.now().year + 1),
+      lastDate: DateTime.now(), // prevent future dates
     );
     if (date == null) return;
     if (!ctx.mounted) return;
@@ -113,37 +186,62 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     if (time == null) return;
     if (!ctx.mounted) return;
 
+    final picked = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    final now = DateTime.now();
     setState(() {
-      _usedAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      _usedAt = picked.isAfter(now) ? now : picked; // clamp to now
     });
   }
 
+  // ---- Save ----
   Future<void> _logUse() async {
     final itemRef = _db.collection('items').doc(widget.itemId);
     final usageRef = _db.collection('usage_logs').doc();
+    final lotRef = (_lot != null)
+        ? itemRef.collection('lots').doc(_lot!.id)
+        : null;
 
     await _db.runTransaction((tx) async {
-      final snap = await tx.get(itemRef);
-      if (!snap.exists) throw Exception('Item not found');
-      final data = snap.data() as Map<String, dynamic>;
-      final currentQty = (data['qtyOnHand'] ?? 0) as num;
+      // read item
+      final itemSnap = await tx.get(itemRef);
+      if (!itemSnap.exists) throw Exception('Item not found');
+      final itemData = itemSnap.data() as Map<String, dynamic>;
+      final currentQty = (itemData['qtyOnHand'] ?? 0) as num;
+
+      // decrement lot first (if any)
+      if (lotRef != null) {
+        final lotSnap = await tx.get(lotRef);
+        if (!lotSnap.exists) throw Exception('Lot not found');
+        final lot = lotSnap.data() as Map<String, dynamic>;
+        final rem = (lot['qtyRemaining'] ?? 0) as num;
+        if (qty > rem) throw Exception('Lot has only $rem $_baseUnit remaining');
+
+        tx.update(lotRef, {
+          'qtyRemaining': rem - qty,
+          if (lot['openAt'] == null) 'openAt': Timestamp.fromDate(_usedAt),
+        });
+      }
+
+      // update item quick total (server truth should be CF: sum(lots))
       final newQty = currentQty - qty;
       if (newQty < 0) throw Exception('Insufficient stock');
-
       tx.update(itemRef, {
         'qtyOnHand': newQty,
         'updatedAt': FieldValue.serverTimestamp(),
-        'lastUsedAt': Timestamp.fromDate(_usedAt), // reflect actual use time
+        'lastUsedAt': Timestamp.fromDate(_usedAt),
       });
 
+      // usage log
       tx.set(usageRef, {
         'itemId': widget.itemId,
+        'lotId': _lot?.id,
         'qtyUsed': qty,
-        'usedAt': Timestamp.fromDate(_usedAt), // <-- use selected date/time
+        'unit': _baseUnit,
+        'usedAt': Timestamp.fromDate(_usedAt),
         'interventionId': _intervention?.id,
         'forUseType': _forUse?.name, // 'staff' | 'patient'
         'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
-        'grantId': _selectedGrantId(), // auto-filled from intervention
+        'grantId': _selectedGrantId(), // auto from intervention
         'userId': null,
       });
     });
@@ -157,8 +255,11 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final loading = _interventions == null;
-    final canSubmit = !loading && _intervention != null && qty > 0;
+    final loading = _interventions == null || _baseUnit.isEmpty || _lots == null;
+    // If there are lots, require one; if no lots (legacy items), still allow submit.
+    final lotsExist = (_lots?.isNotEmpty ?? false);
+    final lotOk = lotsExist ? _lot != null : true;
+    final canSubmit = !loading && _intervention != null && qty > 0 && lotOk;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -166,7 +267,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
         bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
       ),
       child: loading
-          ? const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()))
+          ? const SizedBox(height: 220, child: Center(child: CircularProgressIndicator()))
           : Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -174,13 +275,13 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                 Text(widget.itemName, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 12),
 
-                // Qty chips (+ Custom)
+                // Qty chips (+ Custom) in baseUnit
                 Wrap(
                   spacing: 8,
                   children: <Widget>[
                     for (final n in [1, 2, 5])
                       ChoiceChip(
-                        label: Text('-$n'),
+                        label: Text('-$n $_baseUnit'),
                         selected: qty == n,
                         onSelected: (_) => setState(() => qty = n),
                       ),
@@ -210,7 +311,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                   decoration: const InputDecoration(labelText: 'Intervention *'),
                 ),
 
-                // Grant badge (read-only, derived)
+                // Grant badge (derived)
                 if (_selectedGrantId() != null) ...[
                   const SizedBox(height: 6),
                   Row(
@@ -232,9 +333,30 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                   ),
                 ],
 
+                // Lot dropdown (if item has lots)
+                if (lotsExist) ...[
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<LotInfo>(
+                    initialValue: _lot,
+                    items: _lots!
+                        .map(
+                          (l) => DropdownMenuItem(
+                            value: l,
+                            child: Text(
+                              '${l.lotCode ?? l.id} • ${l.qtyRemaining} $_baseUnit'
+                              '${l.expiresAt != null ? ' • exp ${MaterialLocalizations.of(context).formatShortDate(l.expiresAt!)}' : ''}',
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (v) => setState(() => _lot = v),
+                    decoration: InputDecoration(labelText: 'Lot ($_baseUnit)'),
+                  ),
+                ],
+
                 const SizedBox(height: 8),
 
-                // ForUseType (staff/patient) — optional
+                // ForUseType (optional)
                 SegmentedButton<ForUseType>(
                   segments: const [
                     ButtonSegment(value: ForUseType.staff, label: Text('Staff')),
@@ -248,7 +370,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
                 const SizedBox(height: 8),
 
-                // NEW: When it was used
+                // When it was used
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.event),
@@ -262,13 +384,13 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                   onTap: _pickUsedAt,
                 ),
 
-                // Optional notes
+                // Notes
                 TextField(
                   controller: _notes,
                   maxLines: 2,
                   decoration: const InputDecoration(
                     labelText: 'Notes (optional)',
-                    hintText: 'e.g., patient room, unit, or context',
+                    hintText: 'e.g., unit/room or context',
                   ),
                 ),
 

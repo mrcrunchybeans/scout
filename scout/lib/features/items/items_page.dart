@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:scout/features/items/new_item_page.dart';
+import '../dashboard/dashboard_page.dart';
+import '../items/item_detail_page.dart';
 
 import '../../dev/seed_lookups.dart';
 import 'quick_use_sheet.dart';
@@ -37,6 +39,13 @@ class _ItemsPageState extends State<ItemsPage> {
                 ),
               ),
             ),
+            IconButton(
+  tooltip: 'Dashboard',
+  icon: const Icon(Icons.dashboard_outlined),
+  onPressed: () {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage()));
+  },
+),
           PopupMenuButton<String>(
             tooltip: 'Lookup tools',
             enabled: !_busy,
@@ -178,6 +187,11 @@ class _ItemsPageState extends State<ItemsPage> {
               return ListTile(
                 title: Text(name),
                 subtitle: Text('On hand: $qty • Min: $minQty'),
+                onTap: () {
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => ItemDetailPage(itemId: d.id, itemName: name),
+                  ));
+                },
                 trailing: IconButton(
                   tooltip: 'Quick use',
                   icon: const Icon(Icons.remove_circle_outline),
