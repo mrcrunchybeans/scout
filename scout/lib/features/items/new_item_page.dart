@@ -6,7 +6,9 @@ import '../../models/option_item.dart';
 enum UseType { staff, patient, both }
 
 class NewItemPage extends StatefulWidget {
-  const NewItemPage({super.key});
+  final String? initialBarcode; // optional prefill
+  const NewItemPage({super.key, this.initialBarcode});
+
   @override
   State<NewItemPage> createState() => _NewItemPageState();
 }
@@ -18,7 +20,7 @@ class _NewItemPageState extends State<NewItemPage> {
 
   final _name = TextEditingController();
   final _category = TextEditingController();
-  final _unit = TextEditingController(text: 'each');
+  final _baseUnit = TextEditingController(text: 'each');
   final _qtyOnHand = TextEditingController(text: '0');
   final _minQty = TextEditingController(text: '0');
   final _barcode = TextEditingController();
@@ -34,11 +36,17 @@ class _NewItemPageState extends State<NewItemPage> {
   @override
   void initState() {
     super.initState();
+    if ((widget.initialBarcode ?? '').isNotEmpty) {
+      _barcode.text = widget.initialBarcode!;
+    }
     _loadLookups();
   }
 
   Future<void> _loadLookups() async {
-    final results = await Future.wait([_lookups.locations(), _lookups.grants()]);
+    final results = await Future.wait([
+      _lookups.locations(),
+      _lookups.grants(),
+    ]);
     if (!mounted) return;
     setState(() {
       _locs = results[0];
@@ -50,32 +58,39 @@ class _NewItemPageState extends State<NewItemPage> {
     if (!_form.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      final now = FieldValue.serverTimestamp();
       final ref = _db.collection('items').doc();
+      final code = _barcode.text.trim();
+
       await ref.set({
         'name': _name.text.trim(),
         'category': _category.text.trim().isEmpty ? null : _category.text.trim(),
-        'unit': _unit.text.trim().isEmpty ? 'each' : _unit.text.trim(),
+        'baseUnit': _baseUnit.text.trim().isEmpty ? 'each' : _baseUnit.text.trim(),
         'qtyOnHand': num.tryParse(_qtyOnHand.text.trim()) ?? 0,
         'minQty': num.tryParse(_minQty.text.trim()) ?? 0,
         'maxQty': null,
-        'useType': _useType.name, // staff/patient/both
+        'useType': _useType.name, // staff | patient | both
         'grantId': _grant?.id,
         'departmentId': null,
         'homeLocationId': _homeLoc?.id,
         'expiresAt': null,
         'lastUsedAt': null,
         'tags': <String>[],
-        'barcode': _barcode.text.trim().isEmpty ? null : _barcode.text.trim(),
+        // --- barcode fields (both) ---
+        if (code.isNotEmpty) 'barcode': code,
+        if (code.isNotEmpty) 'barcodes': FieldValue.arrayUnion([code]),
+        // ---
         'imageUrl': null,
-        'createdAt': now,
-        'updatedAt': now,
-      });
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed: $e')),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -85,7 +100,7 @@ class _NewItemPageState extends State<NewItemPage> {
   void dispose() {
     _name.dispose();
     _category.dispose();
-    _unit.dispose();
+    _baseUnit.dispose();
     _qtyOnHand.dispose();
     _minQty.dispose();
     _barcode.dispose();
@@ -109,7 +124,8 @@ class _NewItemPageState extends State<NewItemPage> {
                     controller: _name,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(labelText: 'Name *'),
-                    validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
                   const SizedBox(height: 8),
                   TextFormField(
@@ -119,9 +135,9 @@ class _NewItemPageState extends State<NewItemPage> {
                   ),
                   const SizedBox(height: 8),
                   TextFormField(
-                    controller: _unit,
+                    controller: _baseUnit,
                     textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(labelText: 'Unit'),
+                    decoration: const InputDecoration(labelText: 'Base unit (e.g., each)'),
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -146,16 +162,21 @@ class _NewItemPageState extends State<NewItemPage> {
                   const SizedBox(height: 8),
                   DropdownButtonFormField<OptionItem>(
                     initialValue: _homeLoc,
-                    items: _locs!.map((o) => DropdownMenuItem(value: o, child: Text(o.name))).toList(),
+                    items: _locs!
+                        .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
+                        .toList(),
                     onChanged: (v) => setState(() => _homeLoc = v),
                     decoration: const InputDecoration(labelText: 'Home location'),
                   ),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<OptionItem>(
                     initialValue: _grant,
-                    items: _grants!.map((o) => DropdownMenuItem(value: o, child: Text(o.name))).toList(),
+                    items: _grants!
+                        .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
+                        .toList(),
                     onChanged: (v) => setState(() => _grant = v),
-                    decoration: const InputDecoration(labelText: 'Default grant (optional)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Default grant (optional)'),
                   ),
                   const SizedBox(height: 8),
                   SegmentedButton<UseType>(
@@ -171,13 +192,18 @@ class _NewItemPageState extends State<NewItemPage> {
                   TextFormField(
                     controller: _barcode,
                     textInputAction: TextInputAction.done,
-                    decoration: const InputDecoration(labelText: 'Barcode / QR (optional)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Barcode / QR (optional)'),
                   ),
                   const SizedBox(height: 16),
                   FilledButton.icon(
                     onPressed: _saving ? null : _save,
                     icon: _saving
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.save),
                     label: const Text('Save'),
                   ),

@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+// Helper to normalize barcodes
+String _normalizeBarcode(String s) =>
+  s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
 
 class ItemDetailPage extends StatelessWidget {
   final String itemId;
@@ -64,8 +67,33 @@ class _ItemSummaryTab extends StatelessWidget {
             const SizedBox(height: 8),
             if (flags.isNotEmpty)
               Wrap(spacing: 8, children: flags.split(' • ').map((f) => Chip(label: Text(f))).toList()),
+
+            // --- Barcode chip editor ---
+            const SizedBox(height: 16),
+            Text('Barcodes', style: Theme.of(context).textTheme.titleMedium),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final b in (data['barcodes'] as List?)?.cast<String>() ?? const <String>[])
+                  InputChip(
+                    label: Text(b),
+                    onDeleted: () async {
+                      await ref.set({
+                        'barcodes': FieldValue.arrayRemove([b]),
+                        'updatedAt': FieldValue.serverTimestamp(),
+                      }, SetOptions(merge: true));
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _RowAddBarcode(ref: ref),
           ],
         );
+
+
+
       },
     );
   }
@@ -176,6 +204,62 @@ class _LotRow extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// Widget for adding a barcode
+class _RowAddBarcode extends StatefulWidget {
+  final DocumentReference<Map<String, dynamic>> ref;
+  const _RowAddBarcode({required this.ref});
+  @override
+  State<_RowAddBarcode> createState() => _RowAddBarcodeState();
+}
+
+class _RowAddBarcodeState extends State<_RowAddBarcode> {
+  final _c = TextEditingController();
+  bool _saving = false;
+
+  @override
+  void dispose() { _c.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _c,
+            decoration: const InputDecoration(
+              labelText: 'Add barcode',
+              hintText: 'Type or paste',
+            ),
+            onSubmitted: (_) => _add(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        FilledButton(
+          onPressed: _saving ? null : _add,
+          child: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                         : const Text('Add'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _add() async {
+    final raw = _c.text;
+    final code = _normalizeBarcode(raw);
+    if (code.isEmpty) return;
+    setState(() => _saving = true);
+    try {
+      await widget.ref.set({
+        'barcodes': FieldValue.arrayUnion([code]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _c.clear();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 }
 

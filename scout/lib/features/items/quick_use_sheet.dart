@@ -1,3 +1,4 @@
+// lib/features/items/quick_use_sheet.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
@@ -5,15 +6,6 @@ import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 
 enum ForUseType { staff, patient }
-
-class QuickUseSheet extends StatefulWidget {
-  final String itemId;
-  final String itemName;
-  const QuickUseSheet({super.key, required this.itemId, required this.itemName});
-
-  @override
-  State<QuickUseSheet> createState() => _QuickUseSheetState();
-}
 
 // ---- Lot model (local) ----
 class LotInfo {
@@ -35,33 +27,41 @@ class LotInfo {
   });
 }
 
+// Optional alias so this still matches your Step 6 naming
+typedef LotOption = LotInfo;
+
+class QuickUseSheet extends StatefulWidget {
+  final String itemId;
+  final String itemName;
+  const QuickUseSheet({super.key, required this.itemId, required this.itemName});
+
+  @override
+  State<QuickUseSheet> createState() => _QuickUseSheetState();
+}
+
 class _QuickUseSheetState extends State<QuickUseSheet> {
   final _db = FirebaseFirestore.instance;
   final _lookups = LookupsService();
 
+  // qty chips in the item's base unit
   int qty = 1;
   ForUseType? _forUse;
 
-  // Interventions (simple OptionItem list for dropdown)
+  // Interventions + default grants
   OptionItem? _intervention;
   List<OptionItem>? _interventions;
-
-  // interventionId -> defaultGrantId
-  final Map<String, String?> _interventionGrantById = {};
-  // grantId -> grant name
-  final Map<String, String> _grantNamesById = {};
+  final Map<String, String?> _interventionGrantById = {}; // interventionId -> defaultGrantId
+  final Map<String, String> _grantNamesById = {};         // grantId -> grant name
 
   // Item base unit (how staff think/record usage), defaults to 'each'
   String _baseUnit = 'each';
 
   // Lots for this item (FEFO sorted)
-  List<LotInfo>? _lots;
-  LotInfo? _lot;
+  List<LotOption>? _lots;
+  LotOption? _selectedLot;
 
-  // Optional notes
+  // Notes + date/time used
   final _notes = TextEditingController();
-
-  // Date/time used (defaults to now)
   DateTime _usedAt = DateTime.now();
 
   @override
@@ -70,8 +70,14 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     _load();
   }
 
-  // ---- Loading helpers ----
-  Future<List<LotInfo>> _loadLots(String itemId) async {
+  @override
+  void dispose() {
+    _notes.dispose();
+    super.dispose();
+  }
+
+  // ----------------- Loaders -----------------
+  Future<List<LotOption>> _loadLots(String itemId) async {
     final q = await _db.collection('items').doc(itemId).collection('lots').get();
     final list = q.docs.map((d) {
       final m = d.data();
@@ -86,66 +92,87 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
       );
     }).toList();
 
-    // FEFO: earliest effective expiration first (nulls last)
-    int effMs(LotInfo l) {
-      DateTime? eff;
-      if (l.openAt != null && l.expiresAfterOpenDays != null) {
-        eff = l.openAt!.add(Duration(days: l.expiresAfterOpenDays!));
-        if (l.expiresAt != null && l.expiresAt!.isBefore(eff)) eff = l.expiresAt;
-      } else {
-        eff = l.expiresAt;
+    DateTime? effectiveExpiry(LotInfo l) {
+      final exp = l.expiresAt;
+      final open = l.openAt;
+      final after = l.expiresAfterOpenDays;
+      if (open != null && after != null && after > 0) {
+        final afterOpen = DateTime(open.year, open.month, open.day).add(Duration(days: after));
+        if (exp != null) return afterOpen.isBefore(exp) ? afterOpen : exp;
+        return afterOpen;
       }
-      return eff == null ? 1 << 30 : eff.millisecondsSinceEpoch;
+      return exp;
     }
 
-    list.sort((a, b) => effMs(a).compareTo(effMs(b)));
-    return list;
+    // FEFO: earliest effective expiration first (nulls last)
+    list.sort((a, b) {
+      final ea = effectiveExpiry(a);
+      final eb = effectiveExpiry(b);
+      if (ea == null && eb == null) return 0;
+      if (ea == null) return 1; // null last
+      if (eb == null) return -1;
+      return ea.compareTo(eb);
+    });
+
+    // Only show lots with remaining > 0
+    return list.where((l) => l.qtyRemaining > 0).toList();
   }
 
   Future<void> _load() async {
-    // Interventions (for dropdown)
-    final interventionsList = await _lookups.interventions();
+    final fInterventions = _lookups.interventions();
+    final fInterventionsColl =
+        _db.collection('interventions').where('active', isEqualTo: true).get();
+    final fGrants = _db.collection('grants').where('active', isEqualTo: true).get();
+    final fItem = _db.collection('items').doc(widget.itemId).get();
+    final fLots = _loadLots(widget.itemId);
 
-    // Default grant per intervention
-    final interventionsSnap = await _db
-        .collection('interventions')
-        .where('active', isEqualTo: true)
-        .get();
-
-    // Grant names (for badge)
-    final grantsSnap = await _db
-        .collection('grants')
-        .where('active', isEqualTo: true)
-        .get();
-
-    // Item baseUnit
-    final itemSnap = await _db.collection('items').doc(widget.itemId).get();
-    final itemData = itemSnap.data() ?? {};
-    final baseUnit = (itemData['baseUnit'] ?? 'each') as String;
-
-    // Lots
-    final lots = await _loadLots(widget.itemId);
+    final results = await Future.wait([
+      fInterventions,
+      fInterventionsColl,
+      fGrants,
+      fItem,
+      fLots,
+    ]);
 
     if (!mounted) return;
+
+    final interventionsList = results[0] as List<OptionItem>;
+    final interventionsSnap = results[1] as QuerySnapshot<Map<String, dynamic>>;
+    final grantsSnap = results[2] as QuerySnapshot<Map<String, dynamic>>;
+    final itemSnap = results[3] as DocumentSnapshot<Map<String, dynamic>>;
+    final lots = results[4] as List<LotOption>;
+
+    // fill maps
+    final Map<String, String?> mapIntToGrant = {};
+    for (final d in interventionsSnap.docs) {
+      final data = d.data();
+      mapIntToGrant[d.id] = data['defaultGrantId'] as String?;
+    }
+    final Map<String, String> mapGrantNames = {};
+    for (final d in grantsSnap.docs) {
+      final data = d.data();
+      mapGrantNames[d.id] = (data['name'] ?? '') as String;
+    }
+
+    final data = itemSnap.data() ?? {};
+    final baseUnit = (data['baseUnit'] ?? 'each') as String;
+
     setState(() {
       _interventions = interventionsList;
-      for (final d in interventionsSnap.docs) {
-        final data = d.data();
-        _interventionGrantById[d.id] = data['defaultGrantId'] as String?;
-      }
-      for (final d in grantsSnap.docs) {
-        final data = d.data();
-        _grantNamesById[d.id] = (data['name'] ?? '') as String;
-      }
+      _interventionGrantById
+        ..clear()
+        ..addAll(mapIntToGrant);
+      _grantNamesById
+        ..clear()
+        ..addAll(mapGrantNames);
       _baseUnit = baseUnit;
 
-      // Only show lots with remaining > 0
-      _lots = lots.where((l) => l.qtyRemaining > 0).toList();
-      _lot = _lots!.isNotEmpty ? _lots!.first : null; // FEFO default
+      _lots = lots;
+      _selectedLot = lots.isNotEmpty ? lots.first : null; // FEFO default
     });
   }
 
-  // ---- Grant helpers ----
+  // ----------------- Helpers -----------------
   String? _selectedGrantId() {
     final id = _intervention?.id;
     if (id == null) return null;
@@ -158,13 +185,12 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     return _grantNamesById[gid] ?? gid;
   }
 
-  // ---- Date helpers ----
   String _formatUsedAt(BuildContext context) {
     final l = MaterialLocalizations.of(context);
     final dateStr = l.formatFullDate(_usedAt);
     final timeStr = TimeOfDay.fromDateTime(_usedAt).format(context);
     return '$dateStr • $timeStr';
-  }
+    }
 
   Future<void> _pickUsedAt() async {
     final ctx = context;
@@ -173,7 +199,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
       context: ctx,
       initialDate: initialDate,
       firstDate: DateTime(DateTime.now().year - 1),
-      lastDate: DateTime.now(), // prevent future dates
+      lastDate: DateTime.now(), // prevent future
     );
     if (date == null) return;
     if (!ctx.mounted) return;
@@ -189,76 +215,96 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     final picked = DateTime(date.year, date.month, date.day, time.hour, time.minute);
     final now = DateTime.now();
     setState(() {
-      _usedAt = picked.isAfter(now) ? now : picked; // clamp to now
+      _usedAt = picked.isAfter(now) ? now : picked;
     });
   }
 
-  // ---- Save ----
+  // ----------------- Save -----------------
   Future<void> _logUse() async {
     final itemRef = _db.collection('items').doc(widget.itemId);
     final usageRef = _db.collection('usage_logs').doc();
-    final lotRef = (_lot != null)
-        ? itemRef.collection('lots').doc(_lot!.id)
-        : null;
+    final usedAtTs = Timestamp.fromDate(_usedAt);
 
-    await _db.runTransaction((tx) async {
-      // read item
-      final itemSnap = await tx.get(itemRef);
-      if (!itemSnap.exists) throw Exception('Item not found');
-      final itemData = itemSnap.data() as Map<String, dynamic>;
-      final currentQty = (itemData['qtyOnHand'] ?? 0) as num;
+    final hasLots = (_lots != null && _lots!.isNotEmpty);
+    final lot = _selectedLot;
 
-      // decrement lot first (if any)
-      if (lotRef != null) {
+    if (hasLots && lot != null) {
+      // Decrement chosen lot; set openAt on first use; write usage with lotId.
+      // Item totals/flags are recomputed by Cloud Functions.
+      final lotRef = itemRef.collection('lots').doc(lot.id);
+
+      await _db.runTransaction((tx) async {
         final lotSnap = await tx.get(lotRef);
         if (!lotSnap.exists) throw Exception('Lot not found');
-        final lot = lotSnap.data() as Map<String, dynamic>;
-        final rem = (lot['qtyRemaining'] ?? 0) as num;
-        if (qty > rem) throw Exception('Lot has only $rem $_baseUnit remaining');
+        final m = lotSnap.data() as Map<String, dynamic>;
+        final rem = (m['qtyRemaining'] ?? 0) as num;
+        final newRem = rem - qty;
+        if (newRem < 0) throw Exception('Lot has only $rem $_baseUnit remaining');
 
-        tx.update(lotRef, {
-          'qtyRemaining': rem - qty,
-          if (lot['openAt'] == null) 'openAt': Timestamp.fromDate(_usedAt),
+        final patch = <String, dynamic>{
+          'qtyRemaining': newRem,
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        if ((m['openAt'] == null) && qty > 0) {
+          patch['openAt'] = usedAtTs;
+        }
+        tx.set(lotRef, patch, SetOptions(merge: true));
+
+        tx.set(itemRef, {
+          'lastUsedAt': usedAtTs,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        tx.set(usageRef, {
+          'itemId': widget.itemId,
+          'lotId': lot.id,
+          'qtyUsed': qty,
+          'unit': _baseUnit,
+          'usedAt': usedAtTs,
+          'interventionId': _intervention?.id,
+          'grantId': _selectedGrantId(),
+          'forUseType': _forUse?.name,
+          'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+          'createdAt': FieldValue.serverTimestamp(),
         });
-      }
-
-      // update item quick total (server truth should be CF: sum(lots))
-      final newQty = currentQty - qty;
-      if (newQty < 0) throw Exception('Insufficient stock');
-      tx.update(itemRef, {
-        'qtyOnHand': newQty,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'lastUsedAt': Timestamp.fromDate(_usedAt),
       });
+    } else {
+      // Back-compat path for items without lots yet.
+      await _db.runTransaction((tx) async {
+        final itemSnap = await tx.get(itemRef);
+        if (!itemSnap.exists) throw Exception('Item not found');
+        final data = itemSnap.data() as Map<String, dynamic>;
+        final currentQty = (data['qtyOnHand'] ?? 0) as num;
+        final newQty = currentQty - qty;
+        if (newQty < 0) throw Exception('Insufficient stock');
 
-      // usage log
-      tx.set(usageRef, {
-        'itemId': widget.itemId,
-        'lotId': _lot?.id,
-        'qtyUsed': qty,
-        'unit': _baseUnit,
-        'usedAt': Timestamp.fromDate(_usedAt),
-        'interventionId': _intervention?.id,
-        'forUseType': _forUse?.name, // 'staff' | 'patient'
-        'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
-        'grantId': _selectedGrantId(), // auto from intervention
-        'userId': null,
+        tx.update(itemRef, {
+          'qtyOnHand': newQty,
+          'lastUsedAt': usedAtTs,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        tx.set(usageRef, {
+          'itemId': widget.itemId,
+          'qtyUsed': qty,
+          'unit': _baseUnit,
+          'usedAt': usedAtTs,
+          'interventionId': _intervention?.id,
+          'grantId': _selectedGrantId(),
+          'forUseType': _forUse?.name,
+          'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+          'createdAt': FieldValue.serverTimestamp(),
+        });
       });
-    });
+    }
   }
 
-  @override
-  void dispose() {
-    _notes.dispose();
-    super.dispose();
-  }
-
+  // ----------------- UI -----------------
   @override
   Widget build(BuildContext context) {
-    final loading = _interventions == null || _baseUnit.isEmpty || _lots == null;
-    // If there are lots, require one; if no lots (legacy items), still allow submit.
-    final lotsExist = (_lots?.isNotEmpty ?? false);
-    final lotOk = lotsExist ? _lot != null : true;
+    final loading = _interventions == null || _lots == null;
+    final hasLots = (_lots?.isNotEmpty ?? false);
+    final lotOk = hasLots ? _selectedLot != null : true;
     final canSubmit = !loading && _intervention != null && qty > 0 && lotOk;
 
     return Padding(
@@ -334,10 +380,10 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                 ],
 
                 // Lot dropdown (if item has lots)
-                if (lotsExist) ...[
+                if (hasLots) ...[
                   const SizedBox(height: 8),
-                  DropdownButtonFormField<LotInfo>(
-                    initialValue: _lot,
+                  DropdownButtonFormField<LotOption>(
+                    initialValue: _selectedLot,
                     items: _lots!
                         .map(
                           (l) => DropdownMenuItem(
@@ -349,7 +395,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                           ),
                         )
                         .toList(),
-                    onChanged: (v) => setState(() => _lot = v),
+                    onChanged: (v) => setState(() => _selectedLot = v),
                     decoration: InputDecoration(labelText: 'Lot ($_baseUnit)'),
                   ),
                 ],
