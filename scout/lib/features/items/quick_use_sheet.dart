@@ -1,8 +1,7 @@
 // lib/features/items/quick_use_sheet.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:scout/utils/operator_store.dart';
+import 'package:scout/utils/audit.dart';
 
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -245,19 +244,17 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
         final patch = <String, dynamic>{
           'qtyRemaining': newRem,
-          'updatedAt': FieldValue.serverTimestamp(),
         };
         if ((m['openAt'] == null) && qty > 0) {
           patch['openAt'] = usedAtTs;
         }
-        tx.set(lotRef, patch, SetOptions(merge: true));
+        tx.set(lotRef, Audit.updateOnly(patch), SetOptions(merge: true));
 
-        tx.set(itemRef, {
+        tx.set(itemRef, Audit.updateOnly({
           'lastUsedAt': usedAtTs,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+        }), SetOptions(merge: true));
 
-        tx.set(usageRef, {
+        tx.set(usageRef, Audit.attach({
           'itemId': widget.itemId,
           'lotId': lot.id,
           'qtyUsed': qty,
@@ -267,9 +264,18 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
           'grantId': _selectedGrantId(),
           'forUseType': _forUse?.name,
           'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
-          'operatorName': OperatorStore.name.value,
-          'createdBy': FirebaseAuth.instance.currentUser?.uid,
-          'createdAt': FieldValue.serverTimestamp(),
+        }));
+
+        await Audit.log('item.quickUse', {
+          'itemId': widget.itemId,
+          'lotId': lot.id,
+          'qtyUsed': qty,
+          'unit': _baseUnit,
+          'usedAt': usedAtTs,
+          'interventionId': _intervention?.id,
+          'grantId': _selectedGrantId(),
+          'forUseType': _forUse?.name,
+          'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
         });
       });
     } else {
@@ -282,13 +288,12 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
         final newQty = currentQty - qty;
         if (newQty < 0) throw Exception('Insufficient stock');
 
-        tx.update(itemRef, {
+        tx.update(itemRef, Audit.updateOnly({
           'qtyOnHand': newQty,
           'lastUsedAt': usedAtTs,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        }));
 
-        tx.set(usageRef, {
+        tx.set(usageRef, Audit.attach({
           'itemId': widget.itemId,
           'qtyUsed': qty,
           'unit': _baseUnit,
@@ -297,9 +302,17 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
           'grantId': _selectedGrantId(),
           'forUseType': _forUse?.name,
           'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
-          'operatorName': OperatorStore.name.value,
-          'createdBy': FirebaseAuth.instance.currentUser?.uid,
-          'createdAt': FieldValue.serverTimestamp(),
+        }));
+
+        await Audit.log('item.quickUse', {
+          'itemId': widget.itemId,
+          'qtyUsed': qty,
+          'unit': _baseUnit,
+          'usedAt': usedAtTs,
+          'interventionId': _intervention?.id,
+          'grantId': _selectedGrantId(),
+          'forUseType': _forUse?.name,
+          'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
         });
       });
     }

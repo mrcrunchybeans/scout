@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:scout/utils/operator_store.dart';
+import '../../utils/audit.dart';
 // Helper to normalize barcodes
 String _normalizeBarcode(String s) =>
   s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
@@ -80,10 +81,11 @@ class _ItemSummaryTab extends StatelessWidget {
                   InputChip(
                     label: Text(b),
                     onDeleted: () async {
-                      await ref.set({
-                        'barcodes': FieldValue.arrayRemove([b]),
-                        'updatedAt': FieldValue.serverTimestamp(),
-                      }, SetOptions(merge: true));
+                      await ref.set(
+                        Audit.updateOnly({'barcodes': FieldValue.arrayRemove([b])}),
+                        SetOptions(merge: true),
+                      );
+                      await Audit.log('item.barcode.remove', {'itemId': ref.id, 'barcode': b});
                     },
                   ),
               ],
@@ -357,16 +359,22 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                   ? qi
                   : (num.tryParse(cQtyRemain.text) ?? qi);
                 final ref = db.collection('items').doc(itemId).collection('lots').doc();
-                await ref.set({
-                  'baseUnit': baseUnit,
+                await ref.set(
+                  Audit.attach({
+                    'baseUnit': baseUnit,
+                    'qtyInitial': qi,
+                    'qtyRemaining': qr,
+                    'receivedAt': receivedAt != null ? Timestamp.fromDate(receivedAt!) : null,
+                    'expiresAt':  expiresAt  != null ? Timestamp.fromDate(expiresAt!)  : null,
+                    'openAt': null,
+                    'expiresAfterOpenDays': expiresAfterOpenDays,
+                  }),
+                );
+                await Audit.log('lot.create', {
+                  'itemId': itemId,
+                  'lotId': ref.id,
                   'qtyInitial': qi,
                   'qtyRemaining': qr,
-                  'receivedAt': receivedAt != null ? Timestamp.fromDate(receivedAt!) : null,
-                  'expiresAt':  expiresAt  != null ? Timestamp.fromDate(expiresAt!)  : null,
-                  'openAt': null,
-                  'expiresAfterOpenDays': expiresAfterOpenDays,
-                  'createdAt': FieldValue.serverTimestamp(),
-                  'updatedAt': FieldValue.serverTimestamp(),
                 });
                 if (context.mounted) Navigator.pop(context);
               },
@@ -441,12 +449,21 @@ Future<void> _showEditLotSheet(
               label: const Text('Save'),
               onPressed: () async {
                 final ref = db.collection('items').doc(itemId).collection('lots').doc(lotId);
-                await ref.set({
+                await ref.set(
+                  Audit.updateOnly({
+                    'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
+                    'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
+                    'expiresAfterOpenDays': afterOpenDays,
+                  }),
+                  SetOptions(merge: true),
+                );
+                await Audit.log('lot.update', {
+                  'itemId': itemId,
+                  'lotId': lotId,
                   'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                   'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                   'expiresAfterOpenDays': afterOpenDays,
-                  'updatedAt': FieldValue.serverTimestamp(),
-                }, SetOptions(merge: true));
+                });
                 if (context.mounted) Navigator.pop(context);
               },
             ),
@@ -534,7 +551,7 @@ Future<void> _showAdjustSheet(
                   if (delta < 0 && (data['openAt'] == null) && !alreadyOpened) {
                     patch['openAt'] = Timestamp.fromDate(usedAt);
                   }
-                  tx.set(lotRef, patch, SetOptions(merge: true));
+                  tx.set(lotRef, Audit.updateOnly(patch), SetOptions(merge: true));
                 });
 
                 // Optional: write an audit entry
@@ -546,6 +563,13 @@ Future<void> _showAdjustSheet(
                     'at': Timestamp.fromDate(usedAt),
                     'createdAt': FieldValue.serverTimestamp(),
                   });
+                await Audit.log('lot.update', {
+                  'itemId': itemId,
+                  'lotId': lotId,
+                  'delta': delta,
+                  'reason': reason,
+                  'at': Timestamp.fromDate(usedAt),
+                });
 
                 if (context.mounted) Navigator.pop(context);
               },

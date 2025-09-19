@@ -2,112 +2,52 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:scout/utils/audit.dart';
 import 'package:scout/widgets/scanner_sheet.dart';
 
-import '../../data/lookups_service.dart';
+
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
 import '../../widgets/usb_wedge_scanner.dart';
-import '../../utils/operator_store.dart';
 import 'cart_models.dart';
+import '../../utils/operator_store.dart';
+
+
+
+
 
 class CartSessionPage extends StatefulWidget {
-  final String? sessionId; // null = new
+  final String? sessionId;
   const CartSessionPage({super.key, this.sessionId});
 
   @override
   State<CartSessionPage> createState() => _CartSessionPageState();
 }
 
+
 class _CartSessionPageState extends State<CartSessionPage> {
   final _db = FirebaseFirestore.instance;
-  final _lookups = LookupsService();
-
-  bool _busy = false;
-  String? _sessionId;
-  String? _interventionId;
-  String? _interventionName;
-  String? _defaultGrantId; // derived
-  String _locationText = '';
-  String _notes = '';
-  String _status = 'open'; // open | closed
-
-  List<OptionItem>? _interventions;
-  OptionItem? _selectedIntervention;
-
-  final Map<String, String?> _intToGrant = {};
-  final Map<String, String> _grantNames = {};
-
-  final List<CartLine> _lines = [];
-
-  // Quick-add input + focus + USB wedge toggle
   final _barcodeC = TextEditingController();
   final _barcodeFocus = FocusNode();
-  bool _usbCaptureOn = true;
+  final Map<String, String> _grantNames = {};
+  final Map<String, String> _intToGrant = {};
+  List<OptionItem>? _interventions;
+  OptionItem? _selectedIntervention;
+  String? _interventionId;
+  String? _interventionName;
+  String? _defaultGrantId;
+  String _locationText = '';
+  String _notes = '';
+  final String _status = 'open';
+  String? _sessionId;
+  bool _busy = false;
+  bool _usbCaptureOn = false;
+  final List<CartLine> _lines = [];
 
   @override
   void initState() {
     super.initState();
-    _boot();
-  }
-
-  @override
-  void dispose() {
-    _barcodeFocus.dispose();
-    _barcodeC.dispose();
-    super.dispose();
-  }
-
-  // ---------- Boot / data ----------
-  OptionItem? _findInterventionById(String? id) {
-    if (id == null || _interventions == null) return null;
-    for (final o in _interventions!) {
-      if (o.id == id) return o;
-    }
-    return null;
-  }
-
-  Future<void> _boot() async {
-    setState(() => _busy = true);
-    try {
-      final interventions = await _lookups.interventions();
-      final intSnap = await _db.collection('interventions').where('active', isEqualTo: true).get();
-      final grantSnap = await _db.collection('grants').where('active', isEqualTo: true).get();
-
-      for (final d in intSnap.docs) {
-        _intToGrant[d.id] = d.data()['defaultGrantId'] as String?;
-      }
-      for (final d in grantSnap.docs) {
-        _grantNames[d.id] = (d.data()['name'] ?? '') as String;
-      }
-
-      _interventions = interventions;
-
-      if (widget.sessionId != null) {
-        _sessionId = widget.sessionId!;
-        final sref = _db.collection('cart_sessions').doc(_sessionId);
-        final ss = await sref.get();
-        if (ss.exists) {
-          final m = ss.data()!;
-          _interventionId = m['interventionId'] as String?;
-          _interventionName = m['interventionName'] as String?;
-          _defaultGrantId = m['grantId'] as String?;
-          _locationText = (m['locationText'] ?? '') as String;
-          _notes = (m['notes'] ?? '') as String;
-          _status = (m['status'] ?? 'open') as String;
-
-          final linesSnap = await sref.collection('lines').orderBy('itemName').get();
-          for (final d in linesSnap.docs) {
-            _lines.add(CartLine.fromMap(d.data()));
-          }
-        }
-      }
-
-      _selectedIntervention = _findInterventionById(_interventionId);
-      _defaultGrantId ??= _interventionId == null ? null : _intToGrant[_interventionId!];
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    _sessionId = widget.sessionId;
   }
 
   String? get _grantName =>
@@ -121,6 +61,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _handleCode(String rawCode) async {
+    final ctx = context;
     final code = rawCode.trim();
     if (code.isEmpty || _busy) return;
 
@@ -140,6 +81,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
         if (itemId != null) {
           final itemSnap = await _db.collection('items').doc(itemId).get();
+          if (!ctx.mounted) return;
           if (!itemSnap.exists) throw Exception('Item not found');
           final m = itemSnap.data()!;
           final name = (m['name'] ?? 'Unnamed') as String;
@@ -151,8 +93,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
             baseUnit: baseUnit,
             lotId: lotId,
           );
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added: $name')));
+          if (!ctx.mounted) return;
+          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
           _refocusQuickAdd();
           return;
         }
@@ -171,7 +113,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       if (d == null) {
         // unknown barcode -> offer attach
         SoundFeedback.error();
-        if (!mounted) return;
+        if (!ctx.mounted) return;
         await _offerAttachBarcode(code);
         _refocusQuickAdd();
         return;
@@ -207,13 +149,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
 
       _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added: $name')));
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
       _refocusQuickAdd();
     } catch (e) {
-      if (!mounted) return;
+      if (!ctx.mounted) return;
       SoundFeedback.error();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Scan error: $e')));
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Scan error: $e')));
       _refocusQuickAdd();
     }
   }
@@ -330,13 +272,17 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 onTap: () async {
                   final data = d.data();
                   final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
-                  await d.reference.set({
-                    'barcodes': FieldValue.arrayUnion([code]),
-                    if (!hasSingle) 'barcode': code,
-                    'operatorName': OperatorStore.name.value,
-                    'updatedBy': FirebaseAuth.instance.currentUser?.uid,
-                    'updatedAt': FieldValue.serverTimestamp(),
-                  }, SetOptions(merge: true));
+                  await d.reference.set(
+                    Audit.updateOnly({
+                      'barcodes': FieldValue.arrayUnion([code]),
+                      if (!hasSingle) 'barcode': code,
+                    }),
+                    SetOptions(merge: true),
+                  );
+                  await Audit.log('item.barcode.attach', {
+                    'itemId': d.id,
+                    'barcode': code,
+                  });
                   if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                   if (sheetCtx.mounted) {
                     SoundFeedback.ok();
@@ -359,7 +305,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
           ? _db.collection('cart_sessions').doc()
           : _db.collection('cart_sessions').doc(_sessionId);
 
-      final payload = {
+      final payload = Audit.updateOnly({
         'interventionId': _interventionId,
         'interventionName': _interventionName,
         'grantId': _defaultGrantId,
@@ -367,10 +313,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'notes': _notes.trim().isEmpty ? null : _notes.trim(),
         'status': 'open',
         'startedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'operatorName': OperatorStore.name.value,
-      };
-      if (_sessionId == null) payload['createdBy'] = FirebaseAuth.instance.currentUser?.uid;
+      });
 
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
@@ -383,13 +326,20 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
       await batch.commit();
 
-      if (!mounted) return;
-      SoundFeedback.ok();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Draft saved')));
+      await Audit.log('session.save', {
+        'sessionId': _sessionId,
+        'numLines': _lines.length,
+      });
+
+  final ctx = context;
+  if (!ctx.mounted) return;
+  SoundFeedback.ok();
+  ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
     } catch (e) {
-      if (!mounted) return;
+      final ctx = context;
+      if (!ctx.mounted) return;
       SoundFeedback.error();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -435,22 +385,20 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
             final patch = <String, dynamic>{
               'qtyRemaining': newRem,
-              'updatedAt': FieldValue.serverTimestamp(),
             };
             if (m['openAt'] == null) patch['openAt'] = FieldValue.serverTimestamp();
-            tx.set(lotRef, patch, SetOptions(merge: true));
+            tx.set(lotRef, Audit.updateOnly(patch), SetOptions(merge: true));
 
             tx.set(
               itemRef,
-              {
+              Audit.updateOnly({
                 'lastUsedAt': usedAtTs,
-                'updatedAt': FieldValue.serverTimestamp(),
-              },
+              }),
               SetOptions(merge: true),
             );
 
             final usageRef = _db.collection('usage_logs').doc();
-            tx.set(usageRef, {
+            tx.set(usageRef, Audit.attach({
               'sessionId': _sessionId,
               'itemId': line.itemId,
               'lotId': line.lotId,
@@ -460,9 +408,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'interventionId': _interventionId,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
-              'operatorName': OperatorStore.name.value,
-              'createdBy': FirebaseAuth.instance.currentUser?.uid,
-              'createdAt': FieldValue.serverTimestamp(),
+            }));
+
+            await Audit.log('usage.create', {
+              'sessionId': _sessionId,
+              'itemId': line.itemId,
+              'lotId': line.lotId,
+              'qtyUsed': used,
+              'unit': line.baseUnit,
             });
           });
         } else {
@@ -474,14 +427,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
             final newQty = currentQty - used;
             if (newQty < 0) throw Exception('Insufficient stock for ${line.itemName}');
 
-            tx.update(itemRef, {
+            tx.update(itemRef, Audit.updateOnly({
               'qtyOnHand': newQty,
               'lastUsedAt': usedAtTs,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
+            }));
 
             final usageRef = _db.collection('usage_logs').doc();
-            tx.set(usageRef, {
+            tx.set(usageRef, Audit.attach({
               'sessionId': _sessionId,
               'itemId': line.itemId,
               'qtyUsed': used,
@@ -490,28 +442,45 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'interventionId': _interventionId,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
-              'operatorName': OperatorStore.name.value,
-              'createdBy': FirebaseAuth.instance.currentUser?.uid,
-              'createdAt': FieldValue.serverTimestamp(),
+            }));
+
+            await Audit.log('usage.create', {
+              'sessionId': _sessionId,
+              'itemId': line.itemId,
+              'qtyUsed': used,
+              'unit': line.baseUnit,
             });
           });
         }
       }
 
-      await sref.set({
-        'status': 'closed',
-        'closedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await sref.set(
+        Audit.updateOnly({
+          'status': 'closed',
+          'closedAt': FieldValue.serverTimestamp(),
+          'closedBy': FirebaseAuth.instance.currentUser?.uid,
+          'operatorName': OperatorStore.name.value,
+        }),
+        SetOptions(merge: true),
+      );
 
-      if (!mounted) return;
+      // High-level audit for the close
+      await Audit.log('session.close', {
+        'sessionId': _sessionId,
+        'interventionId': _interventionId,
+        'numLines': _lines.length,
+      });
+
+      final ctx = context;
+      if (!ctx.mounted) return;
       SoundFeedback.ok();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Session closed')));
-      Navigator.of(context).pop(true);
+      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Session closed')));
+      Navigator.of(ctx).pop(true);
     } catch (e) {
-      if (!mounted) return;
+      final ctx = context;
+      if (!ctx.mounted) return;
       SoundFeedback.error();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

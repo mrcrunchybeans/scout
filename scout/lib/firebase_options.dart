@@ -53,12 +53,12 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDyWk70DPvGiKbm_3CWbj_XW0AKeMnT0Os',
-    appId: '1:407644437940:web:3b08719a1f9f1f506106e1',
-    messagingSenderId: '407644437940',
-    projectId: 'scout-litteempathy',
-    authDomain: 'scout-litteempathy.firebaseapp.com',
-    storageBucket: 'scout-litteempathy.firebasestorage.app',
+  apiKey: 'AIzaSyDyWk70DPvGiKbm_3CWbj_XW0AKeMnT0Os',
+  appId: '1:407644437940:web:3b08719a1f9f1f506106e1',
+  messagingSenderId: '407644437940',
+  projectId: 'scout-litteempathy',
+  authDomain: 'scout-litteempathy.firebaseapp.com,scout.littleempathy.com',
+  storageBucket: 'scout-litteempathy.firebasestorage.app',
   );
 
 }

@@ -80,13 +80,11 @@ class _DashboardPageState extends State<DashboardPage> {
     PopupMenuButton<String>(
   onSelected: (v) async {
     if (v == 'admin') {
+      final navigator = Navigator.of(context);
       final ok = await confirmAdminPin(context);
-      if (!context.mounted) return;
       if (ok) {
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminPage()));
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Admin unlock failed')),
+        navigator.push(
+          MaterialPageRoute(builder: (_) => const AdminPage()),
         );
       }
     }

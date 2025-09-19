@@ -11,35 +11,38 @@ class OperatorChip extends StatelessWidget {
     return ValueListenableBuilder<String?>(
       valueListenable: main.OperatorStore.name,
       builder: (context, name, _) {
-        final label = name?.isNotEmpty == true ? name! : 'Set operator';
+        final label = name?.isNotEmpty == true ? name! : 'Set user';
         return InkWell(
           borderRadius: BorderRadius.circular(24),
           onTap: () async {
             final controller = TextEditingController(text: name ?? '');
             final picked = await showDialog<String?>(
               context: context,
-              builder: (_) => AlertDialog(
-                title: const Text('Who’s using SCOUT?'),
-                content: TextField(
-                  controller: controller,
-                  autofocus: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Your name',
-                    hintText: 'e.g. Mephibosheth',
-                  ),
-                ),
-                actions: [
-                  TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
-                  if (name != null && name.isNotEmpty)
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, ''),
-                      child: const Text('Clear'),
+              builder: (_) => Theme(
+                data: Theme.of(context),
+                child: AlertDialog(
+                  title: const Text('Who’s using SCOUT?'),
+                  content: TextField(
+                    controller: controller,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Your name',
+                      hintText: 'e.g. Mephibosheth',
                     ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, controller.text.trim()),
-                    child: const Text('Save'),
                   ),
-                ],
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
+                    if (name != null && name.isNotEmpty)
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, ''),
+                        child: const Text('Clear'),
+                      ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, controller.text.trim()),
+                      child: const Text('Save'),
+                    ),
+                  ],
+                ),
               ),
             );
             if (picked == null) return;
