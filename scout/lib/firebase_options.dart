@@ -60,4 +60,5 @@ class DefaultFirebaseOptions {
     authDomain: 'scout-litteempathy.firebaseapp.com',
     storageBucket: 'scout-litteempathy.firebasestorage.app',
   );
+
 }

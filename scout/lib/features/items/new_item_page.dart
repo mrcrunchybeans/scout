@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
+import '../../utils/audit.dart'; // <-- uses Audit.created()
 
 enum UseType { staff, patient, both }
 
@@ -61,6 +63,7 @@ class _NewItemPageState extends State<NewItemPage> {
       final ref = _db.collection('items').doc();
       final code = _barcode.text.trim();
 
+      // Single write with merge + Audit.created()
       await ref.set({
         'name': _name.text.trim(),
         'category': _category.text.trim().isEmpty ? null : _category.text.trim(),
@@ -75,13 +78,14 @@ class _NewItemPageState extends State<NewItemPage> {
         'expiresAt': null,
         'lastUsedAt': null,
         'tags': <String>[],
-        // --- barcode fields (both) ---
+        'imageUrl': null,
+
+        // Barcode fields (store both single and array)
         if (code.isNotEmpty) 'barcode': code,
         if (code.isNotEmpty) 'barcodes': FieldValue.arrayUnion([code]),
-        // ---
-        'imageUrl': null,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
+
+        // Audit
+        ...Audit.created(),
       }, SetOptions(merge: true));
 
       if (!mounted) return;
@@ -124,8 +128,7 @@ class _NewItemPageState extends State<NewItemPage> {
                     controller: _name,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(labelText: 'Name *'),
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                    validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
                   const SizedBox(height: 8),
                   TextFormField(
@@ -175,8 +178,7 @@ class _NewItemPageState extends State<NewItemPage> {
                         .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
                         .toList(),
                     onChanged: (v) => setState(() => _grant = v),
-                    decoration:
-                        const InputDecoration(labelText: 'Default grant (optional)'),
+                    decoration: const InputDecoration(labelText: 'Default grant (optional)'),
                   ),
                   const SizedBox(height: 8),
                   SegmentedButton<UseType>(
@@ -192,8 +194,7 @@ class _NewItemPageState extends State<NewItemPage> {
                   TextFormField(
                     controller: _barcode,
                     textInputAction: TextInputAction.done,
-                    decoration:
-                        const InputDecoration(labelText: 'Barcode / QR (optional)'),
+                    decoration: const InputDecoration(labelText: 'Barcode / QR (optional)'),
                   ),
                   const SizedBox(height: 16),
                   FilledButton.icon(

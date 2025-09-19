@@ -1,6 +1,8 @@
 // lib/features/items/quick_use_sheet.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:scout/utils/operator_store.dart';
 
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -265,6 +267,8 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
           'grantId': _selectedGrantId(),
           'forUseType': _forUse?.name,
           'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+          'operatorName': OperatorStore.name.value,
+          'createdBy': FirebaseAuth.instance.currentUser?.uid,
           'createdAt': FieldValue.serverTimestamp(),
         });
       });
@@ -293,6 +297,8 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
           'grantId': _selectedGrantId(),
           'forUseType': _forUse?.name,
           'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+          'operatorName': OperatorStore.name.value,
+          'createdBy': FirebaseAuth.instance.currentUser?.uid,
           'createdAt': FieldValue.serverTimestamp(),
         });
       });

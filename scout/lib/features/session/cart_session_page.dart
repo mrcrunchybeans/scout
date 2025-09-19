@@ -1,11 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:scout/widgets/scanner_sheet.dart';
 
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
 import '../../widgets/usb_wedge_scanner.dart';
+import '../../utils/operator_store.dart';
 import 'cart_models.dart';
 
 class CartSessionPage extends StatefulWidget {
@@ -330,6 +333,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   await d.reference.set({
                     'barcodes': FieldValue.arrayUnion([code]),
                     if (!hasSingle) 'barcode': code,
+                    'operatorName': OperatorStore.name.value,
+                    'updatedBy': FirebaseAuth.instance.currentUser?.uid,
                     'updatedAt': FieldValue.serverTimestamp(),
                   }, SetOptions(merge: true));
                   if (sheetCtx.mounted) Navigator.pop(sheetCtx);
@@ -363,7 +368,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'status': 'open',
         'startedAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
+        'operatorName': OperatorStore.name.value,
       };
+      if (_sessionId == null) payload['createdBy'] = FirebaseAuth.instance.currentUser?.uid;
 
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
@@ -453,6 +460,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'interventionId': _interventionId,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
+              'operatorName': OperatorStore.name.value,
+              'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': FieldValue.serverTimestamp(),
             });
           });
@@ -481,6 +490,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'interventionId': _interventionId,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
+              'operatorName': OperatorStore.name.value,
+              'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': FieldValue.serverTimestamp(),
             });
           });

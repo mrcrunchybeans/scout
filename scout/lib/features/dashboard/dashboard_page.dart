@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import '../../main.dart';
+import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
 import '../items/quick_use_sheet.dart';
 import '../items/items_page.dart';
@@ -9,6 +9,9 @@ import '../items/new_item_page.dart';
 import '../items/item_detail_page.dart';
 import '../session/cart_session_page.dart';
 import '../session/sessions_list_page.dart';
+import 'package:scout/widgets/operator_chip.dart';
+import 'package:scout/utils/admin_pin.dart';
+import 'package:scout/features/admin/admin_page.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -61,18 +64,38 @@ class _DashboardPageState extends State<DashboardPage> {
         titleSpacing: 0,
         title: const Center(child: BrandLogo(height: 120)),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16.0),
-            child: IconButton(
-              icon: Icon(
-                Icons.brightness_6,
-                color: colorScheme.onSurface,
-              ),
-              tooltip: 'Toggle theme',
-              onPressed: () => ThemeModeNotifier.instance.toggle(),
-            ),
-          ),
-        ],
+    // NEW: operator chip
+    const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 8),
+      child: OperatorChip(),
+    ),
+    Padding(
+      padding: const EdgeInsets.only(right: 16),
+      child: IconButton(
+        icon: Icon(Icons.brightness_6, color: Theme.of(context).colorScheme.onSurface),
+        tooltip: 'Toggle theme',
+        onPressed: () => main.ThemeModeNotifier.instance.toggle(),
+      ),
+    ),
+    PopupMenuButton<String>(
+  onSelected: (v) async {
+    if (v == 'admin') {
+      final ok = await confirmAdminPin(context);
+      if (!context.mounted) return;
+      if (ok) {
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminPage()));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Admin unlock failed')),
+        );
+      }
+    }
+  },
+  itemBuilder: (ctx) => const [
+    PopupMenuItem(value: 'admin', child: Text('Admin / Config')),
+  ],
+),
+  ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

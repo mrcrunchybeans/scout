@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:scout/utils/operator_store.dart';
 // Helper to normalize barcodes
 String _normalizeBarcode(String s) =>
   s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
@@ -254,6 +255,7 @@ class _RowAddBarcodeState extends State<_RowAddBarcode> {
     try {
       await widget.ref.set({
         'barcodes': FieldValue.arrayUnion([code]),
+        'operatorName': OperatorStore.name.value,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       _c.clear();
