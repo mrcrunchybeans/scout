@@ -1,11 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:scout/widgets/scanner_sheet.dart';
-
+import 'package:scout/widgets/scanner_page.dart';
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
+import '../../utils/sound_feedback.dart';
+import '../../widgets/usb_wedge_scanner.dart';
 import 'cart_models.dart';
-import '../items/new_item_page.dart';
 
 class CartSessionPage extends StatefulWidget {
   final String? sessionId; // null = new
@@ -29,61 +29,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
   String _status = 'open'; // open | closed
 
   List<OptionItem>? _interventions;
-  OptionItem? _selectedIntervention; // selected object for dropdown
+  OptionItem? _selectedIntervention;
 
   final Map<String, String?> _intToGrant = {};
   final Map<String, String> _grantNames = {};
 
-  final List<CartLine> _lines = []; // in-memory working set
+  final List<CartLine> _lines = [];
 
-  // Barcode controller for quick add
+  // Quick-add input + focus + USB wedge toggle
   final _barcodeC = TextEditingController();
+  final _barcodeFocus = FocusNode();
+  bool _usbCaptureOn = true;
 
-  // ---------- helpers ----------
-  void _showSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  String? get _grantName =>
-      _defaultGrantId == null ? null : _grantNames[_defaultGrantId!] ?? _defaultGrantId;
-
-  String _lineId(CartLine l) => l.lotId == null ? l.itemId : '${l.itemId}__${l.lotId}';
-
-  OptionItem? _findInterventionById(String? id) {
-    if (id == null || _interventions == null) return null;
-    for (final o in _interventions!) {
-      if (o.id == id) return o;
-    }
-    return null;
-  }
-
-  Future<String?> _pickFefoLotId(String itemId) async {
-    final lots = await _db.collection('items').doc(itemId).collection('lots').get();
-    if (lots.docs.isEmpty) return null;
-    final list = lots.docs.toList()
-      ..sort((a, b) {
-        final ta = a.data()['expiresAt'];
-        final tb = b.data()['expiresAt'];
-        final ea = (ta is Timestamp) ? ta.toDate() : null;
-        final eb = (tb is Timestamp) ? tb.toDate() : null;
-        if (ea == null && eb == null) return 0;
-        if (ea == null) return 1;
-        if (eb == null) return -1;
-        return ea.compareTo(eb);
-      });
-
-    // prefer a lot with qtyRemaining > 0, else first
-    final withQty = list.firstWhere(
-      (x) => (x.data()['qtyRemaining'] ?? 0) is num
-          ? ((x.data()['qtyRemaining'] as num) > 0)
-          : false,
-      orElse: () => list.first,
-    );
-    return withQty.id;
-  }
-
-  // ---------- lifecycle ----------
   @override
   void initState() {
     super.initState();
@@ -92,17 +49,25 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
   @override
   void dispose() {
+    _barcodeFocus.dispose();
     _barcodeC.dispose();
     super.dispose();
+  }
+
+  // ---------- Boot / data ----------
+  OptionItem? _findInterventionById(String? id) {
+    if (id == null || _interventions == null) return null;
+    for (final o in _interventions!) {
+      if (o.id == id) return o;
+    }
+    return null;
   }
 
   Future<void> _boot() async {
     setState(() => _busy = true);
     try {
-      // load interventions + default grants
       final interventions = await _lookups.interventions();
-      final intSnap =
-          await _db.collection('interventions').where('active', isEqualTo: true).get();
+      final intSnap = await _db.collection('interventions').where('active', isEqualTo: true).get();
       final grantSnap = await _db.collection('grants').where('active', isEqualTo: true).get();
 
       for (final d in intSnap.docs) {
@@ -114,7 +79,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       _interventions = interventions;
 
-      // existing session?
       if (widget.sessionId != null) {
         _sessionId = widget.sessionId!;
         final sref = _db.collection('cart_sessions').doc(_sessionId);
@@ -135,28 +99,32 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
       }
 
-      // reflect the selected intervention in the dropdown
       _selectedIntervention = _findInterventionById(_interventionId);
       _defaultGrantId ??= _interventionId == null ? null : _intToGrant[_interventionId!];
-    } catch (e) {
-      _showSnack('Error loading: $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  // ---------- Scan / add ----------
-  Future<void> _scanAndAdd() async {
-    final pageCtx = context;
-    final code = await showModalBottomSheet<String>(
-      context: pageCtx,
-      isScrollControlled: true,
-      builder: (_) => const ScannerSheet(title: 'Scan item barcode or lot QR'),
-    );
-    if (code == null || !pageCtx.mounted) return;
+  String? get _grantName =>
+      _defaultGrantId == null ? null : _grantNames[_defaultGrantId!] ?? _defaultGrantId;
+
+  // ---------- Unified code handler (USB / camera / manual) ----------
+  void _refocusQuickAdd() {
+    if (!mounted) return;
+    FocusScope.of(context).requestFocus(_barcodeFocus);
+    _barcodeC.selection = TextSelection(baseOffset: 0, extentOffset: _barcodeC.text.length);
+  }
+
+  Future<void> _handleCode(String rawCode) async {
+    final code = rawCode.trim();
+    if (code.isEmpty || _busy) return;
+
+    // soft beep to acknowledge capture
+    SoundFeedback.ok();
 
     try {
-      // SCOUT lot QR: SCOUT:LOT:item={ITEM_ID};lot={LOT_ID}
+      // 1) SCOUT lot QR: SCOUT:LOT:item={ITEM_ID};lot={LOT_ID}
       if (code.startsWith('SCOUT:LOT:')) {
         String? itemId, lotId;
         for (final p in code.substring('SCOUT:LOT:'.length).split(';')) {
@@ -168,13 +136,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
         if (itemId != null) {
           final itemSnap = await _db.collection('items').doc(itemId).get();
-          if (!itemSnap.exists) {
-            _showSnack('Item not found');
-            return;
-          }
+          if (!itemSnap.exists) throw Exception('Item not found');
           final m = itemSnap.data()!;
           final name = (m['name'] ?? 'Unnamed') as String;
-          final baseUnit = (m['baseUnit'] ?? 'each') as String;
+          final baseUnit = (m['baseUnit'] ?? m['unit'] ?? 'each') as String;
 
           _addOrBumpLine(
             itemId: itemId,
@@ -182,55 +147,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
             baseUnit: baseUnit,
             lotId: lotId,
           );
-          if (!pageCtx.mounted) return;
-          _showSnack('Added: $name');
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added: $name')));
+          _refocusQuickAdd();
           return;
         }
       }
 
-      // Otherwise: barcode lookup (single or array)
-      QueryDocumentSnapshot<Map<String, dynamic>>? d;
-      var bySingle =
-          await _db.collection('items').where('barcode', isEqualTo: code).limit(1).get();
-      if (bySingle.docs.isNotEmpty) {
-        d = bySingle.docs.first;
-      } else {
-        final byArray = await _db
-            .collection('items')
-            .where('barcodes', arrayContains: code)
-            .limit(1)
-            .get();
-        if (byArray.docs.isNotEmpty) d = byArray.docs.first;
-      }
-
-      if (d == null) {
-        if (!pageCtx.mounted) return;
-        await _offerAttachBarcode(code);
-        return;
-      }
-
-      final name = (d.data()['name'] ?? 'Unnamed') as String;
-      final baseUnit = (d.data()['baseUnit'] ?? 'each') as String;
-
-      final lotId = await _pickFefoLotId(d.id);
-
-      _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-      if (!pageCtx.mounted) return;
-      _showSnack('Added: $name');
-    } catch (e) {
-      if (!pageCtx.mounted) return;
-      _showSnack('Scan error: $e');
-    }
-  }
-
-  Future<void> _addByBarcode() async {
-    final pageCtx = context;
-    final raw = _barcodeC.text;
-    final code = raw.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
-    if (code.isEmpty) return;
-
-    setState(() => _busy = true);
-    try {
+      // 2) Item barcode search (support 'barcode' and 'barcodes' array)
       QueryDocumentSnapshot<Map<String, dynamic>>? d;
       var q = await _db.collection('items').where('barcode', isEqualTo: code).limit(1).get();
       if (q.docs.isNotEmpty) {
@@ -241,27 +165,74 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
 
       if (d == null) {
-        if (!pageCtx.mounted) return;
-        _showSnack('No item found for barcode $code');
+        // unknown barcode -> offer attach
+        SoundFeedback.error();
+        if (!mounted) return;
+        await _offerAttachBarcode(code);
+        _refocusQuickAdd();
         return;
       }
 
-      final baseUnit = (d.data()['baseUnit'] ?? 'each') as String;
-      final name = (d.data()['name'] ?? 'Unnamed') as String;
-      final lotId = await _pickFefoLotId(d.id);
+      final data = d.data();
+      final name = (data['name'] ?? 'Unnamed') as String;
+      final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+
+      // FEFO lot (prefer first with qtyRemaining > 0)
+      String? lotId;
+      final lots = await _db.collection('items').doc(d.id).collection('lots').get();
+      if (lots.docs.isNotEmpty) {
+        final list = lots.docs.toList()
+          ..sort((a, b) {
+            final ta = a.data()['expiresAt'];
+            final tb = b.data()['expiresAt'];
+            final ea = (ta is Timestamp) ? ta.toDate() : null;
+            final eb = (tb is Timestamp) ? tb.toDate() : null;
+            if (ea == null && eb == null) return 0;
+            if (ea == null) return 1;
+            if (eb == null) return -1;
+            return ea.compareTo(eb);
+          });
+        final withQty = list.firstWhere(
+          (x) {
+            final q = x.data()['qtyRemaining'];
+            return (q is num) && q > 0;
+          },
+          orElse: () => list.first,
+        );
+        lotId = withQty.id;
+      }
 
       _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-
-      if (!pageCtx.mounted) return;
-      _barcodeC.clear();
-      _showSnack('Added: $name');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added: $name')));
+      _refocusQuickAdd();
     } catch (e) {
-      if (pageCtx.mounted) _showSnack('Error: $e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (!mounted) return;
+      SoundFeedback.error();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Scan error: $e')));
+      _refocusQuickAdd();
     }
   }
 
+  // Camera sheet -> just capture code and hand to unified handler
+Future<void> _scanAndAdd() async {
+  if (!mounted) return;
+  final code = await ScannerPage.open(context, title: 'Scan item barcode or lot QR');
+  if (code == null) return;
+    await _handleCode(code);
+  }
+
+  /// Quick add by typing/pasting a barcode (calls unified handler)
+  Future<void> _addByBarcode() async {
+    final raw = _barcodeC.text;
+    final normalized = raw.replaceAll(RegExp(r'\s+'), '').trim(); // keep non-digits if present
+    if (normalized.isEmpty) return;
+    await _handleCode(normalized);
+    if (!mounted) return;
+    _barcodeC.clear();
+  }
+
+  /// Merge-or-add a line
   void _addOrBumpLine({
     required String itemId,
     required String itemName,
@@ -297,141 +268,78 @@ class _CartSessionPageState extends State<CartSessionPage> {
   Future<void> _offerAttachBarcode(String code) async {
     if (!mounted) return;
 
-    final choice = await showModalBottomSheet<String>(
+    final ok = await showDialog<bool>(
       context: context,
-      isScrollControlled: true,
-      builder: (sheetCtx) {
-        return SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            shrinkWrap: true,
-            children: [
-              Text('Unknown barcode', style: Theme.of(sheetCtx).textTheme.titleLarge),
-              const SizedBox(height: 6),
-              Text('No item found with code: $code. Attach it to an existing item or create a new one.'),
-              const SizedBox(height: 16),
-
-              // Create new item
-              ListTile(
-                leading: const Icon(Icons.add_box_outlined),
-                title: const Text('Create new item'),
-                subtitle: const Text('Start a new item with this barcode'),
-                onTap: () => Navigator.pop(sheetCtx, 'create'),
-              ),
-              const Divider(height: 16),
-
-              // Existing items (recent)
-              FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                future: _db.collection('items')
-                    .orderBy('updatedAt', descending: true)
-                    .limit(50)
-                    .get(),
-                builder: (ctx, snap) {
-                  if (snap.connectionState == ConnectionState.waiting) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-                  final docs = snap.data?.docs ?? [];
-                  if (docs.isEmpty) {
-                    return const ListTile(
-                      title: Text('No items yet'),
-                      subtitle: Text('Use “Create new item” above'),
-                    );
-                  }
-                  return Column(
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text('Or attach to an existing item:'),
-                        ),
-                      ),
-                      for (final d in docs)
-                        ListTile(
-                          title: Text((d.data()['name'] ?? 'Unnamed') as String),
-                          subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
-                          onTap: () => Navigator.pop(sheetCtx, d.id),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            ],
+      builder: (ctx) => AlertDialog(
+        title: const Text('Unknown barcode'),
+        content: Text('No item found with code: $code\nAttach this barcode to an item or create a new one?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Create new item…'),
           ),
-        );
-      },
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Attach to existing…')),
+        ],
+      ),
     );
 
-    if (!mounted || choice == null) return;
+    if (!mounted) return;
 
-    // User chose “Create new item…”
-    if (choice == 'create') {
-      final created = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => NewItemPage(initialBarcode: code),
-          fullscreenDialog: true,
-        ),
+    // “Create new item” chosen
+    if (ok == false) {
+      // push NewItemPage with initial barcode (assumes you have it imported in your routes)
+      // If you keep NewItemPage elsewhere, adjust import.
+      // ignore: use_build_context_synchronously
+      Navigator.of(context).pushNamed(
+        '/new-item',
+        arguments: {'initialBarcode': code},
       );
-
-      if (!mounted) return;
-
-      if (created == true) {
-        // Look up the newly-created item by this barcode, then add to session
-        final snapSingle = await _db.collection('items').where('barcode', isEqualTo: code).limit(1).get();
-        QueryDocumentSnapshot<Map<String, dynamic>>? d;
-        if (snapSingle.docs.isNotEmpty) {
-          d = snapSingle.docs.first;
-        } else {
-          final snapArray = await _db.collection('items').where('barcodes', arrayContains: code).limit(1).get();
-          if (snapArray.docs.isNotEmpty) d = snapArray.docs.first;
-        }
-
-        if (d != null) {
-          final name = (d.data()['name'] ?? 'Unnamed') as String;
-          final baseUnit = (d.data()['baseUnit'] ?? 'each') as String;
-
-          // FEFO lot if present
-          String? lotId;
-          final lots = await _db.collection('items').doc(d.id).collection('lots').get();
-          if (lots.docs.isNotEmpty) {
-            final list = lots.docs.toList()..sort((a,b){
-              final ta = a.data()['expiresAt']; final tb = b.data()['expiresAt'];
-              final ea = (ta is Timestamp) ? ta.toDate() : null;
-              final eb = (tb is Timestamp) ? tb.toDate() : null;
-              if (ea == null && eb == null) return 0;
-              if (ea == null) return 1;
-              if (eb == null) return -1;
-              return ea.compareTo(eb);
-            });
-            final withQty = list.firstWhere(
-              (x) => (x.data()['qtyRemaining'] ?? 0) is num
-                  ? ((x.data()['qtyRemaining'] as num) > 0) : false,
-              orElse: () => list.first,
-            );
-            lotId = withQty.id;
-          }
-
-          _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-          _showSnack('Created & added: $name');        }
-      }
       return;
     }
 
-    // Otherwise: choice is an existing itemId — attach barcode to it
-    final itemRef = _db.collection('items').doc(choice);
-    await itemRef.set({
-      'barcode': code, // keep single string for quick filters
-      'barcodes': FieldValue.arrayUnion([code]),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    // Attach to existing
+    if (ok == true) {
+      final items = await _db
+          .collection('items')
+          .orderBy('updatedAt', descending: true)
+          .limit(50)
+          .get();
+      if (!mounted) return;
 
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Barcode attached')));
+      await showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (sheetCtx) => ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text('Attach to item', style: Theme.of(sheetCtx).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            for (final d in items.docs)
+              ListTile(
+                title: Text((d.data()['name'] ?? 'Unnamed') as String),
+                subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
+                onTap: () async {
+                  final data = d.data();
+                  final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
+                  await d.reference.set({
+                    'barcodes': FieldValue.arrayUnion([code]),
+                    if (!hasSingle) 'barcode': code,
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  }, SetOptions(merge: true));
+                  if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                  if (sheetCtx.mounted) {
+                    SoundFeedback.ok();
+                    ScaffoldMessenger.of(sheetCtx)
+                        .showSnackBar(const SnackBar(content: Text('Barcode attached')));
+                  }
+                },
+              ),
+          ],
+        ),
+      );
+    }
   }
-
 
   // ---------- Save / close ----------
   Future<void> _saveDraft() async {
@@ -455,7 +363,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
 
-      // upsert lines (deterministic id)
       final batch = _db.batch();
       for (final line in _lines) {
         final lid = _lineId(line);
@@ -464,9 +371,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
       await batch.commit();
 
-      _showSnack('Draft saved');
+      if (!mounted) return;
+      SoundFeedback.ok();
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Draft saved')));
     } catch (e) {
-      _showSnack('Error: $e');
+      if (!mounted) return;
+      SoundFeedback.error();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -475,10 +386,15 @@ class _CartSessionPageState extends State<CartSessionPage> {
   Future<void> _closeSession() async {
     if (_sessionId == null) {
       await _saveDraft();
-      if (!mounted || _sessionId == null) return;
+      if (!mounted) return;
+      if (_sessionId == null) return;
     }
     if (_interventionId == null) {
-      _showSnack('Pick an intervention first');
+      if (mounted) {
+        SoundFeedback.error();
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Pick an intervention first')));
+      }
       return;
     }
 
@@ -495,19 +411,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
         if (line.lotId != null) {
           final lotRef = itemRef.collection('lots').doc(line.lotId);
-          String? txError;
           await _db.runTransaction((tx) async {
             final lotSnap = await tx.get(lotRef);
-            if (!lotSnap.exists) {
-              txError = 'Lot not found';
-              return;
-            }
+            if (!lotSnap.exists) return;
             final m = lotSnap.data() as Map<String, dynamic>;
             final rem = (m['qtyRemaining'] ?? 0) as num;
             final newRem = rem - used;
             if (newRem < 0) {
-              txError = 'Lot ${line.lotId} has only $rem remaining';
-              return; // do not throw inside transaction on web
+              throw Exception('Lot ${line.lotId} has only $rem remaining');
             }
 
             final patch = <String, dynamic>{
@@ -540,27 +451,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'createdAt': FieldValue.serverTimestamp(),
             });
           });
-
-          if (txError != null) {
-            _showSnack(txError!);
-            continue; // skip this line
-          }
         } else {
-          // legacy path (no lots)
-          String? txError;
           await _db.runTransaction((tx) async {
             final itemSnap = await tx.get(itemRef);
-            if (!itemSnap.exists) {
-              txError = 'Item not found';
-              return;
-            }
+            if (!itemSnap.exists) return;
             final data = itemSnap.data() as Map<String, dynamic>;
             final currentQty = (data['qtyOnHand'] ?? 0) as num;
             final newQty = currentQty - used;
-            if (newQty < 0) {
-              txError = 'Insufficient stock for ${line.itemName}';
-              return; // do not throw inside transaction on web
-            }
+            if (newQty < 0) throw Exception('Insufficient stock for ${line.itemName}');
 
             tx.update(itemRef, {
               'qtyOnHand': newQty,
@@ -581,11 +479,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'createdAt': FieldValue.serverTimestamp(),
             });
           });
-
-          if (txError != null) {
-            _showSnack(txError!);
-            continue;
-          }
         }
       }
 
@@ -596,24 +489,28 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }, SetOptions(merge: true));
 
       if (!mounted) return;
-      _showSnack('Session closed');
+      SoundFeedback.ok();
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Session closed')));
       Navigator.of(context).pop(true);
     } catch (e) {
-      _showSnack('Error: $e');
+      if (!mounted) return;
+      SoundFeedback.error();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   // ---------- UI helpers ----------
+  String _lineId(CartLine l) => l.lotId == null ? l.itemId : '${l.itemId}__${l.lotId}';
+
   Future<void> _addItems() async {
-    final pageCtx = context;
     final itemsSnap =
         await _db.collection('items').orderBy('updatedAt', descending: true).limit(50).get();
-    if (!pageCtx.mounted) return;
+    if (!mounted) return;
 
     await showModalBottomSheet(
-      context: pageCtx,
+      context: context,
       isScrollControlled: true,
       builder: (sheetCtx) {
         return ListView(
@@ -626,8 +523,33 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 title: Text((d.data()['name'] ?? 'Unnamed') as String),
                 subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
                 onTap: () async {
-                  final baseUnit = (d.data()['baseUnit'] ?? 'each') as String;
-                  final lotId = await _pickFefoLotId(d.id);
+                  final lots = await _db.collection('items').doc(d.id).collection('lots').get();
+                  final baseUnit = (d.data()['baseUnit'] ?? d.data()['unit'] ?? 'each') as String;
+
+                  String? lotId;
+                  if (lots.docs.isNotEmpty) {
+                    final list = lots.docs.toList()
+                      ..sort((a, b) {
+                        DateTime? ea = (a.data()['expiresAt'] is Timestamp)
+                            ? (a.data()['expiresAt'] as Timestamp).toDate()
+                            : null;
+                        DateTime? eb = (b.data()['expiresAt'] is Timestamp)
+                            ? (b.data()['expiresAt'] as Timestamp).toDate()
+                            : null;
+                        if (ea == null && eb == null) return 0;
+                        if (ea == null) return 1;
+                        if (eb == null) return -1;
+                        return ea.compareTo(eb);
+                      });
+                    final withQty = list.firstWhere(
+                      (x) {
+                        final q = x.data()['qtyRemaining'];
+                        return (q is num) && q > 0;
+                      },
+                      orElse: () => list.first,
+                    );
+                    lotId = withQty.id;
+                  }
 
                   final line = CartLine(
                     itemId: d.id,
@@ -666,9 +588,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _copyFromLast() async {
-    final pageCtx = context;
     if (_interventionId == null) {
-      _showSnack('Pick an intervention first');
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Pick an intervention first')));
       return;
     }
     setState(() => _busy = true);
@@ -681,10 +603,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
           .limit(1)
           .get();
 
-      if (!pageCtx.mounted) return;
+      if (!mounted) return;
 
       if (last.docs.isEmpty) {
-        _showSnack('No previous session found for this intervention');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No previous session found for this intervention')),
+        );
         return;
       }
       final lastId = last.docs.first.id;
@@ -694,7 +618,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
       setState(() {
         _lines.clear();
         for (final d in lines.docs) {
-          final prev = CartLine.fromMap(d.data());
+          final m = d.data();
+          final prev = CartLine.fromMap(m);
           final leftover = (prev.endQty ?? 0);
           _lines.add(CartLine(
             itemId: prev.itemId,
@@ -720,11 +645,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
       appBar: AppBar(
         title: const Text('Cart Session'),
         actions: [
+          IconButton(
+            tooltip: _usbCaptureOn ? 'USB scanner: on' : 'USB scanner: off',
+            icon: Icon(Icons.usb,
+                color: _usbCaptureOn
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.onSurfaceVariant),
+            onPressed: () => setState(() => _usbCaptureOn = !_usbCaptureOn),
+          ),
           if (_busy)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),
-              child:
-                  SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              child: SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
             ),
           IconButton(
             tooltip: 'Save draft',
@@ -738,6 +670,17 @@ class _CartSessionPageState extends State<CartSessionPage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                // Invisible USB wedge listener (no clutter)
+                UsbWedgeScanner(
+                  enabled: _usbCaptureOn,
+                  allow: (code) {
+                    const okLens = {8, 12, 13, 14};
+                    return code.length >= 4 && (okLens.contains(code.length) || code.length > 4);
+                  },
+                  onCode: (code) => _handleCode(code),
+                ),
+
+                // Intervention
                 DropdownButtonFormField<OptionItem>(
                   key: ValueKey(_selectedIntervention?.id ?? 'none'),
                   initialValue: _selectedIntervention,
@@ -781,7 +724,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   onChanged: (s) => _notes = s,
                 ),
 
-                // quick add by barcode
+                // Quick add by barcode (USB or typing)
                 const SizedBox(height: 16),
                 Text('Quick add by barcode', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
@@ -790,19 +733,26 @@ class _CartSessionPageState extends State<CartSessionPage> {
                     Expanded(
                       child: TextField(
                         controller: _barcodeC,
+                        focusNode: _barcodeFocus,
+                        autofocus: true,
                         textInputAction: TextInputAction.done,
                         decoration: const InputDecoration(
-                          hintText: 'Type or paste a barcode',
+                          hintText: 'Scan or type a barcode',
                           prefixIcon: Icon(Icons.qr_code_scanner),
                         ),
-                        onSubmitted: (_) {
-                          if (!_busy) _addByBarcode();
+                        onSubmitted: (_) async {
+                          if (_busy) return;
+                          await _addByBarcode();
+                          _refocusQuickAdd();
                         },
                       ),
                     ),
                     const SizedBox(width: 8),
                     FilledButton(
-                      onPressed: _busy ? null : _addByBarcode,
+                      onPressed: _busy ? null : () async {
+                        await _addByBarcode();
+                        _refocusQuickAdd();
+                      },
                       child: const Text('Add'),
                     ),
                   ],
@@ -835,7 +785,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 if (_lines.isEmpty) const ListTile(title: Text('No items in this session yet')),
                 for (final line in _lines)
                   _LineRow(
-                    key: ValueKey('${line.itemId}_${line.lotId ?? ''}'),
                     line: line,
                     onChanged: (updated) {
                       setState(() {
@@ -868,55 +817,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 }
 
-/// Fixed: stateful row that manages controllers correctly and stays in sync.
-class _LineRow extends StatefulWidget {
+class _LineRow extends StatelessWidget {
   final CartLine line;
   final void Function(CartLine) onChanged;
   final VoidCallback onRemove;
-
-  const _LineRow({
-    super.key,
-    required this.line,
-    required this.onChanged,
-    required this.onRemove,
-  });
-
-  @override
-  State<_LineRow> createState() => _LineRowState();
-}
-
-class _LineRowState extends State<_LineRow> {
-  late final TextEditingController _cInit;
-  late final TextEditingController _cEnd;
-
-  @override
-  void initState() {
-    super.initState();
-    _cInit = TextEditingController(text: widget.line.initialQty.toString());
-    _cEnd = TextEditingController(text: widget.line.endQty?.toString() ?? '');
-  }
-
-  @override
-  void didUpdateWidget(covariant _LineRow oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.line.initialQty != widget.line.initialQty) {
-      _cInit.text = widget.line.initialQty.toString();
-    }
-    if (oldWidget.line.endQty != widget.line.endQty) {
-      _cEnd.text = widget.line.endQty?.toString() ?? '';
-    }
-  }
-
-  @override
-  void dispose() {
-    _cInit.dispose();
-    _cEnd.dispose();
-    super.dispose();
-  }
+  const _LineRow({required this.line, required this.onChanged, required this.onRemove});
 
   @override
   Widget build(BuildContext context) {
-    final line = widget.line;
+    final cInit = TextEditingController(text: line.initialQty.toString());
+    final cEnd = TextEditingController(text: line.endQty?.toString() ?? '');
 
     return Card(
       child: ListTile(
@@ -931,10 +841,10 @@ class _LineRowState extends State<_LineRow> {
               children: [
                 Expanded(
                   child: TextField(
-                    controller: _cInit,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    controller: cInit,
+                    keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'Loaded'),
-                    onChanged: (s) => widget.onChanged(CartLine(
+                    onChanged: (s) => onChanged(CartLine(
                       itemId: line.itemId,
                       itemName: line.itemName,
                       baseUnit: line.baseUnit,
@@ -947,10 +857,10 @@ class _LineRowState extends State<_LineRow> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
-                    controller: _cEnd,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    controller: cEnd,
+                    keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'Leftover (at close)'),
-                    onChanged: (s) => widget.onChanged(CartLine(
+                    onChanged: (s) => onChanged(CartLine(
                       itemId: line.itemId,
                       itemName: line.itemName,
                       baseUnit: line.baseUnit,
@@ -969,7 +879,7 @@ class _LineRowState extends State<_LineRow> {
         trailing: IconButton(
           tooltip: 'Remove',
           icon: const Icon(Icons.delete_outline),
-          onPressed: widget.onRemove,
+          onPressed: onRemove,
         ),
       ),
     );

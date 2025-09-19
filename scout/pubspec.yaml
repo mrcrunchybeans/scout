@@ -21,6 +21,12 @@ version: 1.0.0+1
 environment:
   sdk: ^3.9.2
 
+assets:
+  - assets/assets/images/scout_logo.png
+
+
+
+
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
 # consider running `flutter pub upgrade --major-versions`. Alternatively,
@@ -38,6 +44,8 @@ dependencies:
   cloud_firestore: ^6.0.1
   google_fonts: ^6.2.1
   mobile_scanner: ^5.1.1
+  flutter_zxing: ^1.7.0
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:
