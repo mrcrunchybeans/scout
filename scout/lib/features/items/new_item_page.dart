@@ -1,16 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:scout/widgets/scanner_page.dart';
-
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
-import '../../utils/sound_feedback.dart';
-import '../../widgets/usb_wedge_scanner.dart';
 
 enum UseType { staff, patient, both }
 
 class NewItemPage extends StatefulWidget {
-  final String? initialBarcode;
+  final String? initialBarcode; // optional prefill
   const NewItemPage({super.key, this.initialBarcode});
 
   @override
@@ -18,28 +14,16 @@ class NewItemPage extends StatefulWidget {
 }
 
 class _NewItemPageState extends State<NewItemPage> {
-
-  Future<void> _scanIntoBarcode() async {
-    final ctx = context; // capture BuildContext before the await
-    final code = await ScannerPage.open(ctx, title: 'Scan barcode for new item');
-    if (!ctx.mounted || code == null || code.isEmpty) return;
-    if (!mounted) return;
-    setState(() => _barcode.text = code);
-    ScaffoldMessenger.of(ctx).showSnackBar(
-      SnackBar(content: Text('Scanned: $code')),
-    );
-  }
   final _db = FirebaseFirestore.instance;
   final _lookups = LookupsService();
   final _form = GlobalKey<FormState>();
 
   final _name = TextEditingController();
   final _category = TextEditingController();
-  final _unit = TextEditingController(text: 'each');
+  final _baseUnit = TextEditingController(text: 'each');
   final _qtyOnHand = TextEditingController(text: '0');
   final _minQty = TextEditingController(text: '0');
   final _barcode = TextEditingController();
-  final _barcodeFocus = FocusNode();
 
   List<OptionItem>? _locs;
   List<OptionItem>? _grants;
@@ -59,7 +43,10 @@ class _NewItemPageState extends State<NewItemPage> {
   }
 
   Future<void> _loadLookups() async {
-    final results = await Future.wait([_lookups.locations(), _lookups.grants()]);
+    final results = await Future.wait([
+      _lookups.locations(),
+      _lookups.grants(),
+    ]);
     if (!mounted) return;
     setState(() {
       _locs = results[0];
@@ -67,48 +54,43 @@ class _NewItemPageState extends State<NewItemPage> {
     });
   }
 
-  void _acceptCode(String code) {
-    setState(() => _barcode.text = code);
-    SoundFeedback.ok();
-    FocusScope.of(context).requestFocus(_barcodeFocus);
-    _barcode.selection = TextSelection(baseOffset: 0, extentOffset: _barcode.text.length);
-  }
-
-
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      final now = FieldValue.serverTimestamp();
       final ref = _db.collection('items').doc();
       final code = _barcode.text.trim();
 
       await ref.set({
         'name': _name.text.trim(),
         'category': _category.text.trim().isEmpty ? null : _category.text.trim(),
-        'baseUnit': _unit.text.trim().isEmpty ? 'each' : _unit.text.trim(), // prefer baseUnit
+        'baseUnit': _baseUnit.text.trim().isEmpty ? 'each' : _baseUnit.text.trim(),
         'qtyOnHand': num.tryParse(_qtyOnHand.text.trim()) ?? 0,
         'minQty': num.tryParse(_minQty.text.trim()) ?? 0,
         'maxQty': null,
-        'useType': _useType.name, // staff/patient/both
+        'useType': _useType.name, // staff | patient | both
         'grantId': _grant?.id,
         'departmentId': null,
         'homeLocationId': _homeLoc?.id,
         'expiresAt': null,
         'lastUsedAt': null,
         'tags': <String>[],
+        // --- barcode fields (both) ---
         if (code.isNotEmpty) 'barcode': code,
         if (code.isNotEmpty) 'barcodes': FieldValue.arrayUnion([code]),
+        // ---
         'imageUrl': null,
-        'createdAt': now,
-        'updatedAt': now,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed: $e')),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -118,11 +100,10 @@ class _NewItemPageState extends State<NewItemPage> {
   void dispose() {
     _name.dispose();
     _category.dispose();
-    _unit.dispose();
+    _baseUnit.dispose();
     _qtyOnHand.dispose();
     _minQty.dispose();
     _barcode.dispose();
-    _barcodeFocus.dispose();
     super.dispose();
   }
 
@@ -139,34 +120,26 @@ class _NewItemPageState extends State<NewItemPage> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // USB wedge: only capture into barcode field if it's focused or empty
-                  UsbWedgeScanner(
-                    allow: (_) => _barcodeFocus.hasFocus || _barcode.text.isEmpty,
-                    onCode: (code) => _acceptCode(code),
-                  ),
-
                   TextFormField(
                     controller: _name,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(labelText: 'Name *'),
-                    validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
                   const SizedBox(height: 8),
-
                   TextFormField(
                     controller: _category,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(labelText: 'Category'),
                   ),
                   const SizedBox(height: 8),
-
                   TextFormField(
-                    controller: _unit,
+                    controller: _baseUnit,
                     textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(labelText: 'Unit'),
+                    decoration: const InputDecoration(labelText: 'Base unit (e.g., each)'),
                   ),
                   const SizedBox(height: 8),
-
                   Row(
                     children: [
                       Expanded(
@@ -187,23 +160,25 @@ class _NewItemPageState extends State<NewItemPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-
                   DropdownButtonFormField<OptionItem>(
                     initialValue: _homeLoc,
-                    items: _locs!.map((o) => DropdownMenuItem(value: o, child: Text(o.name))).toList(),
+                    items: _locs!
+                        .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
+                        .toList(),
                     onChanged: (v) => setState(() => _homeLoc = v),
                     decoration: const InputDecoration(labelText: 'Home location'),
                   ),
                   const SizedBox(height: 8),
-
                   DropdownButtonFormField<OptionItem>(
                     initialValue: _grant,
-                    items: _grants!.map((o) => DropdownMenuItem(value: o, child: Text(o.name))).toList(),
+                    items: _grants!
+                        .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
+                        .toList(),
                     onChanged: (v) => setState(() => _grant = v),
-                    decoration: const InputDecoration(labelText: 'Default grant (optional)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Default grant (optional)'),
                   ),
                   const SizedBox(height: 8),
-
                   SegmentedButton<UseType>(
                     segments: const [
                       ButtonSegment(value: UseType.staff, label: Text('Staff')),
@@ -214,27 +189,21 @@ class _NewItemPageState extends State<NewItemPage> {
                     onSelectionChanged: (s) => setState(() => _useType = s.first),
                   ),
                   const SizedBox(height: 8),
-
-                  // Barcode with scan button
-TextFormField(
-  controller: _barcode,
-  focusNode: _barcodeFocus,
-  textInputAction: TextInputAction.done,
-  decoration: InputDecoration(
-    labelText: 'Barcode / QR (optional)',
-    suffixIcon: IconButton(
-      tooltip: 'Scan',
-      icon: const Icon(Icons.qr_code_scanner),
-      onPressed: _scanIntoBarcode,
-    ),
-  ),
-),
-
+                  TextFormField(
+                    controller: _barcode,
+                    textInputAction: TextInputAction.done,
+                    decoration:
+                        const InputDecoration(labelText: 'Barcode / QR (optional)'),
+                  ),
                   const SizedBox(height: 16),
                   FilledButton.icon(
                     onPressed: _saving ? null : _save,
                     icon: _saving
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.save),
                     label: const Text('Save'),
                   ),

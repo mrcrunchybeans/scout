@@ -1,41 +1,57 @@
-import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter_zxing/flutter_zxing.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class ScannerSheet extends StatefulWidget {
   final String title;
-  const ScannerSheet({super.key, this.title = 'Scan item barcode or lot QR'});
+  const ScannerSheet({super.key, this.title = 'Scan a barcode'});
 
   @override
   State<ScannerSheet> createState() => _ScannerSheetState();
 }
 
 class _ScannerSheetState extends State<ScannerSheet> {
-  bool _handled = false;
-  bool _showHelp = false;           // show camera help if preview doesn't start
-  Timer? _helpTimer;
+  CameraFacing _cameraFacing = CameraFacing.back;
+  final controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.unrestricted, // fire as soon as seen
+    // detectionTimeoutMs: 150, // uncomment if your mobile_scanner version supports it
+    facing: CameraFacing.back,
+    torchEnabled: false,
+    formats: const <BarcodeFormat>[
+      BarcodeFormat.aztec,
+      BarcodeFormat.codabar,
+      BarcodeFormat.code39,
+      BarcodeFormat.code93,
+      BarcodeFormat.code128,
+      BarcodeFormat.dataMatrix,
+      BarcodeFormat.ean8,
+      BarcodeFormat.ean13,
+      BarcodeFormat.itf,
+      BarcodeFormat.pdf417,
+      BarcodeFormat.qrCode,
+      BarcodeFormat.upcA,
+      BarcodeFormat.upcE,
+    ],
+  );
 
-  @override
-  void initState() {
-    super.initState();
-    // If we still haven’t scanned/started in ~2 seconds, show help UI.
-    _helpTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted && !_handled) setState(() => _showHelp = true);
-    });
-  }
+  bool _handled = false;
 
   @override
   void dispose() {
-    _helpTimer?.cancel();
+    controller.dispose();
     super.dispose();
   }
 
-  void _accept(String? raw) {
-    final code = raw?.trim();
-    if (_handled || code == null || code.isEmpty) return;
-    _handled = true;
-    if (mounted) Navigator.of(context).pop(code);
+  void _onDetect(BarcodeCapture cap) {
+    if (_handled || cap.barcodes.isEmpty) return;
+    for (final b in cap.barcodes) {
+      final raw = b.rawValue?.trim();
+      if (raw != null && raw.isNotEmpty) {
+        _handled = true;
+        if (mounted) Navigator.of(context).pop(raw);
+        return;
+      }
+    }
   }
 
   Future<void> _typeManually() async {
@@ -58,137 +74,101 @@ class _ScannerSheetState extends State<ScannerSheet> {
         );
       },
     );
-    if (!mounted) return;
-    if (code != null && code.isNotEmpty) Navigator.of(context).pop(code);
+    if (code != null && code.isNotEmpty && mounted) {
+      Navigator.of(context).pop(code);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final bottomPad = 16.0 + MediaQuery.of(context).viewInsets.bottom;
 
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16, 16, 16, bottomPad),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(children: [
-              Text(widget.title, style: theme.textTheme.titleLarge),
-              const Spacer(),
-            ]),
-            const SizedBox(height: 12),
+        padding: const EdgeInsets.all(16),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Text(widget.title, style: theme.textTheme.titleLarge),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: 'Flip camera',
+                    icon: const Icon(Icons.cameraswitch),
+                    onPressed: () {
+                      controller.switchCamera();
+                      setState(() {
+                        _cameraFacing =
+                            _cameraFacing == CameraFacing.back ? CameraFacing.front : CameraFacing.back;
+                      });
+                    },
+                  ),
+                  IconButton(
+                    tooltip: 'Toggle torch',
+                    icon: const Icon(Icons.flashlight_on),
+                    onPressed: () => controller.toggleTorch(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
 
-            // Square preview that never overflows
-            Flexible(
-              child: Center(
-                child: LayoutBuilder(
-                  builder: (ctx, box) {
-                    final side = math.min(box.maxWidth, box.maxHeight);
-                    return SizedBox(
-                      width: side,
-                      height: side,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            ReaderWidget(
-                              // Broad + forgiving
-                              codeFormat: Format.any,
-                              tryHarder: true,
-                              tryInverted: true,
-                              scanDelay: const Duration(milliseconds: 120),
-
-                              // Called on every successful decode
-                              onScan: (result) {
-                                // As soon as we get any result, hide the help
-                                if (!_handled && _showHelp) {
-                                  setState(() => _showHelp = false);
-                                }
-                                _accept(result.text);
-                              },
-
-                              // Optional: give the user built-in controls (gallery, flip, torch)
-                              showGallery: true,
-                              showToggleCamera: true,
+              // Square preview; mirror visually only if using the front camera
+              AspectRatio(
+                aspectRatio: 1,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Builder(
+                    builder: (_) {
+                      final mirror = (_cameraFacing == CameraFacing.front);
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Transform(
+                            alignment: Alignment.center,
+                            transform: mirror
+                                ? (Matrix4.identity()..rotateY(math.pi))
+                                : Matrix4.identity(),
+                            child: MobileScanner(
+                              controller: controller,
+                              fit: BoxFit.cover,
+                              onDetect: _onDetect,
                             ),
-
-                            // Subtle frame
-                            IgnorePointer(
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: theme.colorScheme.primary.withValues(alpha:0.35),
-                                    width: 2,
-                                  ),
+                          ),
+                          IgnorePointer(
+                            ignoring: true,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha:0.7),
+                                  width: 2,
                                 ),
                               ),
                             ),
-
-                            // Help overlay if the camera didn’t start
-                            if (_showHelp && !_handled)
-                              Container(
-                                color: theme.colorScheme.surface.withValues(alpha:0.65),
-                                padding: const EdgeInsets.all(16),
-                                child: Center(
-                                  child: ConstrainedBox(
-                                    constraints: const BoxConstraints(maxWidth: 420),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.videocam_off, size: 36),
-                                        const SizedBox(height: 12),
-                                        Text(
-                                          'Can’t access the camera',
-                                          style: theme.textTheme.titleMedium,
-                                          textAlign: TextAlign.center,
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          '• Allow camera permission in the browser\n'
-                                          '• Make sure no other app/tab is using the camera\n'
-                                          '• Use HTTPS (or localhost) for camera access\n'
-                                          '• On iPhone/iPad use Safari (WebKit)',
-                                          style: theme.textTheme.bodySmall,
-                                          textAlign: TextAlign.center,
-                                        ),
-                                        const SizedBox(height: 12),
-                                        OutlinedButton.icon(
-                                          icon: const Icon(Icons.refresh),
-                                          label: const Text('Try again'),
-                                          onPressed: () {
-                                            setState(() => _showHelp = false);
-                                            // ReaderWidget restarts automatically on rebuild
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
               ),
-            ),
 
-            const SizedBox(height: 12),
-            Text(
-              'Point your camera at a barcode.\nNo camera? Enter manually.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall,
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.keyboard),
-              label: const Text('Enter code manually'),
-              onPressed: _typeManually,
-            ),
-          ],
+              const SizedBox(height: 12),
+              Text(
+                'Point your camera at a barcode.\nNo camera? Enter code manually.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.keyboard),
+                label: const Text('Enter code manually'),
+                onPressed: _typeManually,
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:scout/widgets/scanner_page.dart';
+import 'package:scout/widgets/scanner_sheet.dart';
+
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
@@ -215,10 +216,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   // Camera sheet -> just capture code and hand to unified handler
-Future<void> _scanAndAdd() async {
-  if (!mounted) return;
-  final code = await ScannerPage.open(context, title: 'Scan item barcode or lot QR');
-  if (code == null) return;
+  Future<void> _scanAndAdd() async {
+    if (!mounted) return;
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const ScannerSheet(title: 'Scan item barcode or lot QR'),
+    );
+    if (code == null || !mounted) return;
     await _handleCode(code);
   }
 

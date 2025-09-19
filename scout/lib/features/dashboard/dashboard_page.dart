@@ -10,14 +10,26 @@ import '../items/item_detail_page.dart';
 import '../session/cart_session_page.dart';
 import '../session/sessions_list_page.dart';
 
-class DashboardPage extends StatelessWidget {
+class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    precacheImage(const AssetImage('assets/images/scout_logo.png'), context);
+  }
 
   @override
   Widget build(BuildContext context) {
     final db = FirebaseFirestore.instance;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    // --- Server-side flag queries (composite indexes added previously) ---
+    // --- Server-side flag queries ---
     final lowQ = db
         .collection('items')
         .where('flagLow', isEqualTo: true)
@@ -27,7 +39,7 @@ class DashboardPage extends StatelessWidget {
     final expiringQ = db
         .collection('items')
         .where('flagExpiringSoon', isEqualTo: true)
-        .orderBy('earliestExpiresAt') // ascending = soonest first
+        .orderBy('earliestExpiresAt')
         .limit(100);
 
     final staleQ = db
@@ -52,11 +64,12 @@ class DashboardPage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(right: 16.0),
             child: IconButton(
-              icon: Icon(Icons.brightness_6, color: Theme.of(context).colorScheme.primary),
+              icon: Icon(
+                Icons.brightness_6,
+                color: colorScheme.onSurface,
+              ),
               tooltip: 'Toggle theme',
-              onPressed: () {
-                ThemeModeNotifier.instance.toggle();
-              },
+              onPressed: () => ThemeModeNotifier.instance.toggle(),
             ),
           ),
         ],
@@ -70,12 +83,9 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: _DashboardTile(
                   icon: Icons.inventory_2,
-          color: Theme.of(context).brightness == Brightness.dark
-            ? const Color(0xFF1FCFC0) // dark teal
-            : Colors.teal,
+                  color: colorScheme.tertiary,
                   label: 'Inventory',
                   onTap: () {
-                    // Action sheet for inventory tasks
                     showModalBottomSheet(
                       context: context,
                       shape: const RoundedRectangleBorder(
@@ -89,9 +99,7 @@ class DashboardPage extends StatelessWidget {
                             ListTile(
                               leading: Icon(
                                 Icons.inventory_2,
-                                color: Theme.of(context).brightness == Brightness.dark
-                                    ? const Color(0xFF1FCFC0)
-                                    : Colors.teal,
+                                color: colorScheme.onSurface,
                               ),
                               title: const Text('Manage Inventory'),
                               subtitle: const Text('View and edit all items'),
@@ -103,7 +111,10 @@ class DashboardPage extends StatelessWidget {
                               },
                             ),
                             ListTile(
-                              leading: const Icon(Icons.add_box, color: Colors.green),
+                              leading: Icon(
+                                Icons.add_box,
+                                color: colorScheme.onSurface,
+                              ),
                               title: const Text('Add New Item'),
                               onTap: () {
                                 Navigator.of(ctx).pop();
@@ -115,9 +126,7 @@ class DashboardPage extends StatelessWidget {
                             ListTile(
                               leading: Icon(
                                 Icons.playlist_add,
-                                color: Theme.of(context).brightness == Brightness.dark
-                                    ? const Color(0xFF4FC3F7) // lighter blue for dark
-                                    : Colors.blue,
+                                color: colorScheme.onSurface,
                               ),
                               title: const Text('Add New Batch/Lot'),
                               subtitle: const Text('From item detail'),
@@ -139,7 +148,7 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: _DashboardTile(
                   icon: Icons.playlist_add_check_circle,
-                  color: Colors.indigo,
+                  color: colorScheme.primary,
                   label: 'Start Cart Session',
                   onTap: () {
                     Navigator.of(context).push(
@@ -152,7 +161,7 @@ class DashboardPage extends StatelessWidget {
               Expanded(
                 child: _DashboardTile(
                   icon: Icons.history,
-                  color: Colors.orange,
+                  color: colorScheme.secondary,
                   label: 'Sessions',
                   onTap: () {
                     Navigator.of(context).push(
@@ -170,14 +179,14 @@ class DashboardPage extends StatelessWidget {
           _BucketSection(
             title: 'Low stock',
             icon: Icons.arrow_downward,
-            color: Colors.red,
+            color: colorScheme.error,
             query: lowQ,
           ),
           const SizedBox(height: 12),
           _BucketSection(
             title: 'Expiring soon',
             icon: Icons.schedule,
-            color: Colors.orange,
+            color: colorScheme.secondary,
             query: expiringQ,
             showEarliestExpiry: true,
           ),
@@ -185,9 +194,7 @@ class DashboardPage extends StatelessWidget {
           _BucketSection(
             title: 'Stale (no recent use)',
             icon: Icons.inbox_outlined,
-      color: Theme.of(context).brightness == Brightness.dark
-        ? const Color(0xFF607D8B) // blueGrey for dark
-        : Colors.blueGrey,
+            color: colorScheme.tertiary,
             query: staleQ,
             showLastUsed: true,
           ),
@@ -195,7 +202,7 @@ class DashboardPage extends StatelessWidget {
           _BucketSection(
             title: 'Excess',
             icon: Icons.inventory,
-            color: Colors.green,
+            color: colorScheme.primary,
             query: excessQ,
           ),
 
@@ -212,7 +219,7 @@ class DashboardPage extends StatelessWidget {
   }
 }
 
-// --- Modern glassy dashboard tile ---
+// --- Dashboard tile now using color scheme ---
 class _DashboardTile extends StatelessWidget {
   final IconData icon;
   final Color color;
@@ -228,10 +235,8 @@ class _DashboardTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
+    final colorScheme = theme.colorScheme;
 
-    // Custom tile color: rgb(179, 224, 215)
-    const customTileColor = Color.fromRGBO(67, 195, 170, 1);
     return InkWell(
       borderRadius: BorderRadius.circular(24),
       onTap: onTap,
@@ -240,16 +245,16 @@ class _DashboardTile extends StatelessWidget {
         curve: Curves.easeOut,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(24),
-          color: const Color.fromARGB(255, 162, 224, 212),
+          color: colorScheme.surfaceContainerHighest,
           boxShadow: [
             BoxShadow(
-              color: isDark ? Colors.black26 : customTileColor.withValues(alpha: 0.08),
+              color: colorScheme.shadow.withValues(alpha:0.08),
               blurRadius: 18,
               offset: const Offset(0, 6),
             ),
           ],
           border: Border.all(
-            color: isDark ? Colors.white12 : customTileColor.withValues(alpha: 0.10),
+            color: colorScheme.outline,
             width: 1.5,
           ),
         ),
@@ -261,7 +266,7 @@ class _DashboardTile extends StatelessWidget {
               Container(
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: customTileColor.withValues(alpha: 0.5),
+                  color: colorScheme.surfaceContainerHighest,
                 ),
                 padding: const EdgeInsets.all(16),
                 child: Icon(icon, size: 38, color: color),
@@ -274,7 +279,7 @@ class _DashboardTile extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                   fontSize: 18,
                   letterSpacing: 0.2,
-                  color: theme.colorScheme.tertiary,
+                  color: colorScheme.onSurface,
                 ),
               ),
             ],
@@ -304,10 +309,8 @@ class _BucketSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Use a lighter background for the bucket cards
     return Card(
       elevation: 1,
-      color: const Color.fromARGB(255, 218, 255, 246), // very light mint/teal
       child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: query.snapshots(),
         builder: (context, snap) {
@@ -324,7 +327,9 @@ class _BucketSection extends StatelessWidget {
               title: Text(title),
               subtitle: const Text('Loading...'),
               trailing: const SizedBox(
-                height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2),
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             );
           }
@@ -369,6 +374,7 @@ class _ItemRow extends StatelessWidget {
     final name = (data['name'] ?? 'Unnamed') as String;
     final qty = (data['qtyOnHand'] ?? 0) as num;
     final minQty = (data['minQty'] ?? 0) as num;
+    final colorScheme = Theme.of(context).colorScheme;
 
     final tsEarliest = data['earliestExpiresAt'];
     final earliestExpiresAt = (tsEarliest is Timestamp) ? tsEarliest.toDate() : null;
@@ -388,8 +394,8 @@ class _ItemRow extends StatelessWidget {
       title: Text(name),
       subtitle: Text(sub),
       trailing: TextButton.icon(
-        icon: const Icon(Icons.remove_circle_outline),
-        label: const Text('Quick use'),
+        icon: Icon(Icons.remove_circle_outline, color: colorScheme.onSurface),
+        label: Text('Quick use', style: TextStyle(color: colorScheme.onSurface)),
         onPressed: () async {
           await showModalBottomSheet<bool>(
             context: context,
