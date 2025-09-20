@@ -314,9 +314,9 @@ class _NewItemPageState extends State<NewItemPage> {
                     textInputAction: TextInputAction.done,
                     decoration: InputDecoration(
                       labelText: 'Barcode / QR (optional)',
-                      suffixIcon: IconButton(
+                      prefixIcon: IconButton(
                         tooltip: 'Scan',
-                        icon: const Icon(Icons.qr_code_scanner),
+                        icon: const Icon(Icons.qr_code),
                         onPressed: () async {
   // capture the exact BuildContext you’ll use after the await
   final rootCtx = context;

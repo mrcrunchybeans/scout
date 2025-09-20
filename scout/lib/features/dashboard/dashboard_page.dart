@@ -27,7 +27,8 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    precacheImage(const AssetImage('assets/images/scout_logo.png'), context);
+    precacheImage(const AssetImage('assets/images/scout dash logo light mode.png'), context);
+    precacheImage(const AssetImage('assets/images/scout dash logo dark mode.png'), context);
   }
 
   @override

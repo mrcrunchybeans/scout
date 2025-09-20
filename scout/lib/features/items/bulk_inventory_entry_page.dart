@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../utils/audit.dart';
+import '../../data/product_enrichment_service.dart';
 
 class BulkInventoryEntryPage extends StatefulWidget {
   const BulkInventoryEntryPage({super.key});
@@ -72,10 +73,14 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
                 TextField(
                   controller: _barcodeController,
                   focusNode: _barcodeFocus,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Scan or enter barcode',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.qr_code),
+                    border: const OutlineInputBorder(),
+                    prefixIcon: IconButton(
+                      icon: const Icon(Icons.qr_code),
+                      onPressed: _showScannerSheet,
+                      tooltip: 'Scan barcode',
+                    ),
                   ),
                   onSubmitted: _handleBarcode,
                 ),
@@ -503,6 +508,29 @@ class _QuickAddNewItemDialogState extends State<QuickAddNewItemDialog> {
   final _nameController = TextEditingController();
   final _quantityController = TextEditingController(text: '1');
   String _baseUnit = 'each';
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _enrichProductInfo();
+  }
+
+  Future<void> _enrichProductInfo() async {
+    setState(() => _isLoading = true);
+    try {
+      final info = await ProductEnrichmentService.fetchProductInfo(widget.barcode);
+      if (info != null && info['name'] != null && mounted) {
+        setState(() {
+          _nameController.text = info['name'];
+        });
+      }
+    } catch (e) {
+      // Ignore errors, user can still enter manually
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -522,9 +550,14 @@ class _QuickAddNewItemDialogState extends State<QuickAddNewItemDialog> {
           const SizedBox(height: 16),
           TextField(
             controller: _nameController,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Item Name',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
+              suffixIcon: _isLoading ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ) : null,
             ),
             autofocus: true,
           ),

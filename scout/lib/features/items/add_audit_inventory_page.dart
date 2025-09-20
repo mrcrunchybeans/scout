@@ -133,10 +133,14 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
           TextField(
             controller: _barcodeController,
             focusNode: _barcodeFocus,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Or enter barcode manually',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.qr_code),
+              border: const OutlineInputBorder(),
+              prefixIcon: IconButton(
+                icon: const Icon(Icons.qr_code),
+                onPressed: _showScannerSheet,
+                tooltip: 'Scan barcode',
+              ),
             ),
             onSubmitted: _handleBarcode,
           ),
