@@ -35,5 +35,7 @@ flutter:
 
 flutter_native_splash:
   color: "#F7FAF9"
+  color_dark: "#1A1A1A"
   image: assets/images/scout dash logo light mode.png
+  image_dark: assets/images/scout dash logo dark mode.png
 
