@@ -11,6 +11,8 @@ import '../../utils/sound_feedback.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import 'cart_models.dart';
 import '../../utils/operator_store.dart';
+import '../../data/product_enrichment_service.dart';
+import '../../data/lookups_service.dart';
 
 
 
@@ -27,6 +29,7 @@ class CartSessionPage extends StatefulWidget {
 
 class _CartSessionPageState extends State<CartSessionPage> {
   final _db = FirebaseFirestore.instance;
+  final _lookups = LookupsService();
   final _barcodeC = TextEditingController();
   final _barcodeFocus = FocusNode();
   final Map<String, String> _grantNames = {};
@@ -48,6 +51,87 @@ class _CartSessionPageState extends State<CartSessionPage> {
   void initState() {
     super.initState();
     _sessionId = widget.sessionId;
+    _loadInterventions();
+    if (_sessionId != null) {
+      _loadSessionData();
+    }
+  }
+
+  Future<void> _loadSessionData() async {
+    if (_sessionId == null) return;
+
+    try {
+      final sessionDoc = await _db.collection('cart_sessions').doc(_sessionId).get();
+      if (!sessionDoc.exists) return;
+
+      final data = sessionDoc.data()!;
+      if (!mounted) return;
+
+      setState(() {
+        _interventionId = data['interventionId'] as String?;
+        _interventionName = data['interventionName'] as String?;
+        _defaultGrantId = data['grantId'] as String?;
+        _locationText = data['locationText'] as String? ?? '';
+        _notes = data['notes'] as String? ?? '';
+        // Set selected intervention if interventions are already loaded
+        if (_interventionId != null && _interventions != null) {
+          _selectedIntervention = _interventions!.where((i) => i.id == _interventionId).firstOrNull;
+        }
+      });
+
+      // Load lines
+      final linesQuery = await _db.collection('cart_sessions').doc(_sessionId).collection('lines').get();
+      if (!mounted) return;
+
+      setState(() {
+        _lines.clear();
+        for (final doc in linesQuery.docs) {
+          final lineData = doc.data();
+          _lines.add(CartLine.fromMap(lineData));
+        }
+      });
+    } catch (e) {
+      // Handle error silently or show snackbar
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading session: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _loadInterventions() async {
+    try {
+      final interventions = await _lookups.interventions();
+      final interventionsSnap = await _db.collection('interventions').where('active', isEqualTo: true).get();
+      
+      final intToGrant = <String, String>{};
+      for (final doc in interventionsSnap.docs) {
+        final data = doc.data();
+        final defaultGrantId = data['defaultGrantId'] as String?;
+        if (defaultGrantId != null) {
+          intToGrant[doc.id] = defaultGrantId;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _interventions = interventions;
+          _intToGrant.addAll(intToGrant);
+          // Set selected intervention if we have an interventionId from session data
+          if (_interventionId != null) {
+            _selectedIntervention = interventions.where((i) => i.id == _interventionId).firstOrNull;
+          }
+        });
+      }
+    } catch (e) {
+      // Handle error silently
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading interventions: $e')),
+        );
+      }
+    }
   }
 
   String? get _grantName =>
@@ -111,12 +195,31 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
 
       if (d == null) {
-        // unknown barcode -> offer attach
-        SoundFeedback.error();
-        if (!ctx.mounted) return;
-        await _offerAttachBarcode(code);
-        _refocusQuickAdd();
-        return;
+        // unknown barcode -> try auto-create with enrichment
+        final itemId = await ProductEnrichmentService.createItemWithEnrichment(code, _db);
+        if (itemId != null) {
+          final itemSnap = await _db.collection('items').doc(itemId).get();
+          if (!ctx.mounted) return;
+          final data = itemSnap.data()!;
+          final name = (data['name'] ?? 'Unnamed') as String;
+          final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+          _addOrBumpLine(
+            itemId: itemId,
+            itemName: name,
+            baseUnit: baseUnit,
+          );
+          if (!ctx.mounted) return;
+          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Created and added: $name')));
+          _refocusQuickAdd();
+          return;
+        } else {
+          // fallback to offer attach
+          SoundFeedback.error();
+          if (!ctx.mounted) return;
+          await _offerAttachBarcode(code);
+          _refocusQuickAdd();
+          return;
+        }
       }
 
       final data = d.data();
@@ -216,10 +319,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _offerAttachBarcode(String code) async {
+    final ctx = context;
     if (!mounted) return;
 
     final ok = await showDialog<bool>(
-      context: context,
+      context: ctx,
       builder: (ctx) => AlertDialog(
         title: const Text('Unknown barcode'),
         content: Text('No item found with code: $code\nAttach this barcode to an item or create a new one?'),
@@ -234,14 +338,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
       ),
     );
 
-    if (!mounted) return;
+    if (!ctx.mounted) return;
 
-    // “Create new item” chosen
+    // "Create new item" chosen
     if (ok == false) {
-      // push NewItemPage with initial barcode (assumes you have it imported in your routes)
-      // If you keep NewItemPage elsewhere, adjust import.
-      // ignore: use_build_context_synchronously
-      Navigator.of(context).pushNamed(
+      Navigator.of(ctx).pushNamed(
         '/new-item',
         arguments: {'initialBarcode': code},
       );
@@ -255,10 +356,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
           .orderBy('updatedAt', descending: true)
           .limit(50)
           .get();
-      if (!mounted) return;
+      if (!ctx.mounted) return;
 
       await showModalBottomSheet(
-        context: context,
+        context: ctx,
         isScrollControlled: true,
         builder: (sheetCtx) => ListView(
           padding: const EdgeInsets.all(16),
@@ -305,7 +406,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
           ? _db.collection('cart_sessions').doc()
           : _db.collection('cart_sessions').doc(_sessionId);
 
-      final payload = Audit.updateOnly({
+      final isNew = _sessionId == null;
+      final payload = isNew ? Audit.attach({
         'interventionId': _interventionId,
         'interventionName': _interventionName,
         'grantId': _defaultGrantId,
@@ -313,6 +415,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'notes': _notes.trim().isEmpty ? null : _notes.trim(),
         'status': 'open',
         'startedAt': FieldValue.serverTimestamp(),
+      }) : Audit.updateOnly({
+        'interventionId': _interventionId,
+        'interventionName': _interventionName,
+        'grantId': _defaultGrantId,
+        'locationText': _locationText.trim().isEmpty ? null : _locationText.trim(),
+        'notes': _notes.trim().isEmpty ? null : _notes.trim(),
+        'status': 'open',
       });
 
       await sref.set(payload, SetOptions(merge: true));
@@ -322,7 +431,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       for (final line in _lines) {
         final lid = _lineId(line);
         final lref = sref.collection('lines').doc(lid);
-        batch.set(lref, line.toMap(), SetOptions(merge: true));
+        batch.set(lref, Audit.attach(line.toMap()), SetOptions(merge: true));
       }
       await batch.commit();
 
@@ -364,9 +473,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
     try {
       final sref = _db.collection('cart_sessions').doc(_sessionId);
 
+      num totalQtyUsed = 0;
       for (final line in _lines) {
         final used = line.usedQty;
         if (used <= 0) continue;
+        totalQtyUsed += used;
 
         final itemRef = _db.collection('items').doc(line.itemId);
         final usedAtTs = FieldValue.serverTimestamp();
@@ -375,13 +486,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
           final lotRef = itemRef.collection('lots').doc(line.lotId);
           await _db.runTransaction((tx) async {
             final lotSnap = await tx.get(lotRef);
-            if (!lotSnap.exists) return;
+            if (!lotSnap.exists) {
+              throw Exception('Lot ${line.lotId} no longer exists');
+            }
             final m = lotSnap.data() as Map<String, dynamic>;
             final rem = (m['qtyRemaining'] ?? 0) as num;
-            final newRem = rem - used;
-            if (newRem < 0) {
-              throw Exception('Lot ${line.lotId} has only $rem remaining');
+
+            // Assert sufficient stock before decrement
+            if (rem < used) {
+              throw Exception('Stock changed, please refresh. Lot ${line.lotId} has insufficient stock.');
             }
+
+            final newRem = (rem - used).clamp(0, double.infinity).toInt();
 
             final patch = <String, dynamic>{
               'qtyRemaining': newRem,
@@ -389,13 +505,22 @@ class _CartSessionPageState extends State<CartSessionPage> {
             if (m['openAt'] == null) patch['openAt'] = FieldValue.serverTimestamp();
             tx.set(lotRef, Audit.updateOnly(patch), SetOptions(merge: true));
 
-            tx.set(
-              itemRef,
-              Audit.updateOnly({
-                'lastUsedAt': usedAtTs,
-              }),
-              SetOptions(merge: true),
-            );
+            // Also update item qtyOnHand
+            final itemSnap = await tx.get(itemRef);
+            if (itemSnap.exists) {
+              final itemData = itemSnap.data() as Map<String, dynamic>;
+              final currentItemQty = (itemData['qtyOnHand'] ?? 0) as num;
+              final newItemQty = (currentItemQty - used).clamp(0, double.infinity).toInt();
+
+              tx.set(
+                itemRef,
+                Audit.updateOnly({
+                  'qtyOnHand': newItemQty,
+                  'lastUsedAt': usedAtTs,
+                }),
+                SetOptions(merge: true),
+              );
+            }
 
             final usageRef = _db.collection('usage_logs').doc();
             tx.set(usageRef, Audit.attach({
@@ -421,16 +546,23 @@ class _CartSessionPageState extends State<CartSessionPage> {
         } else {
           await _db.runTransaction((tx) async {
             final itemSnap = await tx.get(itemRef);
-            if (!itemSnap.exists) return;
+            if (!itemSnap.exists) {
+              throw Exception('Item ${line.itemName} no longer exists');
+            }
             final data = itemSnap.data() as Map<String, dynamic>;
             final currentQty = (data['qtyOnHand'] ?? 0) as num;
-            final newQty = currentQty - used;
-            if (newQty < 0) throw Exception('Insufficient stock for ${line.itemName}');
 
-            tx.update(itemRef, Audit.updateOnly({
+            // Assert sufficient stock before decrement
+            if (currentQty < used) {
+              throw Exception('Stock changed, please refresh. Insufficient stock for ${line.itemName}.');
+            }
+
+            final newQty = (currentQty - used).clamp(0, double.infinity).toInt();
+
+            tx.set(itemRef, Audit.updateOnly({
               'qtyOnHand': newQty,
               'lastUsedAt': usedAtTs,
-            }));
+            }), SetOptions(merge: true));
 
             final usageRef = _db.collection('usage_logs').doc();
             tx.set(usageRef, Audit.attach({
@@ -469,6 +601,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'sessionId': _sessionId,
         'interventionId': _interventionId,
         'numLines': _lines.length,
+        'totalQtyUsed': totalQtyUsed,
       });
 
       final ctx = context;
@@ -480,7 +613,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
       final ctx = context;
       if (!ctx.mounted) return;
       SoundFeedback.error();
-      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e')));
+
+      // Handle stock-related errors with user-friendly messages
+      String errorMessage = 'Error: $e';
+      if (e.toString().contains('Stock changed, please refresh')) {
+        errorMessage = 'Stock changed, please refresh and try again.';
+      } else if (e.toString().contains('no longer exists')) {
+        errorMessage = 'Some items are no longer available. Please refresh and try again.';
+      }
+
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(errorMessage)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -606,18 +748,60 @@ class _CartSessionPageState extends State<CartSessionPage> {
           final m = d.data();
           final prev = CartLine.fromMap(m);
           final leftover = (prev.endQty ?? 0);
-          _lines.add(CartLine(
-            itemId: prev.itemId,
-            itemName: prev.itemName,
-            baseUnit: prev.baseUnit,
-            lotId: prev.lotId,
-            initialQty: leftover,
-          ));
+          if (leftover <= 0) continue; // Skip items that weren't used
+
+          // Re-resolve FEFO lot for this item instead of copying stale lot ID
+          _resolveAndAddLine(prev.itemId, prev.itemName, prev.baseUnit, leftover.toInt());
         }
       });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Resolve FEFO lot and add line (used by copy from last)
+  void _resolveAndAddLine(String itemId, String itemName, String baseUnit, int qty) {
+    // Get lots for this item, sorted by expiration (FEFO)
+    _db.collection('items').doc(itemId).collection('lots').get().then((lotsSnap) {
+      if (!mounted) return;
+
+      String? lotId;
+      if (lotsSnap.docs.isNotEmpty) {
+        final list = lotsSnap.docs.toList()
+          ..sort((a, b) {
+            DateTime? ea = (a.data()['expiresAt'] is Timestamp)
+                ? (a.data()['expiresAt'] as Timestamp).toDate()
+                : null;
+            DateTime? eb = (b.data()['expiresAt'] is Timestamp)
+                ? (b.data()['expiresAt'] as Timestamp).toDate()
+                : null;
+            if (ea == null && eb == null) return 0;
+            if (ea == null) return 1;
+            if (eb == null) return -1;
+            return ea.compareTo(eb);
+          });
+        final withQty = list.firstWhere(
+          (x) {
+            final q = x.data()['qtyRemaining'];
+            return (q is num) && q > 0;
+          },
+          orElse: () => list.first,
+        );
+        lotId = withQty.id;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        final line = CartLine(
+          itemId: itemId,
+          itemName: itemName,
+          baseUnit: baseUnit,
+          lotId: lotId,
+          initialQty: qty,
+        );
+        _lines.add(line);
+      });
+    });
   }
 
   // ---------- Build ----------
@@ -754,7 +938,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                     const SizedBox(width: 12),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.history),
-                      label: const Text('Copy from last'),
+                      label: Text(_interventionName != null ? 'Use last for $_interventionName' : 'Copy from last'),
                       onPressed: _busy ? null : _copyFromLast,
                     ),
                     const SizedBox(width: 12),

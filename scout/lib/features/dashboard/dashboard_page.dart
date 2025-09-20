@@ -3,15 +3,18 @@ import 'package:flutter/material.dart';
 
 import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
-import '../items/quick_use_sheet.dart';
 import '../items/items_page.dart';
 import '../items/new_item_page.dart';
 import '../items/item_detail_page.dart';
+import '../items/add_audit_inventory_page.dart';
+import '../items/bulk_inventory_entry_page.dart';
 import '../session/cart_session_page.dart';
 import '../session/sessions_list_page.dart';
 import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
-import 'package:scout/features/admin/admin_page.dart';
+import '../admin/admin_page.dart';
+import '../reports/usage_report_page.dart';
+import '../audit/audit_logs_page.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -69,30 +72,25 @@ class _DashboardPageState extends State<DashboardPage> {
       padding: EdgeInsets.symmetric(horizontal: 8),
       child: OperatorChip(),
     ),
-    Padding(
-      padding: const EdgeInsets.only(right: 16),
-      child: IconButton(
-        icon: Icon(Icons.brightness_6, color: Theme.of(context).colorScheme.onSurface),
-        tooltip: 'Toggle theme',
-        onPressed: () => main.ThemeModeNotifier.instance.toggle(),
-      ),
-    ),
     PopupMenuButton<String>(
-  onSelected: (v) async {
-    if (v == 'admin') {
-      final navigator = Navigator.of(context);
-      final ok = await confirmAdminPin(context);
-      if (ok) {
-        navigator.push(
-          MaterialPageRoute(builder: (_) => const AdminPage()),
-        );
-      }
-    }
-  },
-  itemBuilder: (ctx) => const [
-    PopupMenuItem(value: 'admin', child: Text('Admin / Config')),
-  ],
-),
+      onSelected: (v) async {
+        final ctx = context; // capture-context for lint safety
+        if (v == 'reports') {
+          Navigator.push(ctx, MaterialPageRoute(builder: (_) => const UsageReportPage()));
+        } else if (v == 'admin') {
+          final ok = await AdminPin.ensure(ctx); // shows PIN dialog if needed
+          if (!ctx.mounted || !ok) return;
+          Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
+        } else if (v == 'theme') {
+          main.ThemeModeNotifier.instance.toggle();
+        }
+      },
+      itemBuilder: (ctx) => [
+        const PopupMenuItem(value: 'theme', child: Text('Toggle Theme')),
+        const PopupMenuItem(value: 'reports', child: Text('Usage Reports')),
+        const PopupMenuItem(value: 'admin', child: Text('Admin / Config')),
+      ],
+    ),
   ],
       ),
       body: ListView(
@@ -117,6 +115,34 @@ class _DashboardPageState extends State<DashboardPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            ListTile(
+                              leading: Icon(
+                                Icons.qr_code_scanner,
+                                color: colorScheme.onSurface,
+                              ),
+                              title: const Text('Add/Audit Inventory'),
+                              subtitle: const Text('Scan items to add or adjust stock'),
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const AddAuditInventoryPage()),
+                                );
+                              },
+                            ),
+                            ListTile(
+                              leading: Icon(
+                                Icons.inventory_2_outlined,
+                                color: colorScheme.onSurface,
+                              ),
+                              title: const Text('Bulk Inventory Entry'),
+                              subtitle: const Text('Quick entry for shopping - scan multiple items'),
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const BulkInventoryEntryPage()),
+                                );
+                              },
+                            ),
                             ListTile(
                               leading: Icon(
                                 Icons.inventory_2,
@@ -155,6 +181,20 @@ class _DashboardPageState extends State<DashboardPage> {
                                 Navigator.of(ctx).pop();
                                 Navigator.of(context).push(
                                   MaterialPageRoute(builder: (_) => const ItemsPage()),
+                                );
+                              },
+                            ),
+                            ListTile(
+                              leading: Icon(
+                                Icons.history,
+                                color: colorScheme.onSurface,
+                              ),
+                              title: const Text('Audit Logs'),
+                              subtitle: const Text('View all inventory changes'),
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const AuditLogsPage()),
                                 );
                               },
                             ),
@@ -418,11 +458,7 @@ class _ItemRow extends StatelessWidget {
         icon: Icon(Icons.remove_circle_outline, color: colorScheme.onSurface),
         label: Text('Quick use', style: TextStyle(color: colorScheme.onSurface)),
         onPressed: () async {
-          await showModalBottomSheet<bool>(
-            context: context,
-            isScrollControlled: true,
-            builder: (_) => QuickUseSheet(itemId: id, itemName: name),
-          );
+          await _showQuickAdjustSheet(context, id, name);
         },
       ),
       onTap: () {
@@ -434,5 +470,80 @@ class _ItemRow extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _showQuickAdjustSheet(BuildContext context, String itemId, String itemName) async {
+    try {
+      // Get lots for this item, sorted by FEFO (earliest expiration first)
+      final lotsQuery = await FirebaseFirestore.instance
+          .collection('items')
+          .doc(itemId)
+          .collection('lots')
+          .where('qtyRemaining', isGreaterThan: 0)
+          .get();
+
+      if (lotsQuery.docs.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No lots available for this item')),
+          );
+        }
+        return;
+      }
+
+      // Sort lots by effective expiration date (FEFO)
+      final lots = lotsQuery.docs.map((doc) {
+        final data = doc.data();
+        final expiresAt = data['expiresAt'] is Timestamp ? (data['expiresAt'] as Timestamp).toDate() : null;
+        final openAt = data['openAt'] is Timestamp ? (data['openAt'] as Timestamp).toDate() : null;
+        final expiresAfterOpenDays = data['expiresAfterOpenDays'] as int?;
+        
+        DateTime? effectiveExpiry;
+        if (openAt != null && expiresAfterOpenDays != null && expiresAfterOpenDays > 0) {
+          final afterOpen = DateTime(openAt.year, openAt.month, openAt.day).add(Duration(days: expiresAfterOpenDays));
+          if (expiresAt != null) {
+            effectiveExpiry = afterOpen.isBefore(expiresAt) ? afterOpen : expiresAt;
+          } else {
+            effectiveExpiry = afterOpen;
+          }
+        } else {
+          effectiveExpiry = expiresAt;
+        }
+
+        return {
+          'id': doc.id,
+          'data': data,
+          'effectiveExpiry': effectiveExpiry,
+        };
+      }).toList();
+
+      // Sort by effective expiration (nulls last)
+      lots.sort((a, b) {
+        final ea = a['effectiveExpiry'] as DateTime?;
+        final eb = b['effectiveExpiry'] as DateTime?;
+        if (ea == null && eb == null) return 0;
+        if (ea == null) return 1;
+        if (eb == null) return -1;
+        return ea.compareTo(eb);
+      });
+
+      // Use the first lot (FEFO)
+      final firstLot = lots.first;
+      final lotId = firstLot['id'] as String;
+      final lotData = firstLot['data'] as Map<String, dynamic>;
+      final qtyRemaining = (lotData['qtyRemaining'] ?? 0) as num;
+      final alreadyOpened = lotData['openAt'] != null;
+
+      // Show the adjust sheet
+      if (context.mounted) {
+        await showAdjustSheet(context, itemId, lotId, qtyRemaining, alreadyOpened);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading lots: $e')),
+        );
+      }
+    }
   }
 }

@@ -1,9 +1,161 @@
-// TEMP DEV ONLY — do not ship with this!
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // Allow public reads to all collections. 
+    // This is fine for public data, but if you have sensitive information,
+    // you should change 'if true' to 'if isAuthed()'.
     match /{document=**} {
-      allow read, write: if true;
+      allow read: if true;
+    }
+
+    // ---------- Helpers ----------
+    function isAuthed() {
+      // Anonymous or signed-in users both pass
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthed() && request.auth.token.admin == true;
+    }
+
+    function nonNeg(n) {
+      return (n is int || n is float) && n >= 0;
+    }
+
+    function strMax(s, maxLen) {
+      return s is string && s.size() > 0 && s.size() <= maxLen;
+    }
+
+    function optionalStrMax(d, key, maxLen) {
+      return !(key in d) || (d[key] is string && d[key].size() <= maxLen);
+    }
+
+    // ---------- Items ----------
+    match /items/{itemId} {
+      allow create, update, delete: if isAuthed();
+
+      function validItem(d) {
+        return strMax(d.name, 120)
+          && optionalStrMax(d, 'category', 80)
+          && strMax(d.baseUnit, 24)
+          && optionalStrMax(d, 'useType', 16)
+          && (!('qtyOnHand' in d) || nonNeg(d.qtyOnHand))
+          && (!('minQty' in d)      || nonNeg(d.minQty))
+          && (!('maxQty' in d)      || nonNeg(d.maxQty))
+          // grant/homeLocation optional ids
+          && optionalStrMax(d, 'grantId', 64)
+          && optionalStrMax(d, 'homeLocationId', 64)
+          && optionalStrMax(d, 'barcode', 128)
+          && optListOfShortStrings(d, 'barcodes', 128, 50)
+          && optionalStrMax(d, 'operatorName', 80)
+          && optionalStrMax(d, 'createdBy', 128)
+          && (!('archived' in d) || d.archived is bool);
+      }
+
+      match /lots/{lotId} {
+        allow create, update, delete: if isAuthed();
+
+        function validLot(d) {
+          return (!('qtyRemaining' in d) || nonNeg(d.qtyRemaining))
+            && optionalStrMax(d, 'unit', 24)
+            && optionalStrMax(d, 'notes', 2000);
+        }
+      }
+
+      match /lot_adjustments/{adjustmentId} {
+        allow create: if isAuthed();
+        allow update, delete: if false; // Append-only
+
+        function validAdjustment(d) {
+          return strMax(d.lotId, 64)
+            && (!('delta' in d) || d.delta is number)
+            && optionalStrMax(d, 'reason', 32)
+            && optionalStrMax(d, 'operatorName', 80)
+            && optionalStrMax(d, 'createdBy', 128);
+        }
+      }
+    }
+
+    match /cart_sessions/{sessionId} {
+      allow create, update: if isAuthed();
+      allow delete: if isAdmin();
+
+      function validSession(d) {
+        return optionalStrMax(d, 'interventionId', 64)
+          && optionalStrMax(d, 'interventionName', 120)
+          && optionalStrMax(d, 'grantId', 64)
+          && optionalStrMax(d, 'locationText', 200)
+          && optionalStrMax(d, 'notes', 5000)
+          && optionalStrMax(d, 'status', 16); // 'open' | 'closed'
+      }
+
+      match /lines/{lineId} {
+        allow create, update: if isAuthed();
+        allow delete: if isAdmin();
+
+        function validLine(d) {
+          return strMax(d.itemId, 64)
+            && strMax(d.itemName, 200)
+            && strMax(d.baseUnit, 24)
+            && (!('initialQty' in d) || nonNeg(d.initialQty))
+            && (!('endQty' in d)      || nonNeg(d.endQty))
+            && optionalStrMax(d, 'lotId', 64);
+        }
+      }
+    }
+
+
+    // ---------- Usage logs (append-only) ----------
+    match /usage_logs/{usageId} {
+      allow create: if isAuthed();
+      allow update, delete: if false;
+
+      function validUsage(d) {
+        return strMax(d.itemId, 64)
+          && optionalStrMax(d, 'lotId', 64)
+          && (!('qtyUsed' in d) || nonNeg(d.qtyUsed))
+          && optionalStrMax(d, 'unit', 24)
+          && optionalStrMax(d, 'interventionId', 64)
+          && optionalStrMax(d, 'grantId', 64)
+          && optionalStrMax(d, 'notes', 5000)
+          && optionalStrMax(d, 'operatorName', 80)
+          && optionalStrMax(d, 'createdBy', 128);
+      }
+    }
+
+
+    // ---------- Lookups (editable in Admin UI only later) ----------
+    match /lookups/{lookupId} {
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ---------- Shared product catalog (enrichment cache)
+    // You may want to restrict this to admin or a Cloud Function only.
+    match /catalog/{code} {
+      allow create, update: if isAuthed();
+      allow delete: if isAdmin();
+
+      function validCatalog(d) {
+        return strMax(d.code, 128)
+          && optionalStrMax(d, 'source', 40)
+          && optionalStrMax(d, 'title', 200)
+          && optionalStrMax(d, 'brand', 120);
+      }
+    }
+
+    // ---------- Audit logs (append-only) ----------
+    match /audit_logs/{auditId} {
+      allow create: if isAuthed();
+      allow update, delete: if false;
+    }
+
+    // ---------- Admin/config (blocked unless admin) ----------
+    match /admin/{document=**} {
+      allow write: if isAdmin();
+    }
+    match /config/{document=**} {
+      allow write: if isAdmin();
     }
   }
 }

@@ -13,6 +13,8 @@ import '../../widgets/usb_wedge_scanner.dart';
 // Use the bottom-sheet scanner
 import '../../widgets/scanner_sheet.dart';
 
+import '../../data/product_enrichment_service.dart';
+
 enum UseType { staff, patient, both }
 
 class NewItemPage extends StatefulWidget {
@@ -29,7 +31,7 @@ class _NewItemPageState extends State<NewItemPage> {
   final _form = GlobalKey<FormState>();
 
   final _name = TextEditingController();
-  final _category = TextEditingController();
+  String _category = '';
   final _baseUnit = TextEditingController(text: 'each');
   final _qtyOnHand = TextEditingController(text: '0');
   final _minQty = TextEditingController(text: '0');
@@ -38,6 +40,7 @@ class _NewItemPageState extends State<NewItemPage> {
 
   List<OptionItem>? _locs;
   List<OptionItem>? _grants;
+  List<String> _categories = [];
   OptionItem? _homeLoc;
   OptionItem? _grant;
   UseType _useType = UseType.both;
@@ -59,20 +62,48 @@ class _NewItemPageState extends State<NewItemPage> {
     final results = await Future.wait([
       _lookups.locations(),
       _lookups.grants(),
+      _loadCategories(),
     ]);
     if (!mounted) return;
     setState(() {
-      _locs = results[0];
-      _grants = results[1];
+      _locs = results[0] as List<OptionItem>;
+      _grants = results[1] as List<OptionItem>;
+      _categories = results[2] as List<String>;
     });
   }
 
-  void _acceptCode(String code) {
+  Future<List<String>> _loadCategories() async {
+    final snap = await _db.collection('items').where('archived', isEqualTo: false).get();
+    final categories = <String>{};
+    for (final doc in snap.docs) {
+      final data = doc.data();
+      final category = (data['category'] ?? '') as String;
+      if (category.isNotEmpty) {
+        categories.add(category);
+      }
+    }
+    return categories.toList()..sort();
+  }
+
+  void _acceptCode(String code) async {
     setState(() {
       _barcode.text = code;
       _barcode.selection = TextSelection(baseOffset: 0, extentOffset: code.length);
     });
     FocusScope.of(context).requestFocus(_barcodeFocus);
+
+    // If name is empty, try to enrich from external APIs
+    if (_name.text.trim().isEmpty) {
+      final info = await ProductEnrichmentService.fetchProductInfo(code);
+      if (info != null && info['name'] != null && mounted) {
+        setState(() {
+          _name.text = info['name'];
+          if (info['category'] != null && info['category'].isNotEmpty) {
+            _category = info['category'];
+          }
+        });
+      }
+    }
   }
 
   Future<void> _save() async {
@@ -85,7 +116,7 @@ class _NewItemPageState extends State<NewItemPage> {
       await ref.set(
         Audit.attach({
           'name': _name.text.trim(),
-          'category': _category.text.trim().isEmpty ? null : _category.text.trim(),
+          'category': _category.trim().isEmpty ? null : _category.trim(),
           'baseUnit': _baseUnit.text.trim().isEmpty ? 'each' : _baseUnit.text.trim(),
           // keep legacy 'unit' in sync if other code still reads it
           'unit': _baseUnit.text.trim().isEmpty ? 'each' : _baseUnit.text.trim(),
@@ -129,7 +160,6 @@ class _NewItemPageState extends State<NewItemPage> {
   @override
   void dispose() {
     _name.dispose();
-    _category.dispose();
     _baseUnit.dispose();
     _qtyOnHand.dispose();
     _minQty.dispose();
@@ -165,10 +195,56 @@ class _NewItemPageState extends State<NewItemPage> {
                   ),
                   const SizedBox(height: 8),
 
-                  TextFormField(
-                    controller: _category,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(labelText: 'Category'),
+                  Autocomplete<String>(
+                    initialValue: TextEditingValue(text: _category),
+                    optionsBuilder: (TextEditingValue textEditingValue) {
+                      if (textEditingValue.text.isEmpty) {
+                        return _categories;
+                      }
+                      return _categories.where((String option) {
+                        return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+                      });
+                    },
+                    onSelected: (String selection) {
+                      _category = selection;
+                    },
+                    fieldViewBuilder: (BuildContext context, TextEditingController textEditingController, FocusNode focusNode, VoidCallback onFieldSubmitted) {
+                      return TextFormField(
+                        controller: textEditingController,
+                        focusNode: focusNode,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(labelText: 'Category'),
+                        onChanged: (value) {
+                          _category = value;
+                        },
+                      );
+                    },
+                    optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
+                      return Align(
+                        alignment: Alignment.topLeft,
+                        child: Material(
+                          elevation: 4.0,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 200),
+                            child: ListView.builder(
+                              padding: EdgeInsets.zero,
+                              shrinkWrap: true,
+                              itemCount: options.length,
+                              itemBuilder: (BuildContext context, int index) {
+                                final String option = options.elementAt(index);
+                                return InkWell(
+                                  onTap: () => onSelected(option),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: Text(option),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(height: 8),
 

@@ -1,5 +1,6 @@
 // lib/dev/seed_lookups.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 final _db = FirebaseFirestore.instance;
 
@@ -48,6 +49,8 @@ const _interventions = [
 
 /// Original behavior: only inserts when a collection is empty.
 Future<void> seedLookups() async {
+  assert(kDebugMode, 'seedLookups() should only be called in debug mode');
+  
   Future<void> addIfEmpty(String col, List<Map<String, dynamic>> docs) async {
     final snap = await _db.collection(col).limit(1).get();
     if (snap.docs.isEmpty) {
@@ -72,6 +75,8 @@ Future<void> seedLookups() async {
 
 /// Reseed by *upserting* with deterministic IDs = `code`.
 Future<void> reseedLookupsMerge() async {
+  assert(kDebugMode, 'reseedLookupsMerge() should only be called in debug mode');
+  
   Future<void> upsert(String col, List<Map<String, dynamic>> docs) async {
     final batch = _db.batch();
     for (final d in docs) {
@@ -116,4 +121,20 @@ Future<void> resetAndSeedLookups() async {
   await wipe('interventions'); // <--- was missing
 
   await reseedLookupsMerge();
+}
+
+/// Seed the config/app document with default admin PIN
+Future<void> seedConfig() async {
+  assert(kDebugMode, 'seedConfig() should only be called in debug mode');
+
+  final configRef = _db.collection('config').doc('app');
+  final doc = await configRef.get();
+
+  if (!doc.exists) {
+    await configRef.set({
+      'adminPin': '2468',
+      'pinTtlHours': 12,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
 }

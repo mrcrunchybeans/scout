@@ -18,6 +18,12 @@ dependencies:
   web: ^1.1.1
   firebase_auth: ^6.0.2
   shared_preferences: ^2.3.2
+  http: ^1.5.0
+  algolia_helper_flutter: ^1.2.0
+  infinite_scroll_pagination: ^5.0.0
+  algoliasearch: ^1.36.1
+  intl: ^0.19.0
+
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_native_splash: ^2.4.1
