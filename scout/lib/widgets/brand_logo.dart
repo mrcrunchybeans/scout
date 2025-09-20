@@ -12,7 +12,7 @@ class BrandLogo extends StatelessWidget {
     final brightness = Theme.of(context).brightness;
     
     // Choose logo based on theme
-    final logoPath = brightness == Brightness.dark
+    final logoPath = brightness == Brightness.light
         ? 'assets/images/scout dash logo dark mode.png'
         : 'assets/images/scout dash logo light mode.png';
 

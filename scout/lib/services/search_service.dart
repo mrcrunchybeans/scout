@@ -236,6 +236,11 @@ class SearchService {
       final hasMinQtySet = minQty > 0;
       final isArchived = (data['archived'] ?? false) as bool;
 
+      // Filter out items with zero quantity (unless showing archived items)
+      if (!showArchived && qty <= 0) {
+        return false;
+      }
+
       // Filter by archived status (client-side for active items)
       if (!showArchived && isArchived) {
         return false;
@@ -318,6 +323,11 @@ class SearchService {
       final minQty = (data['minQty'] ?? 0) as num;
       final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
       final isArchived = (data['archived'] ?? false) as bool;
+
+      // Filter out items with zero quantity (unless showing archived items)
+      if (!showArchived && qty <= 0) {
+        return false;
+      }
 
       // Filter by archived status
       if (!showArchived && isArchived) {
@@ -458,9 +468,10 @@ class SearchService {
   String _buildAlgoliaFilters(SearchFilters filters, bool showArchived) {
     final filterParts = <String>[];
 
-    // Archived filter
+    // Archived filter and quantity filter
     if (!showArchived) {
       filterParts.add('archived:false');
+      filterParts.add('qtyOnHand > 0');
     } else {
       filterParts.add('archived:true');
     }

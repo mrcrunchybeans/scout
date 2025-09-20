@@ -23,14 +23,15 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   final Map<String, BulkEntryItem> _pendingItems = {};
   bool _isProcessing = false;
   final List<String> _createdBatchCodes = [];
+  int _batchCounter = 0;
 
   String _generateBatchCode() {
     final now = DateTime.now();
     final yy = now.year.toString().substring(2); // Last 2 digits of year
     final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-    // Use last 3 digits of milliseconds for uniqueness (000-999)
-    final unique = now.millisecondsSinceEpoch % 1000;
-    final xxx = unique.toString().padLeft(3, '0');
+    // Use sequential counter for uniqueness (001, 002, 003, etc.)
+    _batchCounter++;
+    final xxx = _batchCounter.toString().padLeft(3, '0');
     return '$yy$mm-$xxx';
   }
 
@@ -50,10 +51,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           if (_pendingItems.isNotEmpty)
             TextButton(
               onPressed: _isProcessing ? null : _processAllEntries,
-              child: Text(
-                'Process All (${_pendingItems.length})',
-                style: const TextStyle(color: Colors.white),
-              ),
+              child: Text('Process All (${_pendingItems.length})'),
             ),
           IconButton(
             icon: const Icon(Icons.qr_code_scanner),

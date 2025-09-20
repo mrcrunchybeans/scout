@@ -236,8 +236,10 @@ class _LotRow extends StatelessWidget {
       if (received != null) 'Received: ${MaterialLocalizations.of(context).formatFullDate(received)}',
     ].join(' • ');
 
+    final lotCode = (d['lotCode'] ?? lotDoc.id.substring(0, 6)) as String;
+
     return ListTile(
-      title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot ${lotDoc.id.substring(0, 6)}…'),
+      title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
       subtitle: Text(sub),
       trailing: PopupMenuButton<String>(
         onSelected: (key) async {
