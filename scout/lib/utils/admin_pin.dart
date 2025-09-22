@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+// Developer password - hardcoded and cannot be changed by users
+const String _developerPassword = 'scoutdev2025';
+
 class _AdminConfig {
   final String pin;
   final int ttlHours;
@@ -95,6 +98,43 @@ Future<bool> confirmAdminPin(BuildContext context) async {
   return ok ?? false;
 }
 
+Future<bool> confirmDeveloperPassword(BuildContext context) async {
+  final c = TextEditingController();
+
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => Theme(
+      data: Theme.of(context),
+      child: AlertDialog(
+        title: const Text('Developer Access'),
+        content: TextField(
+          controller: c,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'Enter Developer Password'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () async {
+              if (c.text == _developerPassword) {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool('developer_unlocked', true);
+                if (!dialogContext.mounted) return;
+                Navigator.of(dialogContext).pop(true);
+              } else {
+                if (!dialogContext.mounted) return;
+                Navigator.of(dialogContext).pop(false);
+              }
+            },
+            child: const Text('Access'),
+          ),
+        ],
+      ),
+    ),
+  );
+  return ok ?? false;
+}
+
 class AdminPin {
   static Future<bool> ensure(BuildContext context) async {
     final prefs = await SharedPreferences.getInstance();
@@ -103,13 +143,27 @@ class AdminPin {
     return await confirmAdminPin(context);
   }
 
+  static Future<bool> ensureDeveloper(BuildContext context) async {
+    // First ensure admin access
+    if (!await ensure(context)) return false;
+    // Then require developer password
+    if (!context.mounted) return false;
+    return await confirmDeveloperPassword(context);
+  }
+
   static Future<bool> isAuthed() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool('admin_unlocked') == true;
   }
 
+  static Future<bool> isDeveloperAuthed() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('developer_unlocked') == true;
+  }
+
   static Future<void> signOut() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('admin_unlocked', false);
+    await prefs.setBool('developer_unlocked', false);
   }
 }

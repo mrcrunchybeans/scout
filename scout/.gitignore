@@ -1,3 +1,9 @@
+# FTP Configuration (contains sensitive credentials)
+ftp-config.ps1
+
+# Environment variables (may contain sensitive data)
+.env
+
 # Miscellaneous
 *.class
 *.log

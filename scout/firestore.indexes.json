@@ -86,7 +86,23 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "archived", "order": "ASCENDING" },
-        { "fieldPath": "qtyOnHand", "order": "ASCENDING" }
+        { "fieldPath": "homeLocationId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "archived", "order": "ASCENDING" },
+        { "fieldPath": "grantId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "items",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "archived", "order": "ASCENDING" },
+        { "fieldPath": "useType", "order": "ASCENDING" }
       ]
     },
     {

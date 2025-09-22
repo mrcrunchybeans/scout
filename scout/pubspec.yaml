@@ -2,7 +2,7 @@ name: scout
 description: "Spiritual Care Operations & Usage Tracker"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.0+4
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -17,16 +17,24 @@ dependencies:
   mobile_scanner: ^7.0.1
   web: ^1.1.1
   firebase_auth: ^6.0.2
+  cloud_functions: ^6.0.1
   shared_preferences: ^2.3.2
   http: ^1.5.0
   algolia_helper_flutter: ^1.2.0
   infinite_scroll_pagination: ^5.0.0
   algoliasearch: ^1.36.1
   intl: ^0.19.0
+  fl_chart: ^1.1.1
+  syncfusion_flutter_charts: ^31.1.20
+  file_picker: ^10.3.3
+  yaml: ^3.1.2
+  uuid: ^4.4.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_native_splash: ^2.4.1
+  flutter_test:
+    sdk: flutter
 
 flutter:
   uses-material-design: true
@@ -34,8 +42,10 @@ flutter:
     - assets/images/
 
 flutter_native_splash:
-  color: "#F7FAF9"
-  color_dark: "#1A1A1A"
+  color: "#FFFFFF"
+  color_dark: "#000000"
   image: assets/images/scout dash logo light mode.png
   image_dark: assets/images/scout dash logo dark mode.png
+
+
 

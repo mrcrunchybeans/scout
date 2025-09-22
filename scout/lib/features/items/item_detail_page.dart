@@ -5,15 +5,15 @@ import '../../utils/audit.dart';
 String _normalizeBarcode(String s) =>
   s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
 
-// Helper to generate lot codes in YYMM-XXX format (easy to write, unique)
+// Helper to generate lot codes in YMM+letter format (e.g., 509A)
 String _generateLotCode(String productCode) {
   final now = DateTime.now();
-  final yy = now.year.toString().substring(2); // Last 2 digits of year
+  final y = now.year.toString().substring(3); // Last digit of year
   final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-  // Use last 3 digits of milliseconds for uniqueness (000-999)
-  final unique = now.millisecondsSinceEpoch % 1000;
-  final xxx = unique.toString().padLeft(3, '0');
-  return '$yy$mm-$xxx';
+  // Use sequential letters for uniqueness (A, B, C, etc.)
+  final unique = now.millisecondsSinceEpoch % 26; // 26 letters
+  final letter = String.fromCharCode(65 + unique); // 65 = 'A'
+  return '$y$mm$letter';
 }
 
 class ItemDetailPage extends StatelessWidget {
@@ -241,6 +241,7 @@ class _LotRow extends StatelessWidget {
     return ListTile(
       title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
       subtitle: Text(sub),
+      onTap: () => _showEditLotSheet(context, itemId, lotDoc.id, d),
       trailing: PopupMenuButton<String>(
         onSelected: (key) async {
           if (!context.mounted) return;
@@ -427,7 +428,7 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Expiration (optional)'),
                   subtitle: Text(expiresAt == null
-                    ? 'None'
+                    ? 'Optional - select if applicable'
                     : MaterialLocalizations.of(bottomSheetContext).formatFullDate(expiresAt!)),
                   trailing: TextButton.icon(
                     icon: const Icon(Icons.event),
@@ -495,15 +496,17 @@ Future<void> _showEditLotSheet(
 ) async {
   final db = FirebaseFirestore.instance;
   
+  // Initialize variables outside StatefulBuilder to persist across state updates
+  DateTime? expiresAt = (d['expiresAt'] is Timestamp) ? (d['expiresAt'] as Timestamp).toDate() : null;
+  DateTime? openAt     = (d['openAt']   is Timestamp) ? (d['openAt']   as Timestamp).toDate() : null;
+  int? afterOpenDays   = d['expiresAfterOpenDays'] as int?;
+  
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
     builder: (ctx) {
       return StatefulBuilder(
         builder: (bottomSheetContext, bottomSheetSetState) {
-          DateTime? expiresAt = (d['expiresAt'] is Timestamp) ? (d['expiresAt'] as Timestamp).toDate() : null;
-          DateTime? openAt     = (d['openAt']   is Timestamp) ? (d['openAt']   as Timestamp).toDate() : null;
-          int? afterOpenDays   = d['expiresAfterOpenDays'] as int?;
 
           Future<DateTime?> pick(DateTime? init) => showDatePicker(
             context: bottomSheetContext,
@@ -527,7 +530,7 @@ Future<void> _showEditLotSheet(
                   title: const Text('Expiration'),
                   subtitle: Text(expiresAt == null
                     ? 'None'
-                    : MaterialLocalizations.of(bottomSheetContext).formatFullDate(expiresAt)),
+                    : MaterialLocalizations.of(bottomSheetContext).formatFullDate(expiresAt!)),
                   trailing: TextButton.icon(
                     icon: const Icon(Icons.edit_calendar), label: const Text('Pick'),
                     onPressed: () async {
@@ -543,7 +546,7 @@ Future<void> _showEditLotSheet(
                   title: const Text('Opened at'),
                   subtitle: Text(openAt == null
                     ? 'None'
-                    : MaterialLocalizations.of(bottomSheetContext).formatFullDate(openAt)),
+                    : MaterialLocalizations.of(bottomSheetContext).formatFullDate(openAt!)),
                   trailing: TextButton.icon(
                     icon: const Icon(Icons.edit_calendar), label: const Text('Pick'),
                     onPressed: () async {
@@ -783,12 +786,15 @@ class _AdjustSheetContentState extends State<_AdjustSheetContent> {
 void _showQrStub(BuildContext context, String lotId) {
   showDialog(
     context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('QR / Scan'),
-      content: Text('Stub: scan/QR not wired yet.\nLot ID: $lotId'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
-      ],
+    builder: (_) => Theme(
+      data: Theme.of(context),
+      child: AlertDialog(
+        title: const Text('QR / Scan'),
+        content: Text('Stub: scan/QR not wired yet.\nLot ID: $lotId'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ],
+      ),
     ),
   );
 }
@@ -799,23 +805,26 @@ Future<void> _showArchiveLotDialog(BuildContext context, String itemId, String l
 
   final result = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Archive Lot'),
-      content: Text(
-        'Archive lot "$lotCode"? This will hide the lot from active inventory but keep it for historical records.\n\n'
-        'Remaining quantity: $qtyRemaining\n\n'
-        'You can unarchive lots later if needed.'
+    builder: (_) => Theme(
+      data: Theme.of(context),
+      child: AlertDialog(
+        title: const Text('Archive Lot'),
+        content: Text(
+          'Archive lot "$lotCode"? This will hide the lot from active inventory but keep it for historical records.\n\n'
+          'Remaining quantity: $qtyRemaining\n\n'
+          'You can unarchive lots later if needed.'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Archive'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Archive'),
-        ),
-      ],
     ),
   );
 
@@ -846,23 +855,26 @@ Future<void> _showUnarchiveLotDialog(BuildContext context, String itemId, String
 
   final result = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Unarchive Lot'),
-      content: Text(
-        'Unarchive lot "$lotCode"? This will restore the lot to active inventory.\n\n'
-        'Remaining quantity: $qtyRemaining\n\n'
-        'The lot will be available for use again.'
+    builder: (_) => Theme(
+      data: Theme.of(context),
+      child: AlertDialog(
+        title: const Text('Unarchive Lot'),
+        content: Text(
+          'Unarchive lot "$lotCode"? This will restore the lot to active inventory.\n\n'
+          'Remaining quantity: $qtyRemaining\n\n'
+          'The lot will be available for use again.'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Unarchive'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Unarchive'),
-        ),
-      ],
     ),
   );
 
@@ -906,26 +918,29 @@ Future<void> _showDeleteLotDialog(BuildContext context, String itemId, String lo
 
   final result = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Delete Lot'),
-      content: Text(
-        'Permanently delete lot "$lotCode"? This action cannot be undone.\n\n'
-        '⚠️ Warning: This will permanently remove all data for this lot.'
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
+    builder: (_) => Theme(
+      data: Theme.of(context),
+      child: AlertDialog(
+        title: const Text('Delete Lot'),
+        content: Text(
+          'Permanently delete lot "$lotCode"? This action cannot be undone.\n\n'
+          '⚠️ Warning: This will permanently remove all data for this lot.'
         ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: Theme.of(context).colorScheme.error,
-            foregroundColor: Theme.of(context).colorScheme.onError,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
           ),
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Delete Permanently'),
-        ),
-      ],
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete Permanently'),
+          ),
+        ],
+      ),
     ),
   );
 

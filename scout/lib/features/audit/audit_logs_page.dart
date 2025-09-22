@@ -64,15 +64,18 @@ class AuditLogsPage extends StatelessWidget {
   void _showFilterDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Filter Options'),
-        content: const Text('Filtering options will be implemented here.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+      builder: (context) => Theme(
+        data: Theme.of(context),
+        child: AlertDialog(
+          title: const Text('Filter Options'),
+          content: const Text('Filtering options will be implemented here.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -181,31 +184,34 @@ class _AuditLogTile extends StatelessWidget {
   void _showDetailsDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(_formatType(type)),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Operator: ${operatorName ?? 'Unknown'}'),
-              Text('Time: ${createdAt?.toDate().toString() ?? 'Unknown'}'),
-              const Divider(),
-              const Text('Details:', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              ...details.entries.map((entry) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text('${entry.key}: ${entry.value}'),
-              )),
-            ],
+      builder: (context) => Theme(
+        data: Theme.of(context),
+        child: AlertDialog(
+          title: Text(_formatType(type)),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Operator: ${operatorName ?? 'Unknown'}'),
+                Text('Time: ${createdAt?.toDate().toString() ?? 'Unknown'}'),
+                const Divider(),
+                const Text('Details:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                ...details.entries.map((entry) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text('${entry.key}: ${entry.value}'),
+                )),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
       ),
     );
   }

@@ -12,38 +12,55 @@ class ScannerSheet extends StatefulWidget {
 
 class _ScannerSheetState extends State<ScannerSheet> {
   CameraFacing _cameraFacing = CameraFacing.back;
-  final controller = MobileScannerController(
-    detectionSpeed: DetectionSpeed.unrestricted, // fire as soon as seen
-    // detectionTimeoutMs: 150, // uncomment if your mobile_scanner version supports it
-    facing: CameraFacing.back,
-    torchEnabled: false,
-    formats: const <BarcodeFormat>[
-      BarcodeFormat.aztec,
-      BarcodeFormat.codabar,
-      BarcodeFormat.code39,
-      BarcodeFormat.code93,
-      BarcodeFormat.code128,
-      BarcodeFormat.dataMatrix,
-      BarcodeFormat.ean8,
-      BarcodeFormat.ean13,
-      BarcodeFormat.itf,
-      BarcodeFormat.pdf417,
-      BarcodeFormat.qrCode,
-      BarcodeFormat.upcA,
-      BarcodeFormat.upcE,
-    ],
-  );
-
+  MobileScannerController? controller;
+  bool _controllerInitialized = false;
   bool _handled = false;
 
   @override
+  void initState() {
+    super.initState();
+    _initializeController();
+  }
+
+  Future<void> _initializeController() async {
+    try {
+      controller = MobileScannerController(
+        detectionSpeed: DetectionSpeed.unrestricted,
+        facing: CameraFacing.back,
+        torchEnabled: false,
+        formats: const <BarcodeFormat>[
+          BarcodeFormat.aztec,
+          BarcodeFormat.codabar,
+          BarcodeFormat.code39,
+          BarcodeFormat.code93,
+          BarcodeFormat.code128,
+          BarcodeFormat.dataMatrix,
+          BarcodeFormat.ean8,
+          BarcodeFormat.ean13,
+          BarcodeFormat.itf,
+          BarcodeFormat.pdf417,
+          BarcodeFormat.qrCode,
+          BarcodeFormat.upcA,
+          BarcodeFormat.upcE,
+        ],
+      );
+      _controllerInitialized = true;
+      if (mounted) setState(() {});
+    } catch (e) {
+      // Camera initialization failed (likely permission issues on iOS Safari)
+      _controllerInitialized = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
   void dispose() {
-    controller.dispose();
+    controller?.dispose();
     super.dispose();
   }
 
   void _onDetect(BarcodeCapture cap) {
-    if (_handled || cap.barcodes.isEmpty) return;
+    if (_handled || cap.barcodes.isEmpty || controller == null) return;
     for (final b in cap.barcodes) {
       final raw = b.rawValue?.trim();
       if (raw != null && raw.isNotEmpty) {
@@ -97,18 +114,18 @@ class _ScannerSheetState extends State<ScannerSheet> {
                   IconButton(
                     tooltip: 'Flip camera',
                     icon: const Icon(Icons.cameraswitch),
-                    onPressed: () {
-                      controller.switchCamera();
+                    onPressed: controller != null ? () {
+                      controller!.switchCamera();
                       setState(() {
                         _cameraFacing =
                             _cameraFacing == CameraFacing.back ? CameraFacing.front : CameraFacing.back;
                       });
-                    },
+                    } : null,
                   ),
                   IconButton(
                     tooltip: 'Toggle torch',
                     icon: const Icon(Icons.flashlight_on),
-                    onPressed: () => controller.toggleTorch(),
+                    onPressed: controller != null ? () => controller!.toggleTorch() : null,
                   ),
                 ],
               ),
@@ -130,11 +147,17 @@ class _ScannerSheetState extends State<ScannerSheet> {
                             transform: mirror
                                 ? (Matrix4.identity()..rotateY(math.pi))
                                 : Matrix4.identity(),
-                            child: MobileScanner(
-                              controller: controller,
-                              fit: BoxFit.cover,
-                              onDetect: _onDetect,
-                            ),
+                            child: _controllerInitialized && controller != null
+                                ? MobileScanner(
+                                    controller: controller!,
+                                    fit: BoxFit.cover,
+                                    onDetect: _onDetect,
+                                  )
+                                : Center(
+                                    child: _controllerInitialized
+                                        ? const Text('Camera not available\nUse manual entry below')
+                                        : const CircularProgressIndicator(),
+                                  ),
                           ),
                           IgnorePointer(
                             ignoring: true,

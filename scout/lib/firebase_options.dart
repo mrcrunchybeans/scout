@@ -16,49 +16,79 @@ import 'package:flutter/foundation.dart'
 /// ```
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
+    // Always return web options for web builds, regardless of platform detection
     if (kIsWeb) {
       return web;
     }
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for android - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
-      case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
-      case TargetPlatform.macOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for macos - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
-      case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
-      case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
-      default:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions are not supported for this platform.',
-        );
+
+    // For non-web platforms, try to detect platform safely
+    try {
+      switch (defaultTargetPlatform) {
+        case TargetPlatform.android:
+        return android;
+        case TargetPlatform.iOS:
+        return ios;
+        case TargetPlatform.macOS:
+        return macos;
+        case TargetPlatform.windows:
+        return windows;
+        case TargetPlatform.linux:
+          throw UnsupportedError(
+            'DefaultFirebaseOptions have not been configured for linux - '
+            'you can reconfigure this by running the FlutterFire CLI again.',
+          );
+        default:
+          // If platform detection fails or returns unknown, assume web
+          return web;
+      }
+    } catch (e) {
+      // If any error occurs in platform detection, fallback to web
+      return web;
     }
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-  apiKey: 'AIzaSyDyWk70DPvGiKbm_3CWbj_XW0AKeMnT0Os',
-  appId: '1:407644437940:web:3b08719a1f9f1f506106e1',
-  messagingSenderId: '407644437940',
-  projectId: 'scout-litteempathy',
-  authDomain: 'scout-litteempathy.firebaseapp.com,scout.littleempathy.com',
-  storageBucket: 'scout-litteempathy.firebasestorage.app',
+    apiKey: 'AIzaSyDyWk70DPvGiKbm_3CWbj_XW0AKeMnT0Os',
+    appId: '1:407644437940:web:3b08719a1f9f1f506106e1',
+    messagingSenderId: '407644437940',
+    projectId: 'scout-litteempathy',
+    authDomain: 'scout-litteempathy.firebaseapp.com',
+    storageBucket: 'scout-litteempathy.firebasestorage.app',
+  );
+
+  static const FirebaseOptions macos = FirebaseOptions(
+    apiKey: 'AIzaSyDliVRA-Ms0strSPsseTizfqRhu6fhkR70',
+    appId: '1:407644437940:ios:54d774285229fa0a6106e1',
+    messagingSenderId: '407644437940',
+    projectId: 'scout-litteempathy',
+    storageBucket: 'scout-litteempathy.firebasestorage.app',
+    iosBundleId: 'com.littleempath',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDliVRA-Ms0strSPsseTizfqRhu6fhkR70',
+    appId: '1:407644437940:ios:0074bd6c74089b766106e1',
+    messagingSenderId: '407644437940',
+    projectId: 'scout-litteempathy',
+    storageBucket: 'scout-litteempathy.firebasestorage.app',
+    iosBundleId: 'com.lit',
+  );
+
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyCd3hv0VoNt2WbkDel2Uk9WqEEbmjPh15w',
+    appId: '1:407644437940:android:8a2564bc0311889f6106e1',
+    messagingSenderId: '407644437940',
+    projectId: 'scout-litteempathy',
+    storageBucket: 'scout-litteempathy.firebasestorage.app',
+  );
+
+  static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'AIzaSyDyWk70DPvGiKbm_3CWbj_XW0AKeMnT0Os',
+    appId: '1:407644437940:web:9bb76441a306127e6106e1',
+    messagingSenderId: '407644437940',
+    projectId: 'scout-litteempathy',
+    authDomain: 'scout-litteempathy.firebaseapp.com',
+    storageBucket: 'scout-litteempathy.firebasestorage.app',
   );
 
 }

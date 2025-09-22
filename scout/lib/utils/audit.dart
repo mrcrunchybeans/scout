@@ -48,8 +48,19 @@ class Audit {
     };
   }
 
-  /// Returns the current operator name from OperatorStore.
+  /// Returns the current operator name from OperatorStore, with fallback to user info.
   static String? _currentOperatorName() {
-    return OperatorStore.name.value;
+    final operatorName = OperatorStore.name.value;
+    if (operatorName != null && operatorName.isNotEmpty) {
+      return operatorName;
+    }
+    
+    // Fallback to Firebase Auth user display name or email
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      return user.displayName ?? user.email ?? 'User ${user.uid.substring(0, 8)}';
+    }
+    
+    return null; // Will show as "Unknown" in UI
   }
 }

@@ -10,12 +10,38 @@ class BrandLogo extends StatelessWidget {
   Widget build(BuildContext context) {
     // Access the current theme's brightness
     final brightness = Theme.of(context).brightness;
-    
+
     // Choose logo based on theme
     final logoPath = brightness == Brightness.dark
         ? 'assets/images/scout dash logo dark mode.png'
         : 'assets/images/scout dash logo light mode.png';
 
-    return Image.asset(logoPath, height: height);
+    return Container(
+      height: height,
+      constraints: BoxConstraints(
+        maxWidth: height * 2, // Assume reasonable aspect ratio, adjust as needed
+      ),
+      child: Image.asset(
+        logoPath,
+        height: height,
+        fit: BoxFit.contain, // Maintain aspect ratio and fit within bounds
+        filterQuality: FilterQuality.high, // High quality filtering for better rendering
+        errorBuilder: (context, error, stackTrace) {
+          // Fallback to text logo if image fails to load
+          return Container(
+            height: height,
+            alignment: Alignment.center,
+            child: Text(
+              'SCOUT',
+              style: TextStyle(
+                fontSize: height * 0.2, // Scale font size with height
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 }

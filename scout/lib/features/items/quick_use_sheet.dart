@@ -8,6 +8,19 @@ import '../../models/option_item.dart';
 
 enum ForUseType { staff, patient }
 
+// Unit types for adaptive UI
+enum UnitType {
+  count('Count', ['each', 'pieces', 'items', 'boxes', 'cans', 'bottles', 'tubes']),
+  weight('Weight', ['grams', 'kg', 'lbs', 'ounces', 'pounds']),
+  length('Length', ['meters', 'feet', 'yards', 'inches', 'cm']),
+  area('Area', ['sq meters', 'sq feet', 'sheets', 'reams']),
+  volume('Volume', ['liters', 'ml', 'gallons', 'cups', 'fl oz']);
+
+  const UnitType(this.displayName, this.commonUnits);
+  final String displayName;
+  final List<String> commonUnits;
+}
+
 // ---- Lot model (local) ----
 class LotInfo {
   final String id;
@@ -45,7 +58,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
   final _lookups = LookupsService();
 
   // qty chips in the item's base unit
-  int qty = 1;
+  num qty = 1;
   ForUseType? _forUse;
 
   // Interventions + default grants
@@ -56,6 +69,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
   // Item base unit (how staff think/record usage), defaults to 'each'
   String _baseUnit = 'each';
+  UnitType _unitType = UnitType.count;
 
   // Lots for this item (FEFO sorted)
   List<LotOption>? _lots;
@@ -157,6 +171,11 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 
     final data = itemSnap.data() ?? {};
     final baseUnit = (data['baseUnit'] ?? 'each') as String;
+    final unitTypeStr = (data['unitType'] ?? 'count') as String;
+    final unitType = UnitType.values.firstWhere(
+      (t) => t.name == unitTypeStr,
+      orElse: () => UnitType.count,
+    );
 
     setState(() {
       _interventions = interventionsList;
@@ -167,6 +186,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
         ..clear()
         ..addAll(mapGrantNames);
       _baseUnit = baseUnit;
+      _unitType = unitType;
 
       _lots = lots;
       _selectedLot = lots.isNotEmpty ? lots.first : null; // FEFO default
@@ -184,6 +204,45 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
     final gid = _selectedGrantId();
     if (gid == null) return null;
     return _grantNamesById[gid] ?? gid;
+  }
+
+  List<Widget> _getQuantityChips() {
+    switch (_unitType) {
+      case UnitType.count:
+        return [1, 2, 5].map((n) => ChoiceChip(
+          label: Text('-$n $_baseUnit'),
+          selected: qty == n,
+          onSelected: (_) => setState(() => qty = n),
+        )).toList();
+      
+      case UnitType.weight:
+        return [0.5, 1.0, 2.5].map((n) => ChoiceChip(
+          label: Text('-$n $_baseUnit'),
+          selected: qty == n,
+          onSelected: (_) => setState(() => qty = n),
+        )).toList();
+      
+      case UnitType.volume:
+        return [0.25, 0.5, 1.0].map((n) => ChoiceChip(
+          label: Text('-$n $_baseUnit'),
+          selected: qty == n,
+          onSelected: (_) => setState(() => qty = n),
+        )).toList();
+      
+      case UnitType.length:
+        return [0.5, 1.0, 2.0].map((n) => ChoiceChip(
+          label: Text('-$n $_baseUnit'),
+          selected: qty == n,
+          onSelected: (_) => setState(() => qty = n),
+        )).toList();
+      
+      case UnitType.area:
+        return [0.5, 1.0, 2.0].map((n) => ChoiceChip(
+          label: Text('-$n $_baseUnit'),
+          selected: qty == n,
+          onSelected: (_) => setState(() => qty = n),
+        )).toList();
+    }
   }
 
   String _formatUsedAt(BuildContext context) {
@@ -340,22 +399,17 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                 Text(widget.itemName, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 12),
 
-                // Qty chips (+ Custom) in baseUnit
+                // Qty chips (+ Custom) in baseUnit - adaptive based on unit type
                 Wrap(
                   spacing: 8,
                   children: <Widget>[
-                    for (final n in [1, 2, 5])
-                      ChoiceChip(
-                        label: Text('-$n $_baseUnit'),
-                        selected: qty == n,
-                        onSelected: (_) => setState(() => qty = n),
-                      ),
+                    ..._getQuantityChips(),
                     ActionChip(
                       label: const Text('Custom'),
                       onPressed: () async {
-                        final v = await showDialog<int>(
+                        final v = await showDialog<num>(
                           context: context,
-                          builder: (_) => const _NumberDialog(),
+                          builder: (_) => _NumberDialog(isDecimal: _unitType != UnitType.count),
                         );
                         if (!context.mounted) return;
                         if (v != null && v > 0) setState(() => qty = v);
@@ -488,7 +542,9 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
 }
 
 class _NumberDialog extends StatefulWidget {
-  const _NumberDialog();
+  const _NumberDialog({this.isDecimal = false});
+  final bool isDecimal;
+  
   @override
   State<_NumberDialog> createState() => _NumberDialogState();
 }
@@ -499,19 +555,46 @@ class _NumberDialogState extends State<_NumberDialog> {
   void dispose() { c.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return AlertDialog(
-      title: const Text('Quantity used'),
+      backgroundColor: colorScheme.surface,
+      surfaceTintColor: colorScheme.surfaceTint,
+      title: Text(
+        'Quantity used',
+        style: TextStyle(color: colorScheme.onSurface),
+      ),
       content: TextField(
         controller: c,
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(prefixText: '-'),
+        keyboardType: widget.isDecimal ? TextInputType.numberWithOptions(decimal: true) : TextInputType.number,
+        style: TextStyle(color: colorScheme.onSurface),
+        decoration: InputDecoration(
+          prefixText: '-',
+          filled: true,
+          fillColor: colorScheme.surfaceContainerHighest,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: colorScheme.outline),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(width: 1.5, color: colorScheme.primary),
+          ),
+        ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          style: TextButton.styleFrom(
+            foregroundColor: colorScheme.onSurface.withValues(alpha: 0.8),
+          ),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
           onPressed: () {
-            final v = int.tryParse(c.text.trim());
-            Navigator.pop<int>(context, (v == null || v < 1) ? 1 : v);
+            final v = widget.isDecimal 
+              ? double.tryParse(c.text.trim()) 
+              : int.tryParse(c.text.trim());
+            Navigator.pop<num>(context, (v == null || v < 0.01) ? 1 : v);
           },
           child: const Text('Done'),
         ),

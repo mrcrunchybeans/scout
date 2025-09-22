@@ -40,26 +40,40 @@ class SearchFilters {
   final String query;
   final Set<String> categories;
   final Set<String> baseUnits;
+  final Set<String> locationIds;
+  final Set<String> grantIds;
+  final Set<String> useTypes;
   final RangeValues? qtyRange;
   final bool? hasLowStock;
   final bool? hasLots;
   final bool? hasBarcode;
   final bool? hasMinQty;
+  final bool? hasExpiringSoon;
+  final bool? hasStale;
+  final bool? hasExcess;
+  final bool? hasExpired;
 
   const SearchFilters({
     this.query = '',
     this.categories = const {},
     this.baseUnits = const {},
+    this.locationIds = const {},
+    this.grantIds = const {},
+    this.useTypes = const {},
     this.qtyRange,
     this.hasLowStock,
     this.hasLots,
     this.hasBarcode,
     this.hasMinQty,
+    this.hasExpiringSoon,
+    this.hasStale,
+    this.hasExcess,
+    this.hasExpired,
   });
 
-  bool get isEmpty => query.isEmpty && categories.isEmpty && baseUnits.isEmpty && qtyRange == null && hasLowStock == null && hasLots == null && hasBarcode == null && hasMinQty == null;
+  bool get isEmpty => query.isEmpty && categories.isEmpty && baseUnits.isEmpty && locationIds.isEmpty && grantIds.isEmpty && useTypes.isEmpty && qtyRange == null && hasLowStock == null && hasLots == null && hasBarcode == null && hasMinQty == null && hasExpiringSoon == null && hasStale == null && hasExcess == null && hasExpired == null;
 
-  bool get hasServerSideFilters => categories.isNotEmpty || baseUnits.isNotEmpty || qtyRange != null || hasLowStock != null || hasLots != null || hasBarcode != null || hasMinQty != null;
+  bool get hasServerSideFilters => categories.isNotEmpty || baseUnits.isNotEmpty || locationIds.isNotEmpty || grantIds.isNotEmpty || useTypes.isNotEmpty || qtyRange != null || hasLowStock != null || hasLots != null || hasBarcode != null || hasMinQty != null || hasExpiringSoon != null || hasStale != null || hasExcess != null || hasExpired != null;
 
   @override
   bool operator ==(Object other) {
@@ -70,11 +84,21 @@ class SearchFilters {
         other.categories.containsAll(categories) &&
         other.baseUnits.length == baseUnits.length &&
         other.baseUnits.containsAll(baseUnits) &&
+        other.locationIds.length == locationIds.length &&
+        other.locationIds.containsAll(locationIds) &&
+        other.grantIds.length == grantIds.length &&
+        other.grantIds.containsAll(grantIds) &&
+        other.useTypes.length == useTypes.length &&
+        other.useTypes.containsAll(useTypes) &&
         other.qtyRange == qtyRange &&
         other.hasLowStock == hasLowStock &&
         other.hasLots == hasLots &&
         other.hasBarcode == hasBarcode &&
-        other.hasMinQty == hasMinQty;
+        other.hasMinQty == hasMinQty &&
+        other.hasExpiringSoon == hasExpiringSoon &&
+        other.hasStale == hasStale &&
+        other.hasExcess == hasExcess &&
+        other.hasExpired == hasExpired;
   }
 
   @override
@@ -83,11 +107,18 @@ class SearchFilters {
       query,
       Object.hashAll(categories.toList()..sort()),
       Object.hashAll(baseUnits.toList()..sort()),
+      Object.hashAll(locationIds.toList()..sort()),
+      Object.hashAll(grantIds.toList()..sort()),
+      Object.hashAll(useTypes.toList()..sort()),
       qtyRange,
       hasLowStock,
       hasLots,
       hasBarcode,
       hasMinQty,
+      hasExpiringSoon,
+      hasStale,
+      hasExcess,
+      hasExpired,
     );
   }
 
@@ -95,21 +126,35 @@ class SearchFilters {
     String? query,
     Set<String>? categories,
     Set<String>? baseUnits,
+    Set<String>? locationIds,
+    Set<String>? grantIds,
+    Set<String>? useTypes,
     RangeValues? qtyRange,
     bool? hasLowStock,
     bool? hasLots,
     bool? hasBarcode,
     bool? hasMinQty,
+    bool? hasExpiringSoon,
+    bool? hasStale,
+    bool? hasExcess,
+    bool? hasExpired,
   }) {
     return SearchFilters(
       query: query ?? this.query,
       categories: categories ?? this.categories,
       baseUnits: baseUnits ?? this.baseUnits,
+      locationIds: locationIds ?? this.locationIds,
+      grantIds: grantIds ?? this.grantIds,
+      useTypes: useTypes ?? this.useTypes,
       qtyRange: qtyRange ?? this.qtyRange,
       hasLowStock: hasLowStock ?? this.hasLowStock,
       hasLots: hasLots ?? this.hasLots,
       hasBarcode: hasBarcode ?? this.hasBarcode,
       hasMinQty: hasMinQty ?? this.hasMinQty,
+      hasExpiringSoon: hasExpiringSoon ?? this.hasExpiringSoon,
+      hasStale: hasStale ?? this.hasStale,
+      hasExcess: hasExcess ?? this.hasExcess,
+      hasExpired: hasExpired ?? this.hasExpired,
     );
   }
 }
@@ -144,19 +189,20 @@ class SearchService {
     required String sortField,
     required bool sortDescending,
     int limit = 1000,
+    bool showAllItems = false, // When true, don't filter out zero-quantity or archived items
   }) async {
     switch (_config.strategy) {
       case SearchStrategy.hybrid:
-        return _searchHybrid(filters, showArchived, sortField, sortDescending, limit);
+        return _searchHybrid(filters, showArchived, sortField, sortDescending, limit, showAllItems);
       case SearchStrategy.clientSide:
-        return _searchClientSide(filters, showArchived, sortField, sortDescending, limit);
+        return _searchClientSide(filters, showArchived, sortField, sortDescending, limit, showAllItems);
       case SearchStrategy.external:
         // Try external search first, fall back to hybrid if offline or fails
         try {
-          return await _searchExternal(filters, showArchived, sortField, sortDescending, limit);
+          return await _searchExternal(filters, showArchived, sortField, sortDescending, limit, showAllItems);
         } catch (e) {
           // Fall back to hybrid search on network errors or configuration issues
-          return _searchHybrid(filters, showArchived, sortField, sortDescending, limit);
+          return _searchHybrid(filters, showArchived, sortField, sortDescending, limit, showAllItems);
         }
     }
   }
@@ -168,6 +214,7 @@ class SearchService {
     String sortField,
     bool sortDescending,
     int limit,
+    bool showAllItems,
   ) async {
     // Start with base query
     Query query = _db.collection('items');
@@ -181,11 +228,40 @@ class SearchService {
     // Apply server-side filters where possible
     bool usedServerSide = false;
 
-    // Category filtering (server-side)
-    if (filters.categories.isNotEmpty) {
-      // Firestore array-contains-any for multiple categories
-      query = query.where('category', whereIn: filters.categories.toList());
-      usedServerSide = true;
+    // Count how many multi-value filters are active
+    final multiValueFilters = [
+      if (filters.categories.isNotEmpty) 'categories',
+      if (filters.locationIds.isNotEmpty) 'locationIds',
+      if (filters.grantIds.isNotEmpty) 'grantIds',
+      if (filters.useTypes.isNotEmpty) 'useTypes',
+    ];
+
+    // Only use server-side filtering for single multi-value filters
+    // Multiple whereIn clauses are not supported by Firestore
+    if (multiValueFilters.length <= 1) {
+      // Category filtering (server-side)
+      if (filters.categories.isNotEmpty) {
+        query = query.where('category', whereIn: filters.categories.toList());
+        usedServerSide = true;
+      }
+
+      // Location filtering (server-side)
+      if (filters.locationIds.isNotEmpty) {
+        query = query.where('homeLocationId', whereIn: filters.locationIds.toList());
+        usedServerSide = true;
+      }
+
+      // Grant filtering (server-side)
+      if (filters.grantIds.isNotEmpty) {
+        query = query.where('grantId', whereIn: filters.grantIds.toList());
+        usedServerSide = true;
+      }
+
+      // Use type filtering (server-side)
+      if (filters.useTypes.isNotEmpty) {
+        query = query.where('useType', whereIn: filters.useTypes.toList());
+        usedServerSide = true;
+      }
     }
 
     // Quantity range filtering (server-side for simple cases)
@@ -200,8 +276,20 @@ class SearchService {
       usedServerSide = true;
     }
 
+    // Low stock filter (server-side)
+    if (filters.hasLowStock != null) {
+      query = query.where('flagLow', isEqualTo: filters.hasLowStock);
+      usedServerSide = true;
+    }
+
     // Low stock and has lots require client-side filtering
-    final needsClientSide = filters.query.isNotEmpty || filters.hasLowStock != null || filters.hasLots != null;
+    final needsClientSide = filters.query.isNotEmpty ||
+                           filters.hasLots != null ||
+                           filters.hasExpiringSoon != null ||
+                           filters.hasStale != null ||
+                           filters.hasExcess != null ||
+                           filters.hasExpired != null ||
+                           multiValueFilters.length > 1; // Multiple multi-value filters need client-side
 
     // Apply sorting
     query = query.orderBy(sortField, descending: sortDescending);
@@ -236,13 +324,13 @@ class SearchService {
       final hasMinQtySet = minQty > 0;
       final isArchived = (data['archived'] ?? false) as bool;
 
-      // Filter out items with zero quantity (unless showing archived items)
-      if (!showArchived && qty <= 0) {
+      // Filter out items with zero quantity (unless showing archived items or showAllItems is true)
+      if (!showArchived && !showAllItems && qty <= 0) {
         return false;
       }
 
-      // Filter by archived status (client-side for active items)
-      if (!showArchived && isArchived) {
+      // Filter by archived status (client-side for active items, unless showAllItems is true)
+      if (!showArchived && !showAllItems && isArchived) {
         return false;
       }
 
@@ -266,9 +354,43 @@ class SearchService {
         return false;
       }
 
+      // Location filter
+      if (filters.locationIds.isNotEmpty) {
+        final homeLocationId = (data['homeLocationId'] ?? '') as String;
+        if (!filters.locationIds.contains(homeLocationId)) {
+          return false;
+        }
+      }
+
+      // Grant filter
+      if (filters.grantIds.isNotEmpty) {
+        final grantId = (data['grantId'] ?? '') as String;
+        if (!filters.grantIds.contains(grantId)) {
+          return false;
+        }
+      }
+
+      // Use type filter
+      if (filters.useTypes.isNotEmpty) {
+        final useType = (data['useType'] ?? '') as String;
+        if (!filters.useTypes.contains(useType)) {
+          return false;
+        }
+      }
+
+      // Quantity range filter
+      if (filters.qtyRange != null) {
+        if (qty < filters.qtyRange!.start || qty > filters.qtyRange!.end) {
+          return false;
+        }
+      }
+
       // Low stock filter
-      if (filters.hasLowStock == true && qty >= minQty) {
-        return false;
+      if (filters.hasLowStock != null) {
+        final flagLow = (data['flagLow'] ?? false) as bool;
+        if (flagLow != filters.hasLowStock!) {
+          return false;
+        }
       }
 
       // Has lots filter
@@ -284,6 +406,38 @@ class SearchService {
       // Has minimum quantity filter
       if (filters.hasMinQty != null && hasMinQtySet != filters.hasMinQty!) {
         return false;
+      }
+
+      // Expiring soon filter (check flagExpiringSoon field)
+      if (filters.hasExpiringSoon != null) {
+        final flagExpiringSoon = (data['flagExpiringSoon'] ?? false) as bool;
+        if (flagExpiringSoon != filters.hasExpiringSoon!) {
+          return false;
+        }
+      }
+
+      // Stale items filter (check flagStale field)
+      if (filters.hasStale != null) {
+        final flagStale = (data['flagStale'] ?? false) as bool;
+        if (flagStale != filters.hasStale!) {
+          return false;
+        }
+      }
+
+      // Excess items filter (check flagExcess field)
+      if (filters.hasExcess != null) {
+        final flagExcess = (data['flagExcess'] ?? false) as bool;
+        if (flagExcess != filters.hasExcess!) {
+          return false;
+        }
+      }
+
+      // Expired items filter (check flagExpired field)
+      if (filters.hasExpired != null) {
+        final flagExpired = (data['flagExpired'] ?? false) as bool;
+        if (flagExpired != filters.hasExpired!) {
+          return false;
+        }
       }
 
       return true;
@@ -307,6 +461,7 @@ class SearchService {
     String sortField,
     bool sortDescending,
     int limit,
+    bool showAllItems,
   ) async {
     Query query = _db.collection('items')
         .orderBy(sortField, descending: sortDescending)
@@ -320,17 +475,16 @@ class SearchService {
       final name = (data['name'] ?? '') as String;
       final category = (data['category'] ?? '') as String;
       final qty = (data['qtyOnHand'] ?? 0) as num;
-      final minQty = (data['minQty'] ?? 0) as num;
       final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
       final isArchived = (data['archived'] ?? false) as bool;
 
-      // Filter out items with zero quantity (unless showing archived items)
-      if (!showArchived && qty <= 0) {
+      // Filter out items with zero quantity (unless showing archived items or showAllItems is true)
+      if (!showArchived && !showAllItems && qty <= 0) {
         return false;
       }
 
-      // Filter by archived status
-      if (!showArchived && isArchived) {
+      // Filter by archived status (unless showAllItems is true)
+      if (!showArchived && !showAllItems && isArchived) {
         return false;
       }
 
@@ -349,6 +503,38 @@ class SearchService {
         return false;
       }
 
+      // Base unit filter
+      if (filters.baseUnits.isNotEmpty) {
+        final baseUnit = (data['baseUnit'] ?? '') as String;
+        if (!filters.baseUnits.contains(baseUnit)) {
+          return false;
+        }
+      }
+
+      // Location filter
+      if (filters.locationIds.isNotEmpty) {
+        final homeLocationId = (data['homeLocationId'] ?? '') as String;
+        if (!filters.locationIds.contains(homeLocationId)) {
+          return false;
+        }
+      }
+
+      // Grant filter
+      if (filters.grantIds.isNotEmpty) {
+        final grantId = (data['grantId'] ?? '') as String;
+        if (!filters.grantIds.contains(grantId)) {
+          return false;
+        }
+      }
+
+      // Use type filter
+      if (filters.useTypes.isNotEmpty) {
+        final useType = (data['useType'] ?? '') as String;
+        if (!filters.useTypes.contains(useType)) {
+          return false;
+        }
+      }
+
       // Quantity range filter
       if (filters.qtyRange != null) {
         if (qty < filters.qtyRange!.start || qty > filters.qtyRange!.end) {
@@ -357,8 +543,11 @@ class SearchService {
       }
 
       // Low stock filter
-      if (filters.hasLowStock == true && qty >= minQty) {
-        return false;
+      if (filters.hasLowStock != null) {
+        final flagLow = (data['flagLow'] ?? false) as bool;
+        if (flagLow != filters.hasLowStock!) {
+          return false;
+        }
       }
 
       // Has lots filter
@@ -386,13 +575,14 @@ class SearchService {
     String sortField,
     bool sortDescending,
     int limit,
+    bool showAllItems,
   ) async {
     // Check if Algolia is configured
     if (!_config.enableAlgolia ||
         _config.algoliaAppId == null ||
         _config.algoliaSearchApiKey == null ||
         _config.algoliaIndexName == null) {
-      return _searchHybrid(filters, showArchived, sortField, sortDescending, limit);
+      return _searchHybrid(filters, showArchived, sortField, sortDescending, limit, showAllItems);
     }
 
     try {
@@ -460,7 +650,7 @@ class SearchService {
       );
     } catch (e) {
       // Fall back to hybrid search on any error
-      return _searchHybrid(filters, showArchived, sortField, sortDescending, limit);
+      return _searchHybrid(filters, showArchived, sortField, sortDescending, limit, showAllItems);
     }
   }
 
@@ -494,8 +684,8 @@ class SearchService {
     }
 
     // Low stock filter
-    if (filters.hasLowStock == true) {
-      filterParts.add('qtyOnHand < minQty');
+    if (filters.hasLowStock != null) {
+      filterParts.add('flagLow:${filters.hasLowStock!}');
     }
 
     // Base unit filter

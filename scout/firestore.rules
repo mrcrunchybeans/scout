@@ -150,11 +150,22 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // ---------- Admin/config (blocked unless admin) ----------
+    // ---------- Counters ----------  
+    match /counters/{document=**} {
+      allow read, write: if isAuthed();
+    }
+
+    // ---------- Admin/config (authenticated users can write) ----------
     match /admin/{document=**} {
-      allow write: if isAdmin();
+      allow write: if isAuthed();
     }
     match /config/{document=**} {
+      allow write: if isAuthed();
+    }
+
+    // ---------- Backups (admin only for writes, public for reads) ----------
+    match /backups/{document=**} {
+      allow read: if true;
       allow write: if isAdmin();
     }
   }

@@ -4,7 +4,11 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:scout/features/items/new_item_page.dart';
 import '../dashboard/dashboard_page.dart';
 import '../items/item_detail_page.dart';
+import '../lookups_management_page.dart';
 import '../../services/search_service.dart';
+import '../../data/lookups_service.dart';
+import '../../models/option_item.dart';
+import '../../utils/audit.dart';
 
 import '../../dev/seed_lookups.dart';
 
@@ -12,7 +16,10 @@ enum SortOption { updatedDesc, nameAsc, nameDesc, categoryAsc, categoryDesc, qty
 enum ViewMode { active, archived }
 
 class ItemsPage extends StatefulWidget {
-  const ItemsPage({super.key});
+  final SearchFilters? initialFilters;
+  final bool isFromDashboard;
+  
+  const ItemsPage({super.key, this.initialFilters, this.isFromDashboard = false});
   @override
   State<ItemsPage> createState() => _ItemsPageState();
 }
@@ -31,13 +38,19 @@ class _ItemsPageState extends State<ItemsPage> {
     ),
   );
   bool _busy = false;
-  SearchFilters _filters = const SearchFilters();
+  late SearchFilters _filters;
   SortOption _sortOption = SortOption.updatedDesc;
   ViewMode _viewMode = ViewMode.active;
   bool _selectionMode = false;
   bool _showAdvancedFilters = false;
   final Set<String> _selectedIds = {};
   int _refreshCounter = 0; // Counter to force refresh after operations
+
+  @override
+  void initState() {
+    super.initState();
+    _filters = widget.initialFilters ?? const SearchFilters();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -108,19 +121,22 @@ class _ItemsPageState extends State<ItemsPage> {
                   } else if (key == 'reset-seed') {
                     final ok = await showDialog<bool>(
                       context: context,
-                      builder: (_) => AlertDialog(
-                        title: const Text('Reset & seed lookups?'),
-                        content: const Text('This will DELETE all lookup docs, then reseed.'),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('Cancel'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('Reset'),
-                          ),
-                        ],
+                      builder: (_) => Theme(
+                        data: Theme.of(context),
+                        child: AlertDialog(
+                          title: const Text('Reset & seed lookups?'),
+                          content: const Text('This will DELETE all lookup docs, then reseed.'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('Reset'),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                     if (ok == true) {
@@ -150,6 +166,10 @@ class _ItemsPageState extends State<ItemsPage> {
                     setState(() => _viewMode = _viewMode == ViewMode.active ? ViewMode.archived : ViewMode.active);
                   } else if (key == 'bulk-edit') {
                     setState(() => _selectionMode = true);
+                  } else if (key == 'manage-lookups') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const LookupsManagementPage()),
+                    );
                   }
                 } catch (e) {
                   if (!context.mounted) return;
@@ -169,13 +189,15 @@ class _ItemsPageState extends State<ItemsPage> {
                 const PopupMenuItem(value: 'seed-once', child: Text('Seed (only if empty)')),
                 const PopupMenuItem(value: 'reseed-merge', child: Text('Reseed (merge by code)')),
                 const PopupMenuItem(value: 'reset-seed', child: Text('Reset & seed (destructive)')),
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 'manage-lookups', child: Text('Manage Lookups')),
               ],
               icon: const Icon(Icons.settings),
             ),
           ],
         ],
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_showAdvancedFilters ? 300 : 100),
+          preferredSize: Size.fromHeight(_showAdvancedFilters ? 500 : 100),
           child: Padding(
             padding: const EdgeInsets.all(8),
             child: Column(
@@ -262,6 +284,7 @@ class _ItemsPageState extends State<ItemsPage> {
           sortField: sortField,
           sortDescending: sortDescending,
           limit: 1000,
+          showAllItems: widget.isFromDashboard,
         ),
         builder: (context, snap) {
           if (snap.hasError) {
@@ -364,17 +387,30 @@ class _ItemsPageState extends State<ItemsPage> {
                           if (action == 'delete') {
                             final ok = await showDialog<bool>(
                               context: context,
-                              builder: (_) => AlertDialog(
-                                title: const Text('Delete Item'),
-                                content: Text('Delete "$name"? This cannot be undone.'),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                  FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
-                                ],
+                              builder: (_) => Theme(
+                                data: Theme.of(context),
+                                child: AlertDialog(
+                                  title: const Text('Delete Item'),
+                                  content: Text('Delete "$name"? This cannot be undone.'),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+                                  ],
+                                ),
                               ),
                             );
                             if (ok == true) {
                               await _db.collection('items').doc(d.id).delete();
+                              
+                              // Log the item deletion
+                              await Audit.log('item.delete', {
+                                'itemId': d.id,
+                                'name': name,
+                                'category': data['category'],
+                                'baseUnit': data['baseUnit'],
+                                'qtyOnHand': data['qtyOnHand'],
+                              });
+                              
                               // Also sync the deletion to Algolia if configured
                               try {
                                 await _searchService.syncItemToAlgolia(d.id);
@@ -442,24 +478,61 @@ class _ItemsPageState extends State<ItemsPage> {
     final count = _selectedIds.length;
     final ok = await showDialog<bool>(
       context: ctx,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete Items'),
-        content: Text('Delete $count selected items? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
-        ],
+      builder: (_) => Theme(
+        data: Theme.of(context),
+        child: AlertDialog(
+          title: const Text('Delete Items'),
+          content: Text('Delete $count selected items? This cannot be undone.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          ],
+        ),
       ),
     );
     if (ok != true) return;
 
     setState(() => _busy = true);
     try {
+      // First, collect item data for audit logging before deletion
+      final itemsData = <String, Map<String, dynamic>>{};
+      for (final id in _selectedIds) {
+        try {
+          final doc = await _db.collection('items').doc(id).get();
+          if (doc.exists) {
+            itemsData[id] = doc.data()!;
+          }
+        } catch (e) {
+          debugPrint('Failed to fetch data for item $id: $e');
+        }
+      }
+      
       final batch = _db.batch();
       for (final id in _selectedIds) {
         batch.delete(_db.collection('items').doc(id));
       }
       await batch.commit();
+      
+      // Log bulk item deletions
+      for (final id in _selectedIds) {
+        final data = itemsData[id];
+        if (data != null) {
+          await Audit.log('item.delete', {
+            'itemId': id,
+            'name': data['name'] ?? 'Unknown',
+            'category': data['category'],
+            'baseUnit': data['baseUnit'],
+            'qtyOnHand': data['qtyOnHand'],
+            'bulkDelete': true,
+          });
+        } else {
+          await Audit.log('item.delete', {
+            'itemId': id,
+            'bulkDelete': true,
+            'error': 'Could not fetch item data before deletion',
+          });
+        }
+      }
       
       // Sync deletions to Algolia
       for (final id in _selectedIds) {
@@ -506,28 +579,67 @@ class _ItemsPageState extends State<ItemsPage> {
   }
 
   Widget _buildAdvancedFilters() {
-    return FutureBuilder<QuerySnapshot>(
-      future: _db.collection('items').where('archived', isEqualTo: _viewMode == ViewMode.archived).get(),
+    return FutureBuilder<List<dynamic>>(
+      future: Future.wait([
+        _db.collection('items').where('archived', isEqualTo: _viewMode == ViewMode.archived).get(),
+        LookupsService().locations(),
+        LookupsService().grants(),
+      ]),
+      key: ValueKey('filters_$_viewMode$_refreshCounter'),
       builder: (context, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
         
+        final itemsSnap = snap.data![0] as QuerySnapshot;
+        final locations = snap.data![1] as List<OptionItem>;
+        final grants = snap.data![2] as List<OptionItem>;
+        
         final categories = <String>{};
         final baseUnits = <String>{};
+        final locationIds = <String>{};
+        final grantIds = <String>{};
+        final useTypes = <String>{};
         double maxQty = 0;
+        int totalItems = itemsSnap.docs.length;
         
-        for (final doc in snap.data!.docs) {
+        for (final doc in itemsSnap.docs) {
           final data = doc.data() as Map<String, dynamic>;
           final category = (data['category'] ?? '') as String;
           final baseUnit = (data['baseUnit'] ?? '') as String;
+          final locationId = (data['homeLocationId'] ?? '') as String;
+          final grantId = (data['grantId'] ?? '') as String;
+          final useType = (data['useType'] ?? '') as String;
           final qty = (data['qtyOnHand'] ?? 0) as num;
           
           if (category.isNotEmpty) categories.add(category);
           if (baseUnit.isNotEmpty) baseUnits.add(baseUnit);
+          if (locationId.isNotEmpty) locationIds.add(locationId);
+          if (grantId.isNotEmpty) grantIds.add(grantId);
+          if (useType.isNotEmpty) useTypes.add(useType);
           if (qty > maxQty) maxQty = qty.toDouble();
         }
         
         final categoryList = categories.toList()..sort();
         final baseUnitList = baseUnits.toList()..sort();
+        
+        // Create location name mappings
+        final locationMap = <String, String>{};
+        for (final loc in locations) {
+          if (locationIds.contains(loc.id)) {
+            locationMap[loc.id] = loc.name;
+          }
+        }
+        final locationList = locationMap.values.toList()..sort();
+        
+        // Create grant name mappings
+        final grantMap = <String, String>{};
+        for (final grant in grants) {
+          if (grantIds.contains(grant.id)) {
+            grantMap[grant.id] = grant.name;
+          }
+        }
+        final grantList = grantMap.values.toList()..sort();
+        
+        final useTypeList = useTypes.toList()..sort();
         
         return Card(
           child: Padding(
@@ -537,7 +649,7 @@ class _ItemsPageState extends State<ItemsPage> {
               children: [
                 Row(
                   children: [
-                    const Text('Filters', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text('Advanced Filters ($totalItems items)', style: const TextStyle(fontWeight: FontWeight.bold)),
                     const Spacer(),
                     TextButton(
                       onPressed: () => setState(() => _filters = const SearchFilters()),
@@ -545,115 +657,324 @@ class _ItemsPageState extends State<ItemsPage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 12),
+                
+                // Search query and basic filters
+                if (totalItems > 10) ...[
+                  _buildFilterSection(
+                    title: 'Quick Filters',
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        FilterChip(
+                          label: const Text('Low Stock'),
+                          selected: _filters.hasLowStock ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLowStock: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Has Lots'),
+                          selected: _filters.hasLots ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLots: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Has Barcode'),
+                          selected: _filters.hasBarcode ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasBarcode: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Has Min Qty'),
+                          selected: _filters.hasMinQty ?? false,
+                          onSelected: (selected) => setState(() => _filters.copyWith(hasMinQty: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Expiring Soon'),
+                          selected: _filters.hasExpiringSoon ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Expired'),
+                          selected: _filters.hasExpired ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpired: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Stale'),
+                          selected: _filters.hasStale ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasStale: selected ? true : null)),
+                        ),
+                        FilterChip(
+                          label: const Text('Excess Stock'),
+                          selected: _filters.hasExcess ?? false,
+                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExcess: selected ? true : null)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // Categories
                 if (categoryList.isNotEmpty) ...[
-                  const Text('Categories:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  Wrap(
-                    spacing: 8,
-                    children: categoryList.map((cat) => FilterChip(
-                      label: Text(cat),
-                      selected: _filters.categories.contains(cat),
-                      onSelected: (selected) {
+                  _buildFilterSection(
+                    title: 'Categories (${categoryList.length})',
+                    child: _buildExpandableChipList(
+                      items: categoryList,
+                      selectedItems: _filters.categories,
+                      onSelectionChanged: (selected, category) {
                         setState(() {
                           final newCategories = Set<String>.from(_filters.categories);
                           if (selected) {
-                            newCategories.add(cat);
+                            newCategories.add(category);
                           } else {
-                            newCategories.remove(cat);
+                            newCategories.remove(category);
                           }
                           _filters = _filters.copyWith(categories: newCategories);
                         });
                       },
-                    )).toList(),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (baseUnitList.isNotEmpty) ...[
-                  const Text('Units:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  Wrap(
-                    spacing: 8,
-                    children: baseUnitList.map((unit) => FilterChip(
-                      label: Text(unit),
-                      selected: _filters.baseUnits.contains(unit),
-                      onSelected: (selected) {
-                        setState(() {
-                          final newBaseUnits = Set<String>.from(_filters.baseUnits);
-                          if (selected) {
-                            newBaseUnits.add(unit);
-                          } else {
-                            newBaseUnits.remove(unit);
-                          }
-                          _filters = _filters.copyWith(baseUnits: newBaseUnits);
-                        });
-                      },
-                    )).toList(),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                const Text('Quantity Range:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                RangeSlider(
-                  values: _filters.qtyRange ?? RangeValues(0, maxQty),
-                  min: 0,
-                  max: maxQty,
-                  divisions: maxQty > 0 ? maxQty.toInt() : 1,
-                  labels: RangeLabels(
-                    (_filters.qtyRange?.start ?? 0).toStringAsFixed(0),
-                    (_filters.qtyRange?.end ?? maxQty).toStringAsFixed(0),
-                  ),
-                  onChanged: (values) => setState(() => _filters = _filters.copyWith(qtyRange: values)),
-                ),
-                const SizedBox(height: 8),
-                // First row of checkboxes
-                Row(
-                  children: [
-                    Expanded(
-                      child: CheckboxListTile(
-                        title: const Text('Low Stock Only', style: TextStyle(fontSize: 14)),
-                        value: _filters.hasLowStock ?? false,
-                        onChanged: (value) => setState(() => _filters = _filters.copyWith(hasLowStock: value)),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        dense: true,
-                      ),
                     ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // Units and Quantity
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (baseUnitList.isNotEmpty) 
+                      Expanded(
+                        child: _buildFilterSection(
+                          title: 'Units (${baseUnitList.length})',
+                          child: _buildExpandableChipList(
+                            items: baseUnitList,
+                            selectedItems: _filters.baseUnits,
+                            maxVisible: 6,
+                            onSelectionChanged: (selected, unit) {
+                              setState(() {
+                                final newBaseUnits = Set<String>.from(_filters.baseUnits);
+                                if (selected) {
+                                  newBaseUnits.add(unit);
+                                } else {
+                                  newBaseUnits.remove(unit);
+                                }
+                                _filters = _filters.copyWith(baseUnits: newBaseUnits);
+                              });
+                            },
+                          ),
+                        ),
+                      ),
+                    const SizedBox(width: 16),
                     Expanded(
-                      child: CheckboxListTile(
-                        title: const Text('Has Lots', style: TextStyle(fontSize: 14)),
-                        value: _filters.hasLots ?? false,
-                        onChanged: (value) => setState(() => _filters = _filters.copyWith(hasLots: value)),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        dense: true,
+                      child: _buildFilterSection(
+                        title: 'Quantity Range',
+                        child: Column(
+                          children: [
+                            RangeSlider(
+                              values: _filters.qtyRange ?? RangeValues(0, maxQty),
+                              min: 0,
+                              max: maxQty,
+                              divisions: maxQty > 0 ? (maxQty / 10).ceil() : 1,
+                              labels: RangeLabels(
+                                (_filters.qtyRange?.start ?? 0).toStringAsFixed(0),
+                                (_filters.qtyRange?.end ?? maxQty).toStringAsFixed(0),
+                              ),
+                              onChanged: (values) => setState(() => _filters = _filters.copyWith(qtyRange: values)),
+                            ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text('0', style: Theme.of(context).textTheme.bodySmall),
+                                Text(maxQty.toStringAsFixed(0), style: Theme.of(context).textTheme.bodySmall),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                 ),
-                // Second row of checkboxes
-                Row(
-                  children: [
-                    Expanded(
-                      child: CheckboxListTile(
-                        title: const Text('Has Barcode', style: TextStyle(fontSize: 14)),
-                        value: _filters.hasBarcode ?? false,
-                        onChanged: (value) => setState(() => _filters = _filters.copyWith(hasBarcode: value)),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        dense: true,
-                      ),
+
+                const SizedBox(height: 16),
+
+                // Locations and Grants
+                if (locationList.isNotEmpty || grantList.isNotEmpty) ...[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (locationList.isNotEmpty)
+                        Expanded(
+                          child: _buildFilterSection(
+                            title: 'Locations (${locationList.length})',
+                            child: _buildExpandableChipList(
+                              items: locationList,
+                              selectedItems: _filters.locationIds.map((id) => locationMap.entries.firstWhere((e) => e.key == id, orElse: () => MapEntry('', '')).value).where((name) => name.isNotEmpty).toSet(),
+                              maxVisible: 4,
+                              onSelectionChanged: (selected, locationName) {
+                                // Find the ID for this location name
+                                final locationId = locationMap.entries.firstWhere((e) => e.value == locationName).key;
+                                setState(() {
+                                  final newLocationIds = Set<String>.from(_filters.locationIds);
+                                  if (selected) {
+                                    newLocationIds.add(locationId);
+                                  } else {
+                                    newLocationIds.remove(locationId);
+                                  }
+                                  _filters = _filters.copyWith(locationIds: newLocationIds);
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                      if (locationList.isNotEmpty && grantList.isNotEmpty)
+                        const SizedBox(width: 16),
+                      if (grantList.isNotEmpty)
+                        Expanded(
+                          child: _buildFilterSection(
+                            title: 'Grants (${grantList.length})',
+                            child: _buildExpandableChipList(
+                              items: grantList,
+                              selectedItems: _filters.grantIds.map((id) => grantMap.entries.firstWhere((e) => e.key == id, orElse: () => MapEntry('', '')).value).where((name) => name.isNotEmpty).toSet(),
+                              maxVisible: 4,
+                              onSelectionChanged: (selected, grantName) {
+                                // Find the ID for this grant name
+                                final grantId = grantMap.entries.firstWhere((e) => e.value == grantName).key;
+                                setState(() {
+                                  final newGrantIds = Set<String>.from(_filters.grantIds);
+                                  if (selected) {
+                                    newGrantIds.add(grantId);
+                                  } else {
+                                    newGrantIds.remove(grantId);
+                                  }
+                                  _filters = _filters.copyWith(grantIds: newGrantIds);
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // Use Types
+                if (useTypeList.isNotEmpty) ...[
+                  _buildFilterSection(
+                    title: 'Usage Types',
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: useTypeList.map((useType) => FilterChip(
+                        label: Text(_formatUseType(useType)),
+                        selected: _filters.useTypes.contains(useType),
+                        onSelected: (selected) {
+                          setState(() {
+                            final newUseTypes = Set<String>.from(_filters.useTypes);
+                            if (selected) {
+                              newUseTypes.add(useType);
+                            } else {
+                              newUseTypes.remove(useType);
+                            }
+                            _filters = _filters.copyWith(useTypes: newUseTypes);
+                          });
+                        },
+                      )).toList(),
                     ),
-                    Expanded(
-                      child: CheckboxListTile(
-                        title: const Text('Has Min Qty', style: TextStyle(fontSize: 14)),
-                        value: _filters.hasMinQty ?? false,
-                        onChanged: (value) => setState(() => _filters = _filters.copyWith(hasMinQty: value)),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        dense: true,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ],
             ),
           ),
         );
       },
     );
+  }
+
+  Widget _buildFilterSection({required String title, required Widget child}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+        const SizedBox(height: 8),
+        child,
+      ],
+    );
+  }
+
+  Widget _buildExpandableChipList({
+    required List<String> items,
+    required Set<String> selectedItems,
+    required Function(bool, String) onSelectionChanged,
+    int maxVisible = 8,
+  }) {
+    final showAll = items.length <= maxVisible;
+    final visibleItems = showAll ? items : items.take(maxVisible).toList();
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: visibleItems.map((item) => FilterChip(
+            label: Text(item, style: const TextStyle(fontSize: 12)),
+            selected: selectedItems.contains(item),
+            onSelected: (selected) => onSelectionChanged(selected, item),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          )).toList(),
+        ),
+        if (!showAll) ...[
+          const SizedBox(height: 4),
+          TextButton(
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Select Items'),
+                  content: SizedBox(
+                    width: double.maxFinite,
+                    height: 300,
+                    child: ListView.builder(
+                      itemCount: items.length,
+                      itemBuilder: (context, index) {
+                        final item = items[index];
+                        return CheckboxListTile(
+                          title: Text(item),
+                          value: selectedItems.contains(item),
+                          onChanged: (selected) {
+                            onSelectionChanged(selected ?? false, item);
+                          },
+                          dense: true,
+                        );
+                      },
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              );
+            },
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 0),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text('+ ${items.length - maxVisible} more', style: const TextStyle(fontSize: 12)),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _formatUseType(String useType) {
+    switch (useType.toLowerCase()) {
+      case 'staff': return 'Staff Only';
+      case 'patient': return 'Patient Only';
+      case 'both': return 'Staff & Patient';
+      default: return useType;
+    }
   }
 }
