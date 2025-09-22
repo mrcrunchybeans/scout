@@ -341,22 +341,19 @@ class _NewItemPageState extends State<NewItemPage> {
 
   @override
   Widget build(BuildContext context) {
-    final loading = _locs == null || _grants == null;
-
+    // Don't block on lookups - show form immediately and populate dropdowns as data loads
     return Scaffold(
       appBar: AppBar(title: Text(widget.itemId != null ? 'Edit Item' : 'New Item')),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _form,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // USB wedge: only capture into barcode if field is focused or empty
-                  UsbWedgeScanner(
-                    allow: (_) => _barcodeFocus.hasFocus || _barcode.text.isEmpty,
-                    onCode: _acceptCode,
-                  ),
+      body: Form(
+        key: _form,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // USB wedge: only capture into barcode if field is focused or empty
+            UsbWedgeScanner(
+              allow: (_) => _barcodeFocus.hasFocus || _barcode.text.isEmpty,
+              onCode: _acceptCode,
+            ),
 
                   TextFormField(
                     controller: _name,
@@ -371,11 +368,34 @@ class _NewItemPageState extends State<NewItemPage> {
                     initialValue: TextEditingValue(text: _category),
                     optionsBuilder: (TextEditingValue textEditingValue) {
                       if (textEditingValue.text.isEmpty) {
-                        return _categories;
+                        return _categories.take(10); // Limit to 10 when showing all
                       }
-                      return _categories.where((String option) {
-                        return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+                      
+                      final query = textEditingValue.text.toLowerCase();
+                      final matches = _categories.where((String option) {
+                        return option.toLowerCase().contains(query);
+                      }).toList();
+                      
+                      // Sort: exact matches first, then starts with, then contains
+                      matches.sort((a, b) {
+                        final aLower = a.toLowerCase();
+                        final bLower = b.toLowerCase();
+                        
+                        // Exact match gets highest priority
+                        if (aLower == query) return -1;
+                        if (bLower == query) return 1;
+                        
+                        // Starts with gets higher priority than just contains
+                        final aStarts = aLower.startsWith(query);
+                        final bStarts = bLower.startsWith(query);
+                        if (aStarts && !bStarts) return -1;
+                        if (bStarts && !aStarts) return 1;
+                        
+                        // Alphabetical otherwise
+                        return a.compareTo(b);
                       });
+                      
+                      return matches.take(8); // Limit suggestions
                     },
                     onSelected: (String selection) {
                       _category = selection;

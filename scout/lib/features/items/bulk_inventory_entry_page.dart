@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:uuid/uuid.dart';
 
 import '../../widgets/scanner_sheet.dart';
@@ -11,6 +12,10 @@ import '../../data/product_enrichment_service.dart';
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 import 'new_item_page.dart';
+import '../../services/label_export_service.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 enum UseType { staff, patient, both }
 
@@ -910,6 +915,13 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         ),
         actions: [
           TextButton(
+            onPressed: () => _exportLabels(context),
+            style: TextButton.styleFrom(
+              foregroundColor: colorScheme.primary,
+            ),
+            child: const Text('Export Labels'),
+          ),
+          TextButton(
             onPressed: () => Navigator.of(context).pop(),
             style: TextButton.styleFrom(
               foregroundColor: colorScheme.onSurface.withValues(alpha: 0.8),
@@ -919,6 +931,64 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         ],
       ),
     );
+  }
+
+  Future<void> _exportLabels(BuildContext context) async {
+    Navigator.of(context).pop(); // Close the success dialog
+
+    try {
+      // Get all created items and their lots
+      final itemIds = <String>[];
+      for (final product in _pendingProducts.values) {
+        itemIds.add(product.itemId);
+            }
+
+      if (itemIds.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No items found to export labels for')),
+        );
+        return;
+      }
+
+      // Get lots data for the created items
+      final lotsData = await LabelExportService.getLotsForItems(itemIds);
+
+      if (lotsData.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No lots found for created items')),
+        );
+        return;
+      }
+
+      // Generate PDF
+      final pdfBytes = await LabelExportService.generateLabels(lotsData);
+
+      // Export based on platform
+      if (kIsWeb) {
+        // Web: Direct download
+        await LabelExportService.exportLabels(lotsData);
+      } else {
+        // Mobile: Save to temp file and share
+        final tempDir = await getTemporaryDirectory();
+        final fileName = 'bulk_entry_labels_${DateTime.now().millisecondsSinceEpoch}.pdf';
+        final file = File('${tempDir.path}/$fileName');
+        await file.writeAsBytes(pdfBytes);
+
+        // Share the file
+        await Share.shareXFiles(
+          [XFile(file.path, name: fileName)],
+          text: 'Bulk Entry Labels PDF',
+        );
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Generated labels for ${lotsData.length} lots')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to export labels: $e')),
+      );
+    }
   }
 
   void _showScannerSheet() async {
@@ -1980,11 +2050,34 @@ class _QuickAddNewProductDialogState extends State<QuickAddNewProductDialog> {
                       initialValue: TextEditingValue(text: _category),
                       optionsBuilder: (TextEditingValue textEditingValue) {
                         if (textEditingValue.text.isEmpty) {
-                          return _categories;
+                          return _categories.take(10); // Limit to 10 when showing all
                         }
-                        return _categories.where((String option) {
-                          return option.toLowerCase().contains(textEditingValue.text.toLowerCase());
+                        
+                        final query = textEditingValue.text.toLowerCase();
+                        final matches = _categories.where((String option) {
+                          return option.toLowerCase().contains(query);
+                        }).toList();
+                        
+                        // Sort: exact matches first, then starts with, then contains
+                        matches.sort((a, b) {
+                          final aLower = a.toLowerCase();
+                          final bLower = b.toLowerCase();
+                          
+                          // Exact match gets highest priority
+                          if (aLower == query) return -1;
+                          if (bLower == query) return 1;
+                          
+                          // Starts with gets higher priority than just contains
+                          final aStarts = aLower.startsWith(query);
+                          final bStarts = bLower.startsWith(query);
+                          if (aStarts && !bStarts) return -1;
+                          if (bStarts && !aStarts) return 1;
+                          
+                          // Alphabetical otherwise
+                          return a.compareTo(b);
                         });
+                        
+                        return matches.take(8); // Limit suggestions
                       },
                       onSelected: (String selection) {
                         setState(() => _category = selection);

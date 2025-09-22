@@ -11,10 +11,13 @@ class OperatorChip extends StatelessWidget {
     return ValueListenableBuilder<String?>(
       valueListenable: main.OperatorStore.name,
       builder: (context, name, _) {
-        final label = name?.isNotEmpty == true ? name! : 'Set user';
-        return InkWell(
-          borderRadius: BorderRadius.circular(24),
-          onTap: () async {
+        final isUnset = name?.isNotEmpty != true;
+        final label = isUnset ? 'Tap to set your name' : name!;
+        return Tooltip(
+          message: isUnset ? 'Set your name for audit logs' : 'Tap to change your name',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(24),
+            onTap: () async {
             final controller = TextEditingController(text: name ?? '');
             final picked = await showDialog<String?>(
               context: context,
@@ -69,6 +72,7 @@ class OperatorChip extends StatelessWidget {
               ],
             ),
           ),
+        )
         );
       },
     );

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:scout/features/items/new_item_page.dart';
 import '../dashboard/dashboard_page.dart';
@@ -9,10 +10,14 @@ import '../../services/search_service.dart';
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 import '../../utils/audit.dart';
+import '../../services/label_export_service.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../dev/seed_lookups.dart';
 
-enum SortOption { updatedDesc, nameAsc, nameDesc, categoryAsc, categoryDesc, qtyAsc, qtyDesc }
+enum SortOption { updatedDesc, nameAsc, nameDesc, categoryAsc, categoryDesc, qtyAsc, qtyDesc, expirationAsc, expirationDesc }
 enum ViewMode { active, archived }
 
 class ItemsPage extends StatefulWidget {
@@ -60,11 +65,12 @@ class _ItemsPageState extends State<ItemsPage> {
       SortOption.nameAsc || SortOption.nameDesc => 'name',
       SortOption.categoryAsc || SortOption.categoryDesc => 'category',
       SortOption.qtyAsc || SortOption.qtyDesc => 'qtyOnHand',
+      SortOption.expirationAsc || SortOption.expirationDesc => 'earliestExpiresAt',
     };
 
     final sortDescending = switch (_sortOption) {
-      SortOption.updatedDesc || SortOption.nameDesc || SortOption.categoryDesc || SortOption.qtyDesc => true,
-      SortOption.nameAsc || SortOption.categoryAsc || SortOption.qtyAsc => false,
+      SortOption.updatedDesc || SortOption.nameDesc || SortOption.categoryDesc || SortOption.qtyDesc || SortOption.expirationDesc => true,
+      SortOption.nameAsc || SortOption.categoryAsc || SortOption.qtyAsc || SortOption.expirationAsc => false,
     };
 
     return Scaffold(
@@ -90,6 +96,11 @@ class _ItemsPageState extends State<ItemsPage> {
             IconButton(
               icon: Icon(_viewMode == ViewMode.active ? Icons.archive : Icons.unarchive),
               onPressed: _selectedIds.isEmpty ? null : _bulkArchive,
+            ),
+            IconButton(
+              icon: const Icon(Icons.label),
+              tooltip: 'Export Labels',
+              onPressed: _selectedIds.isEmpty ? null : _exportLabels,
             ),
             Text('${_selectedIds.length} selected'),
           ] else ...[
@@ -229,6 +240,8 @@ class _ItemsPageState extends State<ItemsPage> {
                         DropdownMenuItem(value: SortOption.categoryDesc, child: Text('Category (Z-A)')),
                         DropdownMenuItem(value: SortOption.qtyAsc, child: Text('Quantity (Low-High)')),
                         DropdownMenuItem(value: SortOption.qtyDesc, child: Text('Quantity (High-Low)')),
+                        DropdownMenuItem(value: SortOption.expirationAsc, child: Text('Expiration (Soonest)')),
+                        DropdownMenuItem(value: SortOption.expirationDesc, child: Text('Expiration (Latest)')),
                       ],
                       onChanged: (value) => setState(() => _sortOption = value!),
                     ),
@@ -344,8 +357,22 @@ class _ItemsPageState extends State<ItemsPage> {
               final qty = (data['qtyOnHand'] ?? 0);
               final minQty = (data['minQty'] ?? 0);
               final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
+              final expirationDate = data['earliestExpiresAt'] != null ? (data['earliestExpiresAt'] as Timestamp).toDate() : null;
+              
+              // Determine expiration status
+              Color? tileColor;
+              if (expirationDate != null) {
+                final now = DateTime.now();
+                final daysUntilExpiration = expirationDate.difference(now).inDays;
+                if (expirationDate.isBefore(now)) {
+                  tileColor = Colors.red.withValues(alpha:0.1); // Expired - red
+                } else if (daysUntilExpiration <= 14) {
+                  tileColor = Colors.yellow.withValues(alpha:.1); // Expiring within 2 weeks - yellow
+                }
+              }
 
               return ListTile(
+                tileColor: tileColor,
                 leading: _selectionMode
                     ? Checkbox(
                         value: _selectedIds.contains(d.id),
@@ -384,7 +411,17 @@ class _ItemsPageState extends State<ItemsPage> {
                     ? null
                     : PopupMenuButton<String>(
                         onSelected: (action) async {
-                          if (action == 'delete') {
+                          if (action == 'edit') {
+                            final result = await Navigator.of(context).push(MaterialPageRoute(
+                              builder: (_) => NewItemPage(
+                                itemId: d.id,
+                                existingItem: data,
+                              ),
+                            ));
+                            if (result == true) {
+                              setState(() => _refreshCounter++);
+                            }
+                          } else if (action == 'delete') {
                             final ok = await showDialog<bool>(
                               context: context,
                               builder: (_) => Theme(
@@ -436,6 +473,7 @@ class _ItemsPageState extends State<ItemsPage> {
                           }
                         },
                         itemBuilder: (_) => [
+                          const PopupMenuItem(value: 'edit', child: Text('Edit Item')),
                           const PopupMenuItem(value: 'archive', child: Text('Archive/Unarchive')),
                           const PopupMenuItem(value: 'delete', child: Text('Delete')),
                         ],
@@ -573,6 +611,56 @@ class _ItemsPageState extends State<ItemsPage> {
       });
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('${archiving ? 'Archived' : 'Unarchived'} $count items')));
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _exportLabels() async {
+    final ctx = context;
+    setState(() => _busy = true);
+    try {
+      // Get lots data for selected items
+      final lotsData = await LabelExportService.getLotsForItems(_selectedIds.toList());
+
+      if (lotsData.isEmpty) {
+        if (!ctx.mounted) return;
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          const SnackBar(content: Text('No lots found for selected items')),
+        );
+        return;
+      }
+
+      // Generate PDF
+      final pdfBytes = await LabelExportService.generateLabels(lotsData);
+
+      // Export based on platform
+      if (kIsWeb) {
+        // Web: Direct download (not supported in WASM)
+        await LabelExportService.exportLabels(lotsData);
+      } else {
+        // Mobile: Save to temp file and share
+        final tempDir = await getTemporaryDirectory();
+        final fileName = 'item_labels_${DateTime.now().millisecondsSinceEpoch}.pdf';
+        final file = File('${tempDir.path}/$fileName');
+        await file.writeAsBytes(pdfBytes);
+
+        // Share the file
+        await Share.shareXFiles(
+          [XFile(file.path, name: fileName)],
+          text: 'Item Labels PDF',
+        );
+      }
+
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(content: Text('Generated labels for ${lotsData.length} lots')),
+      );
+    } catch (e) {
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(content: Text('Failed to export labels: $e')),
+      );
     } finally {
       setState(() => _busy = false);
     }
@@ -777,7 +865,7 @@ class _ItemsPageState extends State<ItemsPage> {
                                 (_filters.qtyRange?.start ?? 0).toStringAsFixed(0),
                                 (_filters.qtyRange?.end ?? maxQty).toStringAsFixed(0),
                               ),
-                              onChanged: (values) => setState(() => _filters = _filters.copyWith(qtyRange: values)),
+                              onChanged: (values) => setState(() => _filters = _filters.copyWith(qtyRange: values.start == 0 && values.end == maxQty ? null : values)),
                             ),
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,

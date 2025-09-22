@@ -289,10 +289,13 @@ class SearchService {
                            filters.hasStale != null ||
                            filters.hasExcess != null ||
                            filters.hasExpired != null ||
+                           sortField == 'earliestExpiresAt' || // earliestExpiresAt may not exist on all documents
                            multiValueFilters.length > 1; // Multiple multi-value filters need client-side
 
-    // Apply sorting
-    query = query.orderBy(sortField, descending: sortDescending);
+    // Apply sorting (skip for earliestExpiresAt since it may not exist on all documents)
+    if (sortField != 'earliestExpiresAt') {
+      query = query.orderBy(sortField, descending: sortDescending);
+    }
 
     // Apply limit (increase for client-side processing)
     final serverLimit = needsClientSide ? _config.maxClientSideItems : limit;
@@ -443,6 +446,24 @@ class SearchService {
       return true;
     }).toList();
 
+    // Sort client-side if needed (for earliestExpiresAt)
+    if (sortField == 'earliestExpiresAt') {
+      filteredDocs.sort((a, b) {
+        final aData = a.data() as Map<String, dynamic>;
+        final bData = b.data() as Map<String, dynamic>;
+        
+        final aExpiration = aData['earliestExpiresAt'] != null ? (aData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        final bExpiration = bData['earliestExpiresAt'] != null ? (bData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        
+        // Items without expiration dates sort as "never expire" (far future)
+        final aSortDate = aExpiration ?? DateTime(9999);
+        final bSortDate = bExpiration ?? DateTime(9999);
+        
+        final comparison = aSortDate.compareTo(bSortDate);
+        return sortDescending ? -comparison : comparison;
+      });
+    }
+
     // Limit final results
     final finalDocs = filteredDocs.take(limit).toList();
 
@@ -463,9 +484,15 @@ class SearchService {
     int limit,
     bool showAllItems,
   ) async {
-    Query query = _db.collection('items')
-        .orderBy(sortField, descending: sortDescending)
-        .limit(_config.maxClientSideItems);
+    // For earliestExpiresAt sorting, we can't use server-side orderBy since not all documents have this field
+    // So we fetch without ordering and sort client-side
+    Query query = _db.collection('items');
+    
+    if (sortField != 'earliestExpiresAt') {
+      query = query.orderBy(sortField, descending: sortDescending);
+    }
+    
+    query = query.limit(_config.maxClientSideItems);
 
     final snapshot = await query.get();
     final allDocs = snapshot.docs;
@@ -557,6 +584,24 @@ class SearchService {
 
       return true;
     }).toList();
+
+    // Sort client-side if needed (for earliestExpiresAt)
+    if (sortField == 'earliestExpiresAt') {
+      filteredDocs.sort((a, b) {
+        final aData = a.data() as Map<String, dynamic>;
+        final bData = b.data() as Map<String, dynamic>;
+        
+        final aExpiration = aData['earliestExpiresAt'] != null ? (aData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        final bExpiration = bData['earliestExpiresAt'] != null ? (bData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        
+        // Items without expiration dates sort as "never expire" (far future)
+        final aSortDate = aExpiration ?? DateTime(9999);
+        final bSortDate = bExpiration ?? DateTime(9999);
+        
+        final comparison = aSortDate.compareTo(bSortDate);
+        return sortDescending ? -comparison : comparison;
+      });
+    }
 
     final finalDocs = filteredDocs.take(limit).toList();
 
