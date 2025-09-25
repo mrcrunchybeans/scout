@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:algolia_helper_flutter/algolia_helper_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:cloud_functions/cloud_functions.dart';
 
 /// Search strategy for different filtering approaches
 enum SearchStrategy {
@@ -130,15 +131,19 @@ class SearchFilters {
     Set<String>? grantIds,
     Set<String>? useTypes,
     RangeValues? qtyRange,
-    bool? hasLowStock,
-    bool? hasLots,
-    bool? hasBarcode,
-    bool? hasMinQty,
-    bool? hasExpiringSoon,
-    bool? hasStale,
-    bool? hasExcess,
-    bool? hasExpired,
+    // For boolean flags we accept an explicit null value to clear the filter.
+    // To distinguish between "not provided" and "provided as null" we accept
+    // Object? and use a sentinel.
+    Object? hasLowStock = _noChange,
+    Object? hasLots = _noChange,
+    Object? hasBarcode = _noChange,
+    Object? hasMinQty = _noChange,
+    Object? hasExpiringSoon = _noChange,
+    Object? hasStale = _noChange,
+    Object? hasExcess = _noChange,
+    Object? hasExpired = _noChange,
   }) {
+  const sentinel = _noChange;
     return SearchFilters(
       query: query ?? this.query,
       categories: categories ?? this.categories,
@@ -147,17 +152,20 @@ class SearchFilters {
       grantIds: grantIds ?? this.grantIds,
       useTypes: useTypes ?? this.useTypes,
       qtyRange: qtyRange ?? this.qtyRange,
-      hasLowStock: hasLowStock ?? this.hasLowStock,
-      hasLots: hasLots ?? this.hasLots,
-      hasBarcode: hasBarcode ?? this.hasBarcode,
-      hasMinQty: hasMinQty ?? this.hasMinQty,
-      hasExpiringSoon: hasExpiringSoon ?? this.hasExpiringSoon,
-      hasStale: hasStale ?? this.hasStale,
-      hasExcess: hasExcess ?? this.hasExcess,
-      hasExpired: hasExpired ?? this.hasExpired,
+  hasLowStock: identical(hasLowStock, sentinel) ? this.hasLowStock : (hasLowStock as bool?),
+  hasLots: identical(hasLots, sentinel) ? this.hasLots : (hasLots as bool?),
+  hasBarcode: identical(hasBarcode, sentinel) ? this.hasBarcode : (hasBarcode as bool?),
+  hasMinQty: identical(hasMinQty, sentinel) ? this.hasMinQty : (hasMinQty as bool?),
+  hasExpiringSoon: identical(hasExpiringSoon, sentinel) ? this.hasExpiringSoon : (hasExpiringSoon as bool?),
+  hasStale: identical(hasStale, sentinel) ? this.hasStale : (hasStale as bool?),
+  hasExcess: identical(hasExcess, sentinel) ? this.hasExcess : (hasExcess as bool?),
+  hasExpired: identical(hasExpired, sentinel) ? this.hasExpired : (hasExpired as bool?),
     );
   }
 }
+
+/// Internal sentinel used by copyWith to detect omitted parameters.
+const Object _noChange = Object();
 
 /// Result of a search operation
 class SearchResult {
@@ -772,11 +780,16 @@ class SearchService {
 
   /// Sync all items from Firestore to Algolia index
   Future<void> syncItemsToAlgolia() async {
-    if (!_config.enableAlgolia ||
-        _config.algoliaAppId == null ||
-        _config.algoliaWriteApiKey == null ||
-        _config.algoliaIndexName == null) {
+    // Prefer server-side callable if no client write key is present
+    if (!_config.enableAlgolia || _config.algoliaAppId == null || _config.algoliaIndexName == null) {
       throw Exception('Algolia is not properly configured for indexing');
+    }
+
+    if (_config.algoliaWriteApiKey == null) {
+      // Use server-side function to reindex
+      final fn = FirebaseFunctions.instance.httpsCallable('triggerFullReindex');
+  await fn();
+      return;
     }
 
     try {
@@ -908,11 +921,15 @@ class SearchService {
 
   /// Sync a single item to Algolia
   Future<void> syncItemToAlgolia(String itemId) async {
-    if (!_config.enableAlgolia ||
-        _config.algoliaAppId == null ||
-        _config.algoliaWriteApiKey == null ||
-        _config.algoliaIndexName == null) {
+    if (!_config.enableAlgolia || _config.algoliaAppId == null || _config.algoliaIndexName == null) {
       throw Exception('Algolia is not properly configured for indexing');
+    }
+
+    if (_config.algoliaWriteApiKey == null) {
+      // Use server-side callable to sync single item
+      final fn = FirebaseFunctions.instance.httpsCallable('syncItemToAlgoliaCallable');
+      await fn.call({'itemId': itemId});
+      return;
     }
 
     try {

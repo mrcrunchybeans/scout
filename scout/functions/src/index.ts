@@ -4,9 +4,23 @@ import {
   onDocumentWritten,
 } from "firebase-functions/v2/firestore";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+import * as functions from "firebase-functions";
+import algoliasearch from "algoliasearch";
 
 admin.initializeApp();
 const db = admin.firestore();
+// Algolia client will be created lazily from environment variables
+let algoliaClient: ReturnType<typeof algoliasearch> | null = null;
+function getAlgoliaClient(): ReturnType<typeof algoliasearch> {
+  if (algoliaClient) return algoliaClient;
+  // Prefer environment variables, fall back to firebase functions config
+  // (set with `firebase functions:config:set algolia.app_id="..." algolia.admin_key="..." algolia.index_name="..."`)
+  const appId = process.env.ALGOLIA_APP_ID || (functions && (functions.config as any)?.algolia?.app_id);
+  const apiKey = process.env.ALGOLIA_ADMIN_API_KEY || (functions && (functions.config as any)?.algolia?.admin_key); // server-side admin key
+  if (!appId || !apiKey) throw new Error("Algolia credentials not configured (process.env or functions.config)");
+  algoliaClient = algoliasearch(appId, apiKey);
+  return algoliaClient;
+}
 
 // ---------- Tunables ----------
 const STALE_DAYS = 45; // no use for ≥ N days
@@ -113,6 +127,12 @@ function daysSince(d?: admin.firestore.Timestamp | null, now = new Date()) {
 /**
  * Recompute aggregate data for an item based on its lots.
  * @param {string} itemId - The item ID to recompute aggregates for
+ */
+/**
+ * Recompute aggregate data for an item based on its lots.
+ *
+ * @param {string} itemId The item ID to recompute aggregates for.
+ * @return {Promise<void>} Resolves when the item aggregates have been written.
  */
 async function recomputeItemAggregates(itemId: string) {
   const itemRef = db.collection("items").doc(itemId);
@@ -343,8 +363,191 @@ export const onLotWrite = onDocumentWritten(
     const itemId = event.params.itemId as string;
     // event.data not needed, we recompute from scratch
     await recomputeItemAggregates(itemId);
+    // Also sync item to Algolia (best-effort)
+    try {
+      await syncItemToAlgolia(itemId);
+    } catch (e) {
+      console.error("Algolia sync failed for item", itemId, e);
+    }
   }
 );
+
+/**
+ * Sync a single item document to Algolia index. Uses ALGOLIA_APP_ID and ALGOLIA_ADMIN_API_KEY
+ * and ALGOLIA_INDEX_NAME environment variables. This keeps the write key on server-side only.
+ */
+/**
+ * Sync a single item document to the configured Algolia index.
+ *
+ * @param {string} itemId The ID of the item to index.
+ * @return {Promise<void>} Resolves when the operation completes (or rejects on error).
+ */
+async function syncItemToAlgolia(itemId: string) {
+  try {
+    const client = getAlgoliaClient();
+    const indexName = process.env.ALGOLIA_INDEX_NAME;
+    if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
+
+    const doc = await db.collection("items").doc(itemId).get();
+    const index = client.initIndex(indexName);
+    if (!doc.exists) {
+      await index.deleteObject(itemId).catch((err) => {
+        // ignore 404-like errors
+        console.warn("Delete from Algolia failed (ignored):", err.message || err);
+      });
+      return;
+    }
+
+    const data = doc.data() || {};
+    // Convert Firestore Timestamps to ISO strings for Algolia
+    const serializable: Record<string, any> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if ((v as any)?.toDate && typeof (v as any).toDate === "function") {
+        serializable[k] = (v as any).toDate().toISOString();
+      } else {
+        serializable[k] = v;
+      }
+    }
+
+    const record = {
+      objectID: doc.id,
+      ...serializable,
+      name: serializable["name"] ?? "",
+      barcode: serializable["barcode"] ?? "",
+      category: serializable["category"] ?? "",
+      baseUnit: serializable["baseUnit"] ?? "",
+      qtyOnHand: serializable["qtyOnHand"] ?? 0,
+      minQty: serializable["minQty"] ?? 0,
+      archived: serializable["archived"] ?? false,
+      lots: serializable["lots"] ?? [],
+    };
+
+    await index.saveObject(record);
+    // update status
+    await db.collection("status").doc("algolia").set({
+      lastSyncAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastSuccessItem: itemId,
+      lastError: null,
+    }, {merge: true});
+  } catch (e) {
+    console.error("syncItemToAlgolia error", e);
+    // write status with error
+    await db.collection("status").doc("algolia").set({
+      lastSyncAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastError: String(e),
+      lastSuccessItem: null,
+    }, {merge: true});
+    throw e;
+  }
+}
+
+// Callable admin function to trigger a full reindex (restricted by IAM/roles in deployment)
+export const triggerFullReindex = onCall(async (req) => {
+  // minimal auth check: require auth and a claim `admin` = true
+  if (!req.auth || !(req.auth.token && req.auth.token.admin)) {
+    throw new Error("unauthenticated or unauthorized");
+  }
+
+  const client = getAlgoliaClient();
+  const indexName = process.env.ALGOLIA_INDEX_NAME;
+  if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
+
+  const index = client.initIndex(indexName);
+
+  // Paginate through all items and push in batches
+  const BATCH = 1000;
+  let last: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+  let total = 0;
+  while (true) {
+    let q = db.collection("items").orderBy("__name__").limit(BATCH);
+    if (last) q = q.startAfter(last);
+    const snap = await q.get();
+    if (snap.empty) break;
+
+    const objects = snap.docs.map((d) => {
+      const data = d.data();
+      const serializable: Record<string, any> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if ((v as any)?.toDate && typeof (v as any).toDate === "function") {
+          serializable[k] = (v as any).toDate().toISOString();
+        } else {
+          serializable[k] = v;
+        }
+      }
+      return {
+        objectID: d.id,
+        ...serializable,
+        name: serializable["name"] ?? "",
+        barcode: serializable["barcode"] ?? "",
+        category: serializable["category"] ?? "",
+        baseUnit: serializable["baseUnit"] ?? "",
+        qtyOnHand: serializable["qtyOnHand"] ?? 0,
+        minQty: serializable["minQty"] ?? 0,
+        archived: serializable["archived"] ?? false,
+        lots: serializable["lots"] ?? [],
+      };
+    });
+
+    // Push to Algolia in batches
+    await index.saveObjects(objects);
+    total += objects.length;
+    last = snap.docs[snap.docs.length - 1];
+    if (snap.size < BATCH) break;
+  }
+
+  // write status
+  await db.collection("status").doc("algolia").set({
+    lastSyncAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastIndexedCount: total,
+    lastError: null,
+  }, {merge: true});
+
+  return {success: true, totalIndexed: total};
+});
+
+export const configureAlgoliaIndex = onCall(async (req) => {
+  if (!req.auth || !(req.auth.token && req.auth.token.admin)) {
+    throw new Error("unauthenticated or unauthorized");
+  }
+
+  const client = getAlgoliaClient();
+  const indexName = process.env.ALGOLIA_INDEX_NAME;
+  if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
+  const index = client.initIndex(indexName);
+
+  const settings = {
+    attributesForFaceting: [
+      "category",
+      "baseUnit",
+      "archived",
+      "filterOnly(qtyOnHand)",
+      "filterOnly(minQty)",
+      "filterOnly(barcode)",
+    ],
+    searchableAttributes: [
+      "name",
+      "barcode",
+      "category",
+      "description",
+      "notes",
+    ],
+    customRanking: ["desc(qtyOnHand)"],
+    ranking: ["typo", "geo", "words", "filters", "proximity", "attribute", "exact", "custom"],
+  };
+
+  await index.setSettings(settings);
+  return {success: true};
+});
+
+export const syncItemToAlgoliaCallable = onCall(async (req) => {
+  if (!req.auth || !(req.auth.token && req.auth.token.admin)) {
+    throw new Error("unauthenticated or unauthorized");
+  }
+  const itemId = req.data?.itemId as string | undefined;
+  if (!itemId) throw new Error("itemId is required");
+  await syncItemToAlgolia(itemId);
+  return {success: true};
+});
 
 // 3) Daily job: refresh flagExpiringSoon (and sanity recompute aggregates).
 export const nightlyExpirySweep = onSchedule("every day 02:15", async () => {

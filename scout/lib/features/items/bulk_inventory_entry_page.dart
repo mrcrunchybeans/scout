@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:uuid/uuid.dart';
 
 import '../../widgets/scanner_sheet.dart';
@@ -13,9 +12,6 @@ import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 import 'new_item_page.dart';
 import '../../services/label_export_service.dart';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 enum UseType { staff, patient, both }
 
@@ -104,12 +100,13 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () async {
+            final rootCtx = context;
             if (_pendingProducts.isNotEmpty) {
-              final shouldLeave = await _showNavigationConfirmationDialog();
+              final shouldLeave = await _showNavigationConfirmationDialog(rootCtx);
               if (!shouldLeave) return;
             }
-            if (mounted) {
-              Navigator.of(context).pop();
+            if (rootCtx.mounted) {
+              Navigator.of(rootCtx).pop();
             }
           },
         ),
@@ -812,9 +809,9 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
     }
   }
 
-  Future<bool> _showNavigationConfirmationDialog() async {
+  Future<bool> _showNavigationConfirmationDialog(BuildContext dialogCtx) async {
     final result = await showDialog<bool>(
-      context: context,
+      context: dialogCtx,
       builder: (context) => AlertDialog(
         title: const Text('Unsaved Changes'),
         content: Text(
@@ -936,6 +933,51 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   Future<void> _exportLabels(BuildContext context) async {
     Navigator.of(context).pop(); // Close the success dialog
 
+    // Show dialog to select starting label position
+    final startLabel = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export Labels'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Which label number would you like to start from?'),
+            const SizedBox(height: 16),
+            const Text(
+              'Avery 5160 sheets have 30 labels (3 columns × 10 rows).\n'
+              'If reusing a partial sheet, start from the next available label.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<int>(
+              decoration: const InputDecoration(
+                labelText: 'Starting Label',
+                border: OutlineInputBorder(),
+              ),
+              initialValue: 1,
+              items: List.generate(30, (index) => index + 1)
+                  .map((labelNum) => DropdownMenuItem(
+                        value: labelNum,
+                        child: Text('Label $labelNum'),
+                      ))
+                  .toList(),
+              onChanged: (value) {
+                Navigator.of(context).pop(value);
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (startLabel == null) return; // User cancelled
+
     try {
       // Get all created items and their lots
       final itemIds = <String>[];
@@ -944,50 +986,44 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
             }
 
       if (itemIds.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No items found to export labels for')),
-        );
-        return;
-      }
+          final rootCtx = context;
+          if (rootCtx.mounted) {
+            ScaffoldMessenger.of(rootCtx).showSnackBar(
+              const SnackBar(content: Text('No items found to export labels for')),
+            );
+          }
+          return;
+        }
 
       // Get lots data for the created items
       final lotsData = await LabelExportService.getLotsForItems(itemIds);
 
       if (lotsData.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No lots found for created items')),
-        );
+        final rootCtx = context;
+        if (rootCtx.mounted) {
+          ScaffoldMessenger.of(rootCtx).showSnackBar(
+            const SnackBar(content: Text('No lots found for created items')),
+          );
+        }
         return;
       }
 
-      // Generate PDF
-      final pdfBytes = await LabelExportService.generateLabels(lotsData);
+      // Export labels using the new service with startIndex (convert to 0-based)
+      await LabelExportService.exportLabels(lotsData, startIndex: startLabel - 1);
 
-      // Export based on platform
-      if (kIsWeb) {
-        // Web: Direct download
-        await LabelExportService.exportLabels(lotsData);
-      } else {
-        // Mobile: Save to temp file and share
-        final tempDir = await getTemporaryDirectory();
-        final fileName = 'bulk_entry_labels_${DateTime.now().millisecondsSinceEpoch}.pdf';
-        final file = File('${tempDir.path}/$fileName');
-        await file.writeAsBytes(pdfBytes);
-
-        // Share the file
-        await Share.shareXFiles(
-          [XFile(file.path, name: fileName)],
-          text: 'Bulk Entry Labels PDF',
+      final rootCtx = context;
+      if (rootCtx.mounted) {
+        ScaffoldMessenger.of(rootCtx).showSnackBar(
+          SnackBar(content: Text('Generated labels for ${lotsData.length} lots (starting from label $startLabel)')),
         );
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Generated labels for ${lotsData.length} lots')),
-      );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to export labels: $e')),
-      );
+      final rootCtx = context;
+      if (rootCtx.mounted) {
+        ScaffoldMessenger.of(rootCtx).showSnackBar(
+          SnackBar(content: Text('Failed to export labels: $e')),
+        );
+      }
     }
   }
 

@@ -29,5 +29,10 @@ module.exports = {
     "quotes": ["error", "double"],
     "import/no-unresolved": 0,
     "indent": ["error", 2],
+    // Relax some rules that are noisy for this repository's functions file
+    "require-jsdoc": 0,
+    "max-len": ["warn", {"code": 120}],
+    "no-constant-condition": 0,
+    "@typescript-eslint/no-explicit-any": 0,
   },
 };

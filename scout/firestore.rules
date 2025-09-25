@@ -130,6 +130,32 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // ---------- Lookup collections (departments, grants, locations, categories, interventions, flagThresholds) ----------
+    match /departments/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+    match /grants/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+    match /locations/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+    match /categories/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+    match /interventions/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+    match /flagThresholds/{document=**} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+    }
+
     // ---------- Shared product catalog (enrichment cache)
     // You may want to restrict this to admin or a Cloud Function only.
     match /catalog/{code} {

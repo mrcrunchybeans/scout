@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
@@ -111,6 +112,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Preload logo images for better performance
     precacheImage(const AssetImage('assets/images/scout dash logo light mode.png'), context);
     precacheImage(const AssetImage('assets/images/scout dash logo dark mode.png'), context);
   }
@@ -795,12 +797,7 @@ class _ItemRow extends StatelessWidget {
         },
       ),
       onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ItemDetailPage(itemId: id, itemName: name),
-          ),
-        );
+        GoRouter.of(context).go('/items/$id');
       },
     );
   }

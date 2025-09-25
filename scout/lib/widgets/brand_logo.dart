@@ -11,7 +11,8 @@ class BrandLogo extends StatelessWidget {
     // Access the current theme's brightness
     final brightness = Theme.of(context).brightness;
 
-    // Choose logo based on theme
+    // Choose logo based on theme - PNG as primary
+    // Flutter automatically uses @2x, @3x variants for high-DPI displays
     final logoPath = brightness == Brightness.dark
         ? 'assets/images/scout dash logo dark mode.png'
         : 'assets/images/scout dash logo light mode.png';
@@ -25,9 +26,9 @@ class BrandLogo extends StatelessWidget {
         logoPath,
         height: height,
         fit: BoxFit.contain, // Maintain aspect ratio and fit within bounds
-        filterQuality: FilterQuality.high, // High quality filtering for better rendering
+        filterQuality: FilterQuality.high,
         errorBuilder: (context, error, stackTrace) {
-          // Fallback to text logo if image fails to load
+          // Fallback to text logo if PNG fails to load
           return Container(
             height: height,
             alignment: Alignment.center,

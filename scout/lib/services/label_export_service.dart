@@ -2,248 +2,712 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:qr/qr.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:convert';
+import 'web_anchor_stub.dart' if (dart.library.html) 'web_anchor_impl.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'dart:io';
 
+/// Font pack for crisp PDF rendering
+class _FontPack {
+  final pw.Font regular;
+  final pw.Font bold;
+  const _FontPack(this.regular, this.bold);
+}
+
+/// Cache for loaded fonts
+_FontPack? _fontPackCache;
+
+/// Load Inter fonts for crisp printing
+Future<_FontPack> _loadFonts() async {
+  if (_fontPackCache != null) return _fontPackCache!;
+  final regular = pw.Font.ttf(await rootBundle.load('assets/fonts/Inter-Regular.ttf'));
+  final bold = pw.Font.ttf(await rootBundle.load('assets/fonts/Inter-Bold.ttf'));
+  return _fontPackCache = _FontPack(regular, bold);
+}
+
+/// Avery 5160 label sheet specifications with calibration support
+class Avery5160Spec {
+  static const int columns = 3;
+  static const int rows = 10;
+  static const int labelsPerPage = columns * rows;
+
+  final double pageWidth = 8.5 * 72; // 8.5" in points
+  final double pageHeight = 11.0 * 72; // 11" in points
+  final double topMargin = 0.5 * 72; // 0.5" top margin
+  final double leftMargin = 0.1875 * 72; // 0.1875" left margin (correct)
+  final double horizontalGap = 0.125 * 72; // 0.125" horizontal gap
+  final double verticalGap = 0.0 * 72; // No vertical gap for 5160
+  final double labelWidth = 2.625 * 72; // 2-5/8" in points
+  final double labelHeight = 1.0 * 72; // 1" in points
+
+  // Global calibration nudges (points) - adjust ±2-6 if printer drifts
+  final double nudgeX;
+  final double nudgeY;
+
+  const Avery5160Spec({this.nudgeX = 0, this.nudgeY = 0});
+
+  /// Get rectangle for a specific cell index (0-29)
+  PdfRect cellRect(int index) {
+    final row = index ~/ columns;
+    final col = index % columns;
+    final x = leftMargin + col * (labelWidth + horizontalGap) + nudgeX;
+    final y = topMargin + row * (labelHeight + verticalGap) + nudgeY;
+    return PdfRect(x, y, labelWidth, labelHeight);
+  }
+}
+
+/// Configuration class for label layout and styling
+class LabelTemplate {
+  // Layout dimensions
+  final double labelWidth;
+  final double labelHeight;
+  final double logoHeight;
+  final double qrCodeSize;
+  final double padding;
+  final double textSpacing;
+
+  // Font sizes
+  final double lotIdFontSize;
+  final double itemNameFontSize;
+  final double expirationFontSize;
+  final double logoTextFontSize;
+
+  // Colors
+  final PdfColor borderColor;
+  final PdfColor textColor;
+  final PdfColor expirationColor;
+  final PdfColor logoTextColor;
+
+  // Layout ratios (kept for future flexibility)
+  final int textFlex;
+  final int qrFlex;
+
+  // Legacy flags (kept for config compatibility, ignored for rendering)
+  final bool useQr;
+  final bool showLinearBarcode;
+  final bool showExpirationPill;
+
+  // Misc
+  final double quietZone;
+  final double cornerRadius;
+  final double dividerThickness;
+  final pw.Font? fontRegular;
+  final pw.Font? fontBold;
+  // Optional custom design stored as fractional coords per element
+  // Example: { 'lotId': {'x':0.05,'y':0.05,'w':0.6,'h':0.2}, 'qr': {...} }
+  // Optional design - per-element map. Each element is a map with keys x,y,w,h (doubles)
+  // and optional style keys like 'fontSize', 'bold', 'align'.
+  final Map<String, dynamic>? design;
+
+  const LabelTemplate({
+    this.labelWidth = 2.625 * 72,
+    this.labelHeight = 1.0 * 72,
+    this.logoHeight = 12,
+    this.qrCodeSize = 32,
+    this.padding = 4,
+    this.textSpacing = 1,
+    this.lotIdFontSize = 12,
+    this.itemNameFontSize = 6,
+    this.expirationFontSize = 5,
+    this.logoTextFontSize = 6,
+    this.borderColor = PdfColors.grey300,
+    this.textColor = PdfColors.black,
+    this.expirationColor = PdfColors.grey700,
+    this.logoTextColor = PdfColors.blue,
+    this.textFlex = 3,
+    this.qrFlex = 1,
+    this.useQr = true,
+    this.showLinearBarcode = false,
+    this.showExpirationPill = true,
+    this.quietZone = 2,
+    this.cornerRadius = 2,
+    this.dividerThickness = 0.3,
+    this.fontRegular,
+    this.fontBold,
+    this.design,
+  });
+
+  factory LabelTemplate.compact() {
+    return const LabelTemplate(
+      logoHeight: 8,
+      qrCodeSize: 24,
+      padding: 2,
+      lotIdFontSize: 10,
+      itemNameFontSize: 5,
+      expirationFontSize: 4,
+      logoTextFontSize: 5,
+    );
+  }
+
+  factory LabelTemplate.spacious() {
+    return const LabelTemplate(
+      logoHeight: 16,
+      qrCodeSize: 40,
+      padding: 6,
+      lotIdFontSize: 14,
+      itemNameFontSize: 7,
+      expirationFontSize: 6,
+      logoTextFontSize: 7,
+    );
+  }
+
+  /// Create a copy with fonts assigned
+  LabelTemplate withFonts(pw.Font regular, pw.Font bold) => LabelTemplate(
+        labelWidth: labelWidth,
+        labelHeight: labelHeight,
+        logoHeight: logoHeight,
+        qrCodeSize: qrCodeSize,
+        padding: padding,
+        textSpacing: textSpacing,
+        lotIdFontSize: lotIdFontSize,
+        itemNameFontSize: itemNameFontSize,
+        expirationFontSize: expirationFontSize,
+        logoTextFontSize: logoTextFontSize,
+        borderColor: borderColor,
+        textColor: textColor,
+        expirationColor: expirationColor,
+        logoTextColor: logoTextColor,
+        textFlex: textFlex,
+        qrFlex: qrFlex,
+        useQr: useQr,
+        showLinearBarcode: showLinearBarcode,
+        showExpirationPill: showExpirationPill,
+        quietZone: quietZone,
+        cornerRadius: cornerRadius,
+        dividerThickness: dividerThickness,
+        fontRegular: regular,
+        fontBold: bold,
+        design: design,
+      );
+
+  LabelTemplate withFontsAndDesign(pw.Font regular, pw.Font bold, Map<String, dynamic>? design) => LabelTemplate(
+        labelWidth: labelWidth,
+        labelHeight: labelHeight,
+        logoHeight: logoHeight,
+        qrCodeSize: qrCodeSize,
+        padding: padding,
+        textSpacing: textSpacing,
+        lotIdFontSize: lotIdFontSize,
+        itemNameFontSize: itemNameFontSize,
+        expirationFontSize: expirationFontSize,
+        logoTextFontSize: logoTextFontSize,
+        borderColor: borderColor,
+        textColor: textColor,
+        expirationColor: expirationColor,
+        logoTextColor: logoTextColor,
+        textFlex: textFlex,
+        qrFlex: qrFlex,
+        useQr: useQr,
+        showLinearBarcode: showLinearBarcode,
+        showExpirationPill: showExpirationPill,
+        quietZone: quietZone,
+        cornerRadius: cornerRadius,
+        dividerThickness: dividerThickness,
+        fontRegular: regular,
+        fontBold: bold,
+        design: design,
+      );
+}
+
+/// Label Export Service for SCOUT
 class LabelExportService {
-  // Avery 5160 specifications
-  static const double pageWidth = 8.5 * 72; // 8.5" in points
-  static const double pageHeight = 11.0 * 72; // 11" in points
-  static const double labelWidth = 2.625 * 72; // 2-5/8" in points
-  static const double labelHeight = 1.0 * 72; // 1" in points
-  static const double topMargin = 0.5 * 72; // 0.5" top margin
-  static const double bottomMargin = 0.5 * 72; // 0.5" bottom margin
-  static const double leftMargin = 0.19 * 72; // 0.19" left margin
-  static const double rightMargin = 0.19 * 72; // 0.19" right margin
-  static const double horizontalGap = 0.125 * 72; // 0.125" horizontal gap
-  static const double verticalGap = 0.125 * 72; // 0.125" vertical gap
+  // 🎨 Defaults tuned for Avery 5160 (1" high)
+  static LabelTemplate defaultTemplate = const LabelTemplate(
+    padding: 4,
+    textSpacing: 1.5,
+    lotIdFontSize: 16,
+    itemNameFontSize: 7,
+    expirationFontSize: 6,
+    qrCodeSize: 44, // increased to better fill 1" labels while keeping room for text
+    logoHeight: 20,
+    borderColor: PdfColors.white,
+    textColor: PdfColors.black,
+    expirationColor: PdfColors.grey700,
+    logoTextColor: PdfColors.blue700,
+    useQr: true, // kept for config compat
+    showLinearBarcode: false, // kept for config compat
+    showExpirationPill: true,
+    quietZone: 3,
+    cornerRadius: 2,
+    dividerThickness: 0,
+    textFlex: 3,
+    qrFlex: 1,
+  );
+
+  // Logo image cache
+  static pw.MemoryImage? _logoImage;
+
+  /// Load logo image from assets
+  static Future<pw.MemoryImage?> _loadLogoImage() async {
+    if (_logoImage != null) return _logoImage;
+
+    try {
+      const logoPaths = [
+        'assets/images/scout_logo.png',
+        'assets/images/scout_logo.webp',
+        'assets/images/scout dash logo light mode.png',
+      ];
+
+      for (final path in logoPaths) {
+        try {
+          final logoData = await rootBundle.load(path);
+          _logoImage = pw.MemoryImage(logoData.buffer.asUint8List());
+          return _logoImage;
+        } catch (_) {
+          continue;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
 
   /// Generate PDF with labels for the given lots
-  static Future<Uint8List> generateLabels(List<Map<String, dynamic>> lotsData) async {
-    final pdf = pw.Document();
-
-    // Group lots into pages (30 labels per page for Avery 5160)
-    const int labelsPerPage = 30;
-    final pages = <List<Map<String, dynamic>>>[];
-
-    for (int i = 0; i < lotsData.length; i += labelsPerPage) {
-      final end = (i + labelsPerPage < lotsData.length) ? i + labelsPerPage : lotsData.length;
-      pages.add(lotsData.sublist(i, end));
+  static Future<Uint8List> generateLabels(
+    List<Map<String, dynamic>> lotsData, {
+    LabelTemplate? template,
+    int startIndex = 0, // 0..29 for Avery 5160 (which cell to start on)
+    double nudgeX = 0, // Global X calibration nudge (points)
+    double nudgeY = 0, // Global Y calibration nudge (points)
+    bool debugForceQrPlaceholder = false,
+    bool debugMarkQr = false,
+  }) async {
+    // Try Firestore overrides if template not provided
+    if (template == null) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('config').doc('labels').get();
+        if (doc.exists) {
+          final data = doc.data()!;
+          template = LabelTemplate(
+            qrCodeSize: (data['qrCodeSize'] ?? defaultTemplate.qrCodeSize).toDouble(),
+            padding: (data['padding'] ?? defaultTemplate.padding).toDouble(),
+            lotIdFontSize: (data['lotIdFontSize'] ?? defaultTemplate.lotIdFontSize).toDouble(),
+            itemNameFontSize: (data['itemNameFontSize'] ?? defaultTemplate.itemNameFontSize).toDouble(),
+            expirationFontSize: (data['expirationFontSize'] ?? defaultTemplate.expirationFontSize).toDouble(),
+            logoHeight: (data['logoHeight'] ?? defaultTemplate.logoHeight).toDouble(),
+            // legacy flags are ignored in rendering; we still read them for compat
+            useQr: true,
+            quietZone: (data['quietZone'] ?? defaultTemplate.quietZone).toDouble(),
+            cornerRadius: (data['cornerRadius'] ?? defaultTemplate.cornerRadius).toDouble(),
+            dividerThickness: (data['dividerThickness'] ?? defaultTemplate.dividerThickness).toDouble(),
+            textFlex: (data['textFlex'] ?? defaultTemplate.textFlex) as int,
+            qrFlex: (data['qrFlex'] ?? defaultTemplate.qrFlex) as int,
+          );
+        }
+      } catch (_) {
+        // ignore and fall back to default template
+      }
     }
 
-    for (final pageLots in pages) {
+    final spec = Avery5160Spec(nudgeX: nudgeX, nudgeY: nudgeY);
+    final pdf = pw.Document();
+    final fonts = await _loadFonts();
+    // Attempt to load saved design if template was not provided
+  Map<String, dynamic>? design;
+    if (template == null) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('config').doc('labels').get();
+        if (doc.exists) {
+          final data = doc.data()!;
+          final rawDesign = data['design'] as Map<String, dynamic>?;
+          if (rawDesign != null) {
+            // Preserve arbitrary keys per element (x,y,w,h plus style hints)
+            design = rawDesign.map((k, v) {
+              final out = <String, dynamic>{};
+              if (v is Map) {
+                out['x'] = (v['x'] ?? 0.0).toDouble();
+                out['y'] = (v['y'] ?? 0.0).toDouble();
+                out['w'] = (v['w'] ?? 0.4).toDouble();
+                out['h'] = (v['h'] ?? 0.15).toDouble();
+                // optional style hints
+                if (v.containsKey('fontSize')) out['fontSize'] = (v['fontSize'] as num?)?.toDouble();
+                if (v.containsKey('bold')) out['bold'] = v['bold'] == true;
+                if (v.containsKey('align')) out['align'] = v['align'] as String?;
+              }
+              return MapEntry(k, out);
+            });
+          }
+        }
+      } catch (_) {}
+    }
+
+    final labelTemplate = (template ?? defaultTemplate).withFontsAndDesign(fonts.regular, fonts.bold, design);
+    final logoImage = await _loadLogoImage();
+
+    // Group lots into pages, accounting for startIndex on first page
+    var cursor = 0;
+    while (cursor < lotsData.length) {
+      final startOffset = (cursor == 0 ? (startIndex % Avery5160Spec.labelsPerPage) : 0);
+      final remainingOnFirstPage = Avery5160Spec.labelsPerPage - startOffset;
+      final take = (lotsData.length - cursor).clamp(0, remainingOnFirstPage);
+      final pageLots = lotsData.sublist(cursor, cursor + take);
+
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.letter,
-          build: (context) => _buildLabelPage(pageLots),
+          margin: pw.EdgeInsets.zero,
+          build: (context) => _buildLabelPage(
+            pageLots,
+            logoImage,
+            labelTemplate,
+            spec,
+            startCell: startOffset,
+            debugForceQrPlaceholder: debugForceQrPlaceholder,
+            debugMarkQr: debugMarkQr,
+          ),
         ),
       );
+      cursor += take;
     }
 
     return pdf.save();
   }
 
-  static pw.Widget _buildLabelPage(List<Map<String, dynamic>> lots) {
-    // Calculate positions for 3x10 grid
+  static pw.Widget _buildLabelPage(
+    List<Map<String, dynamic>> lots,
+    pw.MemoryImage? logoImage,
+    LabelTemplate template,
+    Avery5160Spec spec, {
+    int startCell = 0,
+    bool debugForceQrPlaceholder = false,
+    bool debugMarkQr = false,
+  }) {
     final labels = <pw.Widget>[];
-    const int columns = 3;
-    const int rows = 10;
-
-    for (int i = 0; i < lots.length && i < columns * rows; i++) {
-      final row = i ~/ columns;
-      final col = i % columns;
-
-      final x = leftMargin + col * (labelWidth + horizontalGap);
-      final y = topMargin + row * (labelHeight + verticalGap);
-
+    for (int i = 0; i < lots.length && (i + startCell) < Avery5160Spec.labelsPerPage; i++) {
+      final cellRect = spec.cellRect(i + startCell);
       labels.add(
         pw.Positioned(
-          left: x,
-          top: y,
+          left: cellRect.x,
+          top: cellRect.y,
           child: pw.Container(
-            width: labelWidth,
-            height: labelHeight,
-            child: _buildLabel(lots[i]),
+            width: cellRect.width,
+            height: cellRect.height,
+            child: _buildLabel(
+              lots[i],
+              logoImage,
+              template,
+              debugForceQrPlaceholder: debugForceQrPlaceholder,
+              debugMarkQr: debugMarkQr,
+            ),
           ),
         ),
       );
     }
-
     return pw.Stack(children: labels);
   }
 
-  static pw.Widget _buildLabel(Map<String, dynamic> lot) {
-    final lotId = lot['lotCode'] ?? lot['id'] ?? 'Unknown';
-    final itemName = lot['itemName'] ?? 'Unknown Item';
-    final expirationDate = _formatExpirationDate(lot['expiresAt']);
-    final qrData = 'scout://lot/${lot['itemId']}/${lot['id']}';
+  /// Auto-fit text to one line by scaling font size
+  static pw.Widget _autoFitOneLine(
+    String text, {
+    required double maxSize,
+    required double minSize,
+    required pw.TextStyle style,
+  }) {
+    final steps = [maxSize, (maxSize * 0.95), (maxSize * 0.9), (maxSize * 0.85), (maxSize * 0.8), minSize];
 
-    return pw.Container(
-      width: labelWidth,
-      height: labelHeight,
-      decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: PdfColors.grey300, width: 0.5),
-      ),
-      child: pw.Column(
-        children: [
-          // Logo at the top
-          pw.Container(
-            height: 16, // Small logo height
-            child: pw.Center(
-              child: pw.Text(
-                'SCOUT',
-                style: pw.TextStyle(
-                  fontSize: 8,
-                  fontWeight: pw.FontWeight.bold,
-                  color: PdfColors.blue,
-                ),
-              ),
-            ),
-          ),
-          pw.SizedBox(height: 2),
-          // Main content
-          pw.Expanded(
-            child: pw.Row(
-              children: [
-                // Left side: Lot ID and item info
-                pw.Expanded(
-                  flex: 3,
-                  child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    mainAxisAlignment: pw.MainAxisAlignment.center,
-                    children: [
-                      // Lot ID - large and bold
-                      pw.Text(
-                        lotId,
-                        style: pw.TextStyle(
-                          fontSize: 14,
-                          fontWeight: pw.FontWeight.bold,
-                          color: PdfColors.black,
-                        ),
-                      ),
-                      pw.SizedBox(height: 1),
-                      // Item name
-                      pw.Text(
-                        itemName,
-                        style: pw.TextStyle(
-                          fontSize: 6,
-                          color: PdfColors.black,
-                        ),
-                        maxLines: 2,
-                      ),
-                      pw.SizedBox(height: 1),
-                      // Expiration date
-                      if (expirationDate.isNotEmpty)
-                        pw.Text(
-                          'Exp: $expirationDate',
-                          style: pw.TextStyle(
-                            fontSize: 5,
-                            color: PdfColors.grey700,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                pw.SizedBox(width: 2),
-                // Right side: QR Code
-                pw.Container(
-                  width: 32,
-                  height: 32,
-                  child: _buildQrCode(qrData),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return pw.LayoutBuilder(
+      builder: (ctx, constraints) {
+        final maxWidth = constraints?.maxWidth ?? 0;
+        if (maxWidth <= 0) {
+          return pw.Text(text, maxLines: 1, style: style.copyWith(fontSize: minSize));
+        }
+
+        for (final size in steps) {
+          if (text.length * (size * 0.6) <= maxWidth) {
+            return pw.Text(text, maxLines: 1, style: style.copyWith(fontSize: size));
+          }
+        }
+        return pw.Text(text, maxLines: 1, style: style.copyWith(fontSize: minSize));
+      },
     );
   }
 
-  static pw.Widget _buildQrCode(String data) {
-    try {
-      // Generate QR code
-      final qrCode = QrCode.fromData(
-        data: data,
-        errorCorrectLevel: QrErrorCorrectLevel.L,
-      );
+  static pw.Widget _buildLabel(
+    Map<String, dynamic> lot,
+    pw.MemoryImage? logoImage,
+    LabelTemplate t, {
+    bool debugForceQrPlaceholder = false,
+    bool debugMarkQr = false,
+  }) {
+    final lotId = (lot['lotCode'] ?? lot['id'] ?? 'Unknown').toString();
+    final itemName = (lot['itemName'] ?? 'Unknown Item').toString();
+    final expirationDate = _formatExpirationDate(lot['expiresAt']);
+    final itemId = (lot['itemId'] ?? '').toString();
+    final lotDocId = (lot['id'] ?? '').toString();
 
-      // Get the QR code matrix
-      final qrImage = QrImage(qrCode);
+    final todayDate = _formatTodayDate();
 
-      // Calculate pixel size for the QR code in the available space
-      const double qrSize = 32; // Size of QR code area
-      final int moduleCount = qrImage.moduleCount;
-      final double pixelSize = qrSize / moduleCount;
-
-      // Create a list of rectangles for black modules
-      final List<pw.Widget> qrModules = [];
-
-      for (int x = 0; x < moduleCount; x++) {
-        for (int y = 0; y < moduleCount; y++) {
-          if (qrImage.isDark(y, x)) { // Note: isDark(y, x) not isDark(x, y)
-            qrModules.add(
-              pw.Positioned(
-                left: x * pixelSize,
-                top: y * pixelSize,
-                child: pw.Container(
-                  width: pixelSize,
-                  height: pixelSize,
-                  color: PdfColors.black,
-                ),
-              ),
-            );
-          }
-        }
+    // Helper to get rect in points from fractional design if available
+    PdfRect? designRect(String key) {
+      try {
+        final d = t.design?[key];
+        if (d == null) return null;
+        return PdfRect(d['x']! * t.labelWidth, d['y']! * t.labelHeight, d['w']! * t.labelWidth, d['h']! * t.labelHeight);
+      } catch (_) {
+        return null;
       }
+    }
 
+    // Helper to get style overrides for an element
+    double? designFontSize(String key) {
+      try {
+        final d = t.design?[key];
+        return d != null && d.containsKey('fontSize') ? (d['fontSize'] as num).toDouble() : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    bool designBold(String key) {
+      try {
+        final d = t.design?[key];
+        return d != null && d['bold'] == true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    pw.TextAlign designAlign(String key, pw.TextAlign fallback) {
+      try {
+        final d = t.design?[key];
+        final a = d != null ? (d['align'] as String?) : null;
+        if (a == 'center') return pw.TextAlign.center;
+        if (a == 'right') return pw.TextAlign.right;
+        return fallback;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    // Expiration chip/pill widget
+    pw.Widget expirationChip(String text) => t.showExpirationPill && text.isNotEmpty
+        ? pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey200,
+              borderRadius: pw.BorderRadius.circular(2),
+            ),
+            child: pw.Text(
+              'Exp: $text',
+              style: pw.TextStyle(
+                font: t.fontBold ?? pw.Font.helveticaBold(),
+                fontSize: t.expirationFontSize,
+                color: t.expirationColor,
+              ),
+            ),
+          )
+        : (text.isNotEmpty
+            ? pw.Text(
+                'Exp: $text',
+                style: pw.TextStyle(
+                  font: t.fontRegular ?? pw.Font.helvetica(),
+                  fontSize: t.expirationFontSize,
+                  color: t.expirationColor,
+                ),
+              )
+            : pw.SizedBox());
+
+  // If design exists, use it to position elements. Otherwise, fallback to legacy layout
+  final hasDesign = t.design != null;
+  final innerW = t.labelWidth - (t.padding * 2);
+  final innerH = t.labelHeight - (t.padding * 2);
+
+  // Legacy computed QR size (used when no design provided)
+  final qrRegionWidth = (innerW * 0.5).clamp(20.0, innerW * 0.6);
+  final maxQrHeight = (innerH - 2.0).clamp(16.0, innerH);
+  final legacyQrSize = t.qrCodeSize.clamp(20.0, qrRegionWidth).clamp(16.0, maxQrHeight);
+
+    // deeplink (unchanged)
+    const host = 'scout.littleempathy.com';
+    final qrData = (itemId.isNotEmpty && lotDocId.isNotEmpty)
+        ? 'https://$host/#/lot/$itemId/$lotDocId'
+        : lotId;
+
+    if (!hasDesign) {
+      // Legacy layout kept for backward compatibility
       return pw.Container(
-        width: qrSize,
-        height: qrSize,
-        child: pw.Stack(children: qrModules),
-      );
-    } catch (e) {
-      // Fallback to text if QR generation fails
-      return pw.Container(
-        width: 32,
-        height: 32,
+        width: t.labelWidth,
+        height: t.labelHeight,
+        padding: pw.EdgeInsets.all(t.padding),
         decoration: pw.BoxDecoration(
-          border: pw.Border.all(color: PdfColors.black, width: 1),
+          border: pw.Border.all(color: t.borderColor, width: 0.5),
+          borderRadius: pw.BorderRadius.circular(t.cornerRadius),
         ),
-        child: pw.Center(
-          child: pw.Text(
-            'QR',
-            style: pw.TextStyle(fontSize: 8, color: PdfColors.black),
-          ),
+        child: pw.Row(
+          children: [
+            // Left column: logo, lot, item, expiration
+            pw.Expanded(
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisAlignment: pw.MainAxisAlignment.center,
+                children: [
+                  // logo + expiration + date (expiration pill next to date)
+                  pw.Row(
+                    children: [
+                      pw.Container(
+                        width: t.logoHeight,
+                        height: t.logoHeight,
+                        child: logoImage != null
+                            ? pw.Image(logoImage, fit: pw.BoxFit.contain)
+                            : pw.Text(
+                                'SCOUT',
+                                style: pw.TextStyle(
+                                  font: t.fontBold ?? pw.Font.helveticaBold(),
+                                  fontSize: t.logoTextFontSize,
+                                  color: t.logoTextColor,
+                                ),
+                              ),
+                      ),
+                      pw.Spacer(),
+                      // show expiration pill (date moved under QR to reduce clutter)
+                      expirationChip(expirationDate),
+                    ],
+                  ),
+
+                  pw.SizedBox(height: 2),
+
+                  // Lot ID (prominent)
+                  _autoFitOneLine(
+                    lotId,
+                    maxSize: t.lotIdFontSize + 2,
+                    minSize: (t.lotIdFontSize * 0.7).clamp(7, t.lotIdFontSize),
+                    style: pw.TextStyle(
+                      font: t.fontBold ?? pw.Font.helveticaBold(),
+                      color: t.textColor,
+                    ),
+                  ),
+
+                  pw.SizedBox(height: 2),
+
+                  // Item name (allow two lines)
+                  pw.Text(
+                    itemName,
+                    maxLines: 2,
+                    style: pw.TextStyle(
+                      font: t.fontRegular ?? pw.Font.helvetica(),
+                      fontSize: t.itemNameFontSize + 1,
+                      color: t.textColor,
+                    ),
+                  ),
+
+                  pw.SizedBox(height: 3),
+
+                  // Expiration chip
+                  expirationChip(expirationDate),
+                ],
+              ),
+            ),
+
+            // subtle divider (add a little padding before it so date isn't cramped)
+            pw.SizedBox(width: 4),
+            pw.Container(width: 1, height: innerH * 0.9, color: PdfColors.grey200),
+            pw.SizedBox(width: 4),
+
+            // Right: large QR with printed date underneath
+            pw.Column(
+              mainAxisAlignment: pw.MainAxisAlignment.center,
+              children: [
+                pw.Container(
+                  width: legacyQrSize,
+                  height: legacyQrSize,
+                  child: debugForceQrPlaceholder
+                      ? pw.Container(color: PdfColors.black, width: legacyQrSize, height: legacyQrSize)
+                      : pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: qrData, drawText: false),
+                ),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  todayDate,
+                  style: pw.TextStyle(
+                    font: t.fontRegular ?? pw.Font.helvetica(),
+                    fontSize: 5,
+                    color: PdfColors.grey600,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       );
     }
-  }
 
-  static String _formatExpirationDate(dynamic expiresAt) {
-    if (expiresAt == null) return '';
+    // If we reach here, use the design to layout elements
+    final elements = <pw.Widget>[];
 
-    DateTime? date;
-    if (expiresAt is Timestamp) {
-      date = expiresAt.toDate();
-    } else if (expiresAt is DateTime) {
-      date = expiresAt;
+    // Helper to place a child at fractional rect
+    pw.Widget placed(String key, pw.Widget child) {
+      final r = designRect(key);
+      if (r == null) return pw.SizedBox();
+      return pw.Positioned(left: r.left + t.padding, top: r.top + t.padding, child: pw.Container(width: r.width, height: r.height, child: child));
     }
 
-    if (date == null) return '';
+    // LotId
+    final lotFontSize = designFontSize('lotId') ?? t.lotIdFontSize;
+    final lotBold = designBold('lotId');
+    elements.add(placed(
+      'lotId',
+      pw.Align(
+        alignment: designAlign('lotId', pw.TextAlign.left) == pw.TextAlign.center ? pw.Alignment.center : pw.Alignment.topLeft,
+        child: _autoFitOneLine(
+          lotId,
+          maxSize: lotFontSize + 2,
+          minSize: (lotFontSize * 0.7).clamp(7, lotFontSize),
+          style: pw.TextStyle(font: lotBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()), color: t.textColor),
+        ),
+      ),
+    ));
 
-    return '${date.month}/${date.day}/${date.year}';
-  }
+    // Item name
+    final itemFontSize = designFontSize('itemName') ?? t.itemNameFontSize + 1;
+    final itemBold = designBold('itemName');
+    elements.add(placed(
+      'itemName',
+      pw.Text(itemName, maxLines: 2, textAlign: designAlign('itemName', pw.TextAlign.left), style: pw.TextStyle(font: itemBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()), fontSize: itemFontSize, color: t.textColor)),
+    ));
 
-  /// Export PDF with labels, handling web vs mobile platforms
-  static Future<void> exportLabels(List<Map<String, dynamic>> lotsData) async {
-    if (kIsWeb) {
-      // Web export not supported in WASM builds
-      throw UnsupportedError('PDF export is not available on web. Please use the mobile app for PDF export functionality.');
-    } else {
-      // Mobile: Use share_plus
-      // This would need to be called from the UI layer since it requires context
-      throw UnsupportedError('Mobile export should be handled in the UI layer');
-    }
+    // Expiration
+    // Expiration may need custom font size/bold
+    final expFontSize = designFontSize('expiration') ?? t.expirationFontSize;
+    final expBold = designBold('expiration');
+    pw.Widget expWidget = t.showExpirationPill && expirationDate.isNotEmpty
+        ? pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.grey200,
+              borderRadius: pw.BorderRadius.circular(2),
+            ),
+            child: pw.Text(
+              'Exp: $expirationDate',
+              style: pw.TextStyle(
+                font: expBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()),
+                fontSize: expFontSize,
+                color: t.expirationColor,
+              ),
+            ),
+          )
+        : (expirationDate.isNotEmpty
+            ? pw.Text('Exp: $expirationDate', style: pw.TextStyle(font: expBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()), fontSize: expFontSize, color: t.expirationColor))
+            : pw.SizedBox());
+
+    elements.add(placed('expiration', expWidget));
+
+    // QR and date
+    elements.add(placed(
+      'qr',
+      pw.Column(children: [
+        pw.Container(width: designRect('qr')?.width ?? legacyQrSize, height: designRect('qr')?.height ?? legacyQrSize, child: pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: qrData, drawText: false)),
+        pw.SizedBox(height: 4),
+        pw.Text(todayDate, style: pw.TextStyle(font: t.fontRegular ?? pw.Font.helvetica(), fontSize: 5, color: PdfColors.grey600)),
+      ]),
+    ));
+
+    return pw.Container(
+      width: t.labelWidth,
+      height: t.labelHeight,
+      decoration: pw.BoxDecoration(border: pw.Border.all(color: t.borderColor, width: 0.5), borderRadius: pw.BorderRadius.circular(t.cornerRadius)),
+      child: pw.Stack(children: elements),
+    );
   }
 
   /// Get lots data for the given item IDs
@@ -251,14 +715,12 @@ class LabelExportService {
     final lots = <Map<String, dynamic>>[];
 
     for (final itemId in itemIds) {
-      // Get item data first
       final itemDoc = await FirebaseFirestore.instance.collection('items').doc(itemId).get();
       if (!itemDoc.exists) continue;
 
       final itemData = itemDoc.data()!;
       final itemName = itemData['name'] ?? 'Unknown Item';
 
-      // Get lots for this item
       final lotsSnapshot = await FirebaseFirestore.instance
           .collection('items')
           .doc(itemId)
@@ -278,5 +740,55 @@ class LabelExportService {
     }
 
     return lots;
+  }
+
+  /// Export PDF with labels, handling web vs mobile platforms
+  static Future<void> exportLabels(
+    List<Map<String, dynamic>> lotsData, {
+    LabelTemplate? template,
+    int startIndex = 0,
+    double nudgeX = 0,
+    double nudgeY = 0,
+  }) async {
+    final pdfBytes = await generateLabels(
+      lotsData,
+      template: template,
+      startIndex: startIndex,
+      nudgeX: nudgeX,
+      nudgeY: nudgeY,
+    );
+    final fileName = 'item_labels_${DateTime.now().millisecondsSinceEpoch}.pdf';
+
+    if (kIsWeb) {
+      final base64 = base64Encode(pdfBytes);
+      final dataUrl = 'data:application/pdf;base64,$base64';
+      downloadDataUrl(dataUrl, fileName);
+    } else {
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/$fileName');
+        await file.writeAsBytes(pdfBytes);
+        await Share.shareXFiles([XFile(file.path)], text: 'Item Labels PDF');
+      } catch (e) {
+        throw UnsupportedError('Mobile PDF export failed: $e');
+      }
+    }
+  }
+
+  static String _formatExpirationDate(dynamic expiresAt) {
+    if (expiresAt == null) return '';
+    DateTime? date;
+    if (expiresAt is Timestamp) {
+      date = expiresAt.toDate();
+    } else if (expiresAt is DateTime) {
+      date = expiresAt;
+    }
+    if (date == null) return '';
+    return '${date.month}/${date.day}/${date.year}';
+  }
+
+  static String _formatTodayDate() {
+    final now = DateTime.now();
+    return '${now.month}/${now.day}/${now.year}';
   }
 }

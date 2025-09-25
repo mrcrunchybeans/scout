@@ -1,19 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:scout/features/items/new_item_page.dart';
+import 'package:scout/widgets/label_sheet_preview.dart';
 import '../dashboard/dashboard_page.dart';
-import '../items/item_detail_page.dart';
 import '../lookups_management_page.dart';
 import '../../services/search_service.dart';
-import '../../data/lookups_service.dart';
-import '../../models/option_item.dart';
 import '../../utils/audit.dart';
 import '../../services/label_export_service.dart';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../dev/seed_lookups.dart';
 
@@ -23,7 +18,7 @@ enum ViewMode { active, archived }
 class ItemsPage extends StatefulWidget {
   final SearchFilters? initialFilters;
   final bool isFromDashboard;
-  
+
   const ItemsPage({super.key, this.initialFilters, this.isFromDashboard = false});
   @override
   State<ItemsPage> createState() => _ItemsPageState();
@@ -36,10 +31,10 @@ class _ItemsPageState extends State<ItemsPage> {
     const SearchConfig(
       strategy: SearchStrategy.hybrid, // Temporarily use hybrid search to bypass Algolia issues
       enableAlgolia: true, // Keep Algolia enabled for when index is populated
-       algoliaAppId: 'COMHTF4QM1',
-       algoliaSearchApiKey: '86a6aa6baaa3bbfc8e5e75c0c272fa00',
-       algoliaWriteApiKey: '3ca7664f0aaf7555ab3c43bd179d17d8',
-       algoliaIndexName: 'scout_items',
+      algoliaAppId: 'COMHTF4QM1',
+      algoliaSearchApiKey: '86a6aa6baaa3bbfc8e5e75c0c272fa00',
+      algoliaWriteApiKey: '3ca7664f0aaf7555ab3c43bd179d17d8',
+      algoliaIndexName: 'scout_items',
     ),
   );
   bool _busy = false;
@@ -48,18 +43,22 @@ class _ItemsPageState extends State<ItemsPage> {
   ViewMode _viewMode = ViewMode.active;
   bool _selectionMode = false;
   bool _showAdvancedFilters = false;
+  Future<List<String>>? _categoriesFuture;
   final Set<String> _selectedIds = {};
   int _refreshCounter = 0; // Counter to force refresh after operations
+  Future<SearchResult>? _searchFuture;
+  List<String> _visibleIds = [];
 
   @override
   void initState() {
     super.initState();
     _filters = widget.initialFilters ?? const SearchFilters();
+    _categoriesFuture = _loadCategories();
+    _updateSearchFuture();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    // Get sort field name
+  void _updateSearchFuture() {
+    // compute sort field and direction from _sortOption
     final sortField = switch (_sortOption) {
       SortOption.updatedDesc => 'updatedAt',
       SortOption.nameAsc || SortOption.nameDesc => 'name',
@@ -72,6 +71,62 @@ class _ItemsPageState extends State<ItemsPage> {
       SortOption.updatedDesc || SortOption.nameDesc || SortOption.categoryDesc || SortOption.qtyDesc || SortOption.expirationDesc => true,
       SortOption.nameAsc || SortOption.categoryAsc || SortOption.qtyAsc || SortOption.expirationAsc => false,
     };
+
+    _searchFuture = _searchService.searchItems(
+      filters: _filters,
+      showArchived: _viewMode == ViewMode.archived,
+      sortField: sortField,
+      sortDescending: sortDescending,
+      limit: 1000,
+      showAllItems: widget.isFromDashboard,
+    );
+  }
+
+  Future<List<String>> _loadCategories() async {
+    try {
+      Query query = _db.collection('items');
+      if (_viewMode == ViewMode.archived) {
+        query = query.where('archived', isEqualTo: true);
+      }
+
+      final q = await query.get();
+      final set = <String>{};
+      for (final d in q.docs) {
+        final data = d.data() as Map<String, dynamic>?;
+        final cat = (data == null ? '' : (data['category'] ?? '')) as String;
+        if (cat.isNotEmpty) set.add(cat);
+      }
+      final list = set.toList()..sort();
+
+      if (list.isNotEmpty) return list;
+
+      // Fallback: if no categories found from the broad query, try to derive from last visible ids
+      if (_visibleIds.isNotEmpty) {
+        try {
+          final docs = await Future.wait(_visibleIds.map((id) => _db.collection('items').doc(id).get()));
+          final set2 = <String>{};
+          for (final doc in docs) {
+            if (!doc.exists) continue;
+            final data = doc.data();
+            final cat = (data == null ? '' : (data['category'] ?? '')) as String;
+            if (cat.isNotEmpty) set2.add(cat);
+          }
+          final list2 = set2.toList()..sort();
+          if (list2.isNotEmpty) return list2;
+        } catch (_) {
+          // ignore fallback errors
+        }
+      }
+
+      return list;
+    } catch (_) {
+      return <String>[];
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // sort field/direction are computed in _updateSearchFuture()
 
     return Scaffold(
       appBar: AppBar(
@@ -90,6 +145,15 @@ class _ItemsPageState extends State<ItemsPage> {
             ),
           if (_selectionMode) ...[
             IconButton(
+              icon: const Icon(Icons.select_all),
+              tooltip: 'Select all visible',
+              onPressed: _visibleIds.isEmpty
+                  ? null
+                  : () {
+                      setState(() => _selectedIds.addAll(_visibleIds));
+                    },
+            ),
+            IconButton(
               icon: const Icon(Icons.delete),
               onPressed: _selectedIds.isEmpty ? null : _bulkDelete,
             ),
@@ -105,12 +169,25 @@ class _ItemsPageState extends State<ItemsPage> {
             Text('${_selectedIds.length} selected'),
           ] else ...[
             IconButton(
-  tooltip: 'Dashboard',
-  icon: const Icon(Icons.dashboard_outlined),
-  onPressed: () {
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage()));
-  },
-),
+              tooltip: 'Dashboard',
+              icon: const Icon(Icons.dashboard_outlined),
+              onPressed: () {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage()));
+              },
+            ),
+            // Quick Select-all visible button (when not in bulk mode)
+            IconButton(
+              icon: const Icon(Icons.select_all),
+              tooltip: 'Select all visible',
+              onPressed: _visibleIds.isEmpty
+                  ? null
+                  : () {
+                      setState(() {
+                        _selectionMode = true;
+                        _selectedIds.addAll(_visibleIds);
+                      });
+                    },
+            ),
             PopupMenuButton<String>(
               tooltip: 'Tools',
               enabled: !_busy,
@@ -174,7 +251,11 @@ class _ItemsPageState extends State<ItemsPage> {
                       setState(() => _busy = false);
                     }
                   } else if (key == 'toggle-view') {
-                    setState(() => _viewMode = _viewMode == ViewMode.active ? ViewMode.archived : ViewMode.active);
+                    setState(() {
+                      _viewMode = _viewMode == ViewMode.active ? ViewMode.archived : ViewMode.active;
+                      _categoriesFuture = _loadCategories(); // Refresh categories when view mode changes
+                      _updateSearchFuture();
+                    });
                   } else if (key == 'bulk-edit') {
                     setState(() => _selectionMode = true);
                   } else if (key == 'manage-lookups') {
@@ -224,7 +305,10 @@ class _ItemsPageState extends State<ItemsPage> {
                     ),
                     border: const OutlineInputBorder(),
                   ),
-                  onChanged: (value) => setState(() => _filters = _filters.copyWith(query: value.trim())),
+                  onChanged: (value) => setState(() {
+                        _filters = _filters.copyWith(query: value.trim());
+                        _updateSearchFuture();
+                      }),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -243,11 +327,19 @@ class _ItemsPageState extends State<ItemsPage> {
                         DropdownMenuItem(value: SortOption.expirationAsc, child: Text('Expiration (Soonest)')),
                         DropdownMenuItem(value: SortOption.expirationDesc, child: Text('Expiration (Latest)')),
                       ],
-                      onChanged: (value) => setState(() => _sortOption = value!),
+                      onChanged: (value) => setState(() {
+                            _sortOption = value!;
+                            _updateSearchFuture();
+                          }),
                     ),
                     const Spacer(),
                     TextButton.icon(
-                      onPressed: () => setState(() => _showAdvancedFilters = !_showAdvancedFilters),
+                      onPressed: () => setState(() {
+                        _showAdvancedFilters = !_showAdvancedFilters;
+                        if (_showAdvancedFilters) {
+                          _categoriesFuture = _loadCategories();
+                        }
+                      }),
                       icon: Icon(_showAdvancedFilters ? Icons.filter_list_off : Icons.filter_list),
                       label: Text(_showAdvancedFilters ? 'Hide Filters' : 'Advanced Filters'),
                     ),
@@ -290,15 +382,8 @@ class _ItemsPageState extends State<ItemsPage> {
             ),
 
       body: FutureBuilder<SearchResult>(
-        key: ValueKey('${_filters.hashCode}_${_viewMode}_${sortField}_$sortDescending$_refreshCounter'),
-        future: _searchService.searchItems(
-          filters: _filters,
-          showArchived: _viewMode == ViewMode.archived,
-          sortField: sortField,
-          sortDescending: sortDescending,
-          limit: 1000,
-          showAllItems: widget.isFromDashboard,
-        ),
+        key: ValueKey('${_filters.hashCode}_${_viewMode}_${_sortOption}_$_refreshCounter'),
+        future: _searchFuture,
         builder: (context, snap) {
           if (snap.hasError) {
             return Center(child: Text('Search error: ${snap.error}'));
@@ -306,12 +391,14 @@ class _ItemsPageState extends State<ItemsPage> {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
-          
+
           final result = snap.data!;
           final docs = result.documents;
-          
+
+          // Populate visible ids so select-all can work without refetching
+          _visibleIds = docs.map((d) => d.id).toList();
+
           if (docs.isEmpty) {
-            // Nicer empty state that nudges to create the first item
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -320,7 +407,8 @@ class _ItemsPageState extends State<ItemsPage> {
                   children: [
                     const Icon(Icons.inventory_2_outlined, size: 56),
                     const SizedBox(height: 12),
-                    Text('No ${_viewMode == ViewMode.active ? 'active' : 'archived'} items', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                    Text('No ${_viewMode == ViewMode.active ? 'active' : 'archived'} items',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 8),
                     const Text('Tap “New item” to add your first inventory item.'),
                     const SizedBox(height: 16),
@@ -358,16 +446,15 @@ class _ItemsPageState extends State<ItemsPage> {
               final minQty = (data['minQty'] ?? 0);
               final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
               final expirationDate = data['earliestExpiresAt'] != null ? (data['earliestExpiresAt'] as Timestamp).toDate() : null;
-              
-              // Determine expiration status
+
               Color? tileColor;
               if (expirationDate != null) {
                 final now = DateTime.now();
                 final daysUntilExpiration = expirationDate.difference(now).inDays;
                 if (expirationDate.isBefore(now)) {
-                  tileColor = Colors.red.withValues(alpha:0.1); // Expired - red
+                  tileColor = Colors.red.withValues(alpha:0.1);
                 } else if (daysUntilExpiration <= 14) {
-                  tileColor = Colors.yellow.withValues(alpha:.1); // Expiring within 2 weeks - yellow
+                  tileColor = Colors.yellow.withValues(alpha:0.1);
                 }
               }
 
@@ -387,8 +474,9 @@ class _ItemsPageState extends State<ItemsPage> {
                         },
                       )
                     : null,
-                title: Text(name),
-                subtitle: Text('${category.isNotEmpty ? '$category • ' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}'),
+                title: SelectableText(name),
+                subtitle: SelectableText(
+                    '${category.isNotEmpty ? '$category • ' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}'),
                 onTap: _selectionMode
                     ? () {
                         setState(() {
@@ -400,13 +488,9 @@ class _ItemsPageState extends State<ItemsPage> {
                         });
                       }
                     : () {
-                        Navigator.of(context).push(MaterialPageRoute(
-                          builder: (_) => ItemDetailPage(itemId: d.id, itemName: name),
-                        ));
+                        GoRouter.of(context).go('/items/${d.id}');
                       },
-                onLongPress: !_selectionMode
-                    ? () => setState(() => _selectionMode = true)
-                    : null,
+                onLongPress: !_selectionMode ? () => setState(() => _selectionMode = true) : null,
                 trailing: _selectionMode
                     ? null
                     : PopupMenuButton<String>(
@@ -419,7 +503,10 @@ class _ItemsPageState extends State<ItemsPage> {
                               ),
                             ));
                             if (result == true) {
-                              setState(() => _refreshCounter++);
+                              setState(() {
+                                _refreshCounter++;
+                                _updateSearchFuture();
+                              });
                             }
                           } else if (action == 'delete') {
                             final ok = await showDialog<bool>(
@@ -438,8 +525,7 @@ class _ItemsPageState extends State<ItemsPage> {
                             );
                             if (ok == true) {
                               await _db.collection('items').doc(d.id).delete();
-                              
-                              // Log the item deletion
+
                               await Audit.log('item.delete', {
                                 'itemId': d.id,
                                 'name': name,
@@ -447,35 +533,40 @@ class _ItemsPageState extends State<ItemsPage> {
                                 'baseUnit': data['baseUnit'],
                                 'qtyOnHand': data['qtyOnHand'],
                               });
-                              
-                              // Also sync the deletion to Algolia if configured
+
                               try {
                                 await _searchService.syncItemToAlgolia(d.id);
                               } catch (e) {
-                                // Algolia sync failure shouldn't block the UI
                                 debugPrint('Failed to sync deletion to Algolia: $e');
                               }
-                              setState(() => _refreshCounter++); // Force refresh
+                              setState(() {
+                                _refreshCounter++;
+                                _updateSearchFuture();
+                              });
                               if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted "$name"')));
                             }
                           } else if (action == 'archive') {
                             await _db.collection('items').doc(d.id).update({'archived': _viewMode == ViewMode.active});
-                            // Sync the update to Algolia
                             try {
                               await _searchService.syncItemToAlgolia(d.id);
                             } catch (e) {
                               debugPrint('Failed to sync archive to Algolia: $e');
                             }
-                            setState(() => _refreshCounter++); // Force refresh
+                            setState(() {
+                              _refreshCounter++;
+                              _categoriesFuture = _loadCategories();
+                              _updateSearchFuture();
+                            });
                             if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${_viewMode == ViewMode.active ? 'Archived' : 'Unarchived'} "$name"')));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('${_viewMode == ViewMode.active ? 'Archived' : 'Unarchived'} "$name"')));
                           }
                         },
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(value: 'edit', child: Text('Edit Item')),
-                          const PopupMenuItem(value: 'archive', child: Text('Archive/Unarchive')),
-                          const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'edit', child: Text('Edit Item')),
+                          PopupMenuItem(value: 'archive', child: Text('Archive/Unarchive')),
+                          PopupMenuItem(value: 'delete', child: Text('Delete')),
                         ],
                       ),
               );
@@ -532,7 +623,6 @@ class _ItemsPageState extends State<ItemsPage> {
 
     setState(() => _busy = true);
     try {
-      // First, collect item data for audit logging before deletion
       final itemsData = <String, Map<String, dynamic>>{};
       for (final id in _selectedIds) {
         try {
@@ -544,14 +634,13 @@ class _ItemsPageState extends State<ItemsPage> {
           debugPrint('Failed to fetch data for item $id: $e');
         }
       }
-      
+
       final batch = _db.batch();
       for (final id in _selectedIds) {
         batch.delete(_db.collection('items').doc(id));
       }
       await batch.commit();
-      
-      // Log bulk item deletions
+
       for (final id in _selectedIds) {
         final data = itemsData[id];
         if (data != null) {
@@ -571,8 +660,7 @@ class _ItemsPageState extends State<ItemsPage> {
           });
         }
       }
-      
-      // Sync deletions to Algolia
+
       for (final id in _selectedIds) {
         try {
           await _searchService.syncItemToAlgolia(id);
@@ -580,11 +668,12 @@ class _ItemsPageState extends State<ItemsPage> {
           debugPrint('Failed to sync deletion to Algolia for $id: $e');
         }
       }
-      
+
       setState(() {
         _selectionMode = false;
         _selectedIds.clear();
-        _refreshCounter++; // Force refresh
+        _refreshCounter++;
+        _updateSearchFuture();
       });
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Deleted $count items')));
@@ -607,7 +696,9 @@ class _ItemsPageState extends State<ItemsPage> {
       setState(() {
         _selectionMode = false;
         _selectedIds.clear();
-        _refreshCounter++; // Force refresh
+        _refreshCounter++;
+        _categoriesFuture = _loadCategories();
+        _updateSearchFuture();
       });
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('${archiving ? 'Archived' : 'Unarchived'} $count items')));
@@ -618,6 +709,67 @@ class _ItemsPageState extends State<ItemsPage> {
 
   Future<void> _exportLabels() async {
     final ctx = context;
+
+    // Ask: Which label number to start from? (1–30, convert to 0–29)
+    final startLabel = await showDialog<int>(
+      context: context,
+      builder: (context) {
+        int selectedLabel = 1; // Default
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Export Labels'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Pick a starting slot (tap) or use the dropdown.'),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 260,
+                  child: LabelSheetPreview(
+                    selectedIndex: selectedLabel - 1,
+                    onSelected: (i) => setState(() => selectedLabel = i + 1),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<int>(
+                  decoration: const InputDecoration(
+                    labelText: 'Starting Label',
+                    border: OutlineInputBorder(),
+                  ),
+                  initialValue: selectedLabel,
+                  items: List.generate(30, (index) => index + 1)
+                      .map((labelNum) => DropdownMenuItem(
+                            value: labelNum,
+                            child: Text('Label $labelNum'),
+                          ))
+                      .toList(),
+                  onChanged: (value) => setState(() => selectedLabel = value ?? 1),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Avery 5160 sheets have 30 labels (3 columns × 10 rows).',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(selectedLabel),
+                child: const Text('Generate Labels'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (startLabel == null) return; // User cancelled
+    final startIndex = startLabel - 1; // convert to 0-based
+
     setState(() => _busy = true);
     try {
       // Get lots data for selected items
@@ -631,30 +783,12 @@ class _ItemsPageState extends State<ItemsPage> {
         return;
       }
 
-      // Generate PDF
-      final pdfBytes = await LabelExportService.generateLabels(lotsData);
-
-      // Export based on platform
-      if (kIsWeb) {
-        // Web: Direct download (not supported in WASM)
-        await LabelExportService.exportLabels(lotsData);
-      } else {
-        // Mobile: Save to temp file and share
-        final tempDir = await getTemporaryDirectory();
-        final fileName = 'item_labels_${DateTime.now().millisecondsSinceEpoch}.pdf';
-        final file = File('${tempDir.path}/$fileName');
-        await file.writeAsBytes(pdfBytes);
-
-        // Share the file
-        await Share.shareXFiles(
-          [XFile(file.path, name: fileName)],
-          text: 'Item Labels PDF',
-        );
-      }
+      // Export labels using the service with the selected startIndex
+      await LabelExportService.exportLabels(lotsData, startIndex: startIndex);
 
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(
-        SnackBar(content: Text('Generated labels for ${lotsData.length} lots')),
+        SnackBar(content: Text('Generated labels for ${lotsData.length} lots (starting from label $startLabel)')),
       );
     } catch (e) {
       if (!ctx.mounted) return;
@@ -667,402 +801,149 @@ class _ItemsPageState extends State<ItemsPage> {
   }
 
   Widget _buildAdvancedFilters() {
-    return FutureBuilder<List<dynamic>>(
-      future: Future.wait([
-        _db.collection('items').where('archived', isEqualTo: _viewMode == ViewMode.archived).get(),
-        LookupsService().locations(),
-        LookupsService().grants(),
-      ]),
-      key: ValueKey('filters_$_viewMode$_refreshCounter'),
-      builder: (context, snap) {
-        if (!snap.hasData) return const SizedBox.shrink();
-        
-        final itemsSnap = snap.data![0] as QuerySnapshot;
-        final locations = snap.data![1] as List<OptionItem>;
-        final grants = snap.data![2] as List<OptionItem>;
-        
-        final categories = <String>{};
-        final baseUnits = <String>{};
-        final locationIds = <String>{};
-        final grantIds = <String>{};
-        final useTypes = <String>{};
-        double maxQty = 0;
-        int totalItems = itemsSnap.docs.length;
-        
-        for (final doc in itemsSnap.docs) {
-          final data = doc.data() as Map<String, dynamic>;
-          final category = (data['category'] ?? '') as String;
-          final baseUnit = (data['baseUnit'] ?? '') as String;
-          final locationId = (data['homeLocationId'] ?? '') as String;
-          final grantId = (data['grantId'] ?? '') as String;
-          final useType = (data['useType'] ?? '') as String;
-          final qty = (data['qtyOnHand'] ?? 0) as num;
-          
-          if (category.isNotEmpty) categories.add(category);
-          if (baseUnit.isNotEmpty) baseUnits.add(baseUnit);
-          if (locationId.isNotEmpty) locationIds.add(locationId);
-          if (grantId.isNotEmpty) grantIds.add(grantId);
-          if (useType.isNotEmpty) useTypes.add(useType);
-          if (qty > maxQty) maxQty = qty.toDouble();
-        }
-        
-        final categoryList = categories.toList()..sort();
-        final baseUnitList = baseUnits.toList()..sort();
-        
-        // Create location name mappings
-        final locationMap = <String, String>{};
-        for (final loc in locations) {
-          if (locationIds.contains(loc.id)) {
-            locationMap[loc.id] = loc.name;
-          }
-        }
-        final locationList = locationMap.values.toList()..sort();
-        
-        // Create grant name mappings
-        final grantMap = <String, String>{};
-        for (final grant in grants) {
-          if (grantIds.contains(grant.id)) {
-            grantMap[grant.id] = grant.name;
-          }
-        }
-        final grantList = grantMap.values.toList()..sort();
-        
-        final useTypeList = useTypes.toList()..sort();
-        
-        return Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    Text('Advanced Filters ($totalItems items)', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () => setState(() => _filters = const SearchFilters()),
-                      child: const Text('Clear All'),
-                    ),
-                  ],
+                const Text('Filters', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => setState(() => _filters = const SearchFilters()),
+                  child: const Text('Clear All'),
                 ),
-                const SizedBox(height: 12),
-                
-                // Search query and basic filters
-                if (totalItems > 10) ...[
-                  _buildFilterSection(
-                    title: 'Quick Filters',
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        FilterChip(
-                          label: const Text('Low Stock'),
-                          selected: _filters.hasLowStock ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLowStock: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Has Lots'),
-                          selected: _filters.hasLots ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLots: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Has Barcode'),
-                          selected: _filters.hasBarcode ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasBarcode: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Has Min Qty'),
-                          selected: _filters.hasMinQty ?? false,
-                          onSelected: (selected) => setState(() => _filters.copyWith(hasMinQty: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Expiring Soon'),
-                          selected: _filters.hasExpiringSoon ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Expired'),
-                          selected: _filters.hasExpired ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpired: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Stale'),
-                          selected: _filters.hasStale ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasStale: selected ? true : null)),
-                        ),
-                        FilterChip(
-                          label: const Text('Excess Stock'),
-                          selected: _filters.hasExcess ?? false,
-                          onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExcess: selected ? true : null)),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-
-                // Categories
-                if (categoryList.isNotEmpty) ...[
-                  _buildFilterSection(
-                    title: 'Categories (${categoryList.length})',
-                    child: _buildExpandableChipList(
-                      items: categoryList,
-                      selectedItems: _filters.categories,
-                      onSelectionChanged: (selected, category) {
-                        setState(() {
-                          final newCategories = Set<String>.from(_filters.categories);
-                          if (selected) {
-                            newCategories.add(category);
-                          } else {
-                            newCategories.remove(category);
-                          }
-                          _filters = _filters.copyWith(categories: newCategories);
-                        });
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-
-                // Units and Quantity
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (baseUnitList.isNotEmpty) 
-                      Expanded(
-                        child: _buildFilterSection(
-                          title: 'Units (${baseUnitList.length})',
-                          child: _buildExpandableChipList(
-                            items: baseUnitList,
-                            selectedItems: _filters.baseUnits,
-                            maxVisible: 6,
-                            onSelectionChanged: (selected, unit) {
-                              setState(() {
-                                final newBaseUnits = Set<String>.from(_filters.baseUnits);
-                                if (selected) {
-                                  newBaseUnits.add(unit);
-                                } else {
-                                  newBaseUnits.remove(unit);
-                                }
-                                _filters = _filters.copyWith(baseUnits: newBaseUnits);
-                              });
-                            },
-                          ),
-                        ),
-                      ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _buildFilterSection(
-                        title: 'Quantity Range',
-                        child: Column(
-                          children: [
-                            RangeSlider(
-                              values: _filters.qtyRange ?? RangeValues(0, maxQty),
-                              min: 0,
-                              max: maxQty,
-                              divisions: maxQty > 0 ? (maxQty / 10).ceil() : 1,
-                              labels: RangeLabels(
-                                (_filters.qtyRange?.start ?? 0).toStringAsFixed(0),
-                                (_filters.qtyRange?.end ?? maxQty).toStringAsFixed(0),
-                              ),
-                              onChanged: (values) => setState(() => _filters = _filters.copyWith(qtyRange: values.start == 0 && values.end == maxQty ? null : values)),
-                            ),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text('0', style: Theme.of(context).textTheme.bodySmall),
-                                Text(maxQty.toStringAsFixed(0), style: Theme.of(context).textTheme.bodySmall),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 16),
-
-                // Locations and Grants
-                if (locationList.isNotEmpty || grantList.isNotEmpty) ...[
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (locationList.isNotEmpty)
-                        Expanded(
-                          child: _buildFilterSection(
-                            title: 'Locations (${locationList.length})',
-                            child: _buildExpandableChipList(
-                              items: locationList,
-                              selectedItems: _filters.locationIds.map((id) => locationMap.entries.firstWhere((e) => e.key == id, orElse: () => MapEntry('', '')).value).where((name) => name.isNotEmpty).toSet(),
-                              maxVisible: 4,
-                              onSelectionChanged: (selected, locationName) {
-                                // Find the ID for this location name
-                                final locationId = locationMap.entries.firstWhere((e) => e.value == locationName).key;
-                                setState(() {
-                                  final newLocationIds = Set<String>.from(_filters.locationIds);
-                                  if (selected) {
-                                    newLocationIds.add(locationId);
-                                  } else {
-                                    newLocationIds.remove(locationId);
-                                  }
-                                  _filters = _filters.copyWith(locationIds: newLocationIds);
-                                });
-                              },
-                            ),
-                          ),
-                        ),
-                      if (locationList.isNotEmpty && grantList.isNotEmpty)
-                        const SizedBox(width: 16),
-                      if (grantList.isNotEmpty)
-                        Expanded(
-                          child: _buildFilterSection(
-                            title: 'Grants (${grantList.length})',
-                            child: _buildExpandableChipList(
-                              items: grantList,
-                              selectedItems: _filters.grantIds.map((id) => grantMap.entries.firstWhere((e) => e.key == id, orElse: () => MapEntry('', '')).value).where((name) => name.isNotEmpty).toSet(),
-                              maxVisible: 4,
-                              onSelectionChanged: (selected, grantName) {
-                                // Find the ID for this grant name
-                                final grantId = grantMap.entries.firstWhere((e) => e.value == grantName).key;
-                                setState(() {
-                                  final newGrantIds = Set<String>.from(_filters.grantIds);
-                                  if (selected) {
-                                    newGrantIds.add(grantId);
-                                  } else {
-                                    newGrantIds.remove(grantId);
-                                  }
-                                  _filters = _filters.copyWith(grantIds: newGrantIds);
-                                });
-                              },
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                ],
-
-                // Use Types
-                if (useTypeList.isNotEmpty) ...[
-                  _buildFilterSection(
-                    title: 'Usage Types',
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: useTypeList.map((useType) => FilterChip(
-                        label: Text(_formatUseType(useType)),
-                        selected: _filters.useTypes.contains(useType),
-                        onSelected: (selected) {
-                          setState(() {
-                            final newUseTypes = Set<String>.from(_filters.useTypes);
-                            if (selected) {
-                              newUseTypes.add(useType);
-                            } else {
-                              newUseTypes.remove(useType);
-                            }
-                            _filters = _filters.copyWith(useTypes: newUseTypes);
-                          });
-                        },
-                      )).toList(),
-                    ),
-                  ),
-                ],
               ],
             ),
-          ),
-        );
-      },
-    );
-  }
+            const SizedBox(height: 12),
 
-  Widget _buildFilterSection({required String title, required Widget child}) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-        const SizedBox(height: 8),
-        child,
-      ],
-    );
-  }
-
-  Widget _buildExpandableChipList({
-    required List<String> items,
-    required Set<String> selectedItems,
-    required Function(bool, String) onSelectionChanged,
-    int maxVisible = 8,
-  }) {
-    final showAll = items.length <= maxVisible;
-    final visibleItems = showAll ? items : items.take(maxVisible).toList();
-    
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: visibleItems.map((item) => FilterChip(
-            label: Text(item, style: const TextStyle(fontSize: 12)),
-            selected: selectedItems.contains(item),
-            onSelected: (selected) => onSelectionChanged(selected, item),
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          )).toList(),
-        ),
-        if (!showAll) ...[
-          const SizedBox(height: 4),
-          TextButton(
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Select Items'),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    height: 300,
-                    child: ListView.builder(
-                      itemCount: items.length,
-                      itemBuilder: (context, index) {
-                        final item = items[index];
-                        return CheckboxListTile(
-                          title: Text(item),
-                          value: selectedItems.contains(item),
-                          onChanged: (selected) {
-                            onSelectionChanged(selected ?? false, item);
-                          },
-                          dense: true,
-                        );
-                      },
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Close'),
-                    ),
-                  ],
+            // Quick Filters
+            const Text('Quick Filters', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilterChip(
+                  label: const Text('Low Stock'),
+                  selected: _filters.hasLowStock == true,
+                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLowStock: selected ? true : null)),
                 ),
-              );
-            },
-            style: TextButton.styleFrom(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(0, 0),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                FilterChip(
+                  label: const Text('Has Lots'),
+                  selected: _filters.hasLots == true,
+                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLots: selected ? true : null)),
+                ),
+                FilterChip(
+                  label: const Text('Has Barcode'),
+                  selected: _filters.hasBarcode == true,
+                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasBarcode: selected ? true : null)),
+                ),
+                FilterChip(
+                  label: const Text('Expiring Soon'),
+                  selected: _filters.hasExpiringSoon == true,
+                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null)),
+                ),
+                FilterChip(
+                  label: const Text('Expired'),
+                  selected: _filters.hasExpired == true,
+                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpired: selected ? true : null)),
+                ),
+              ],
             ),
-            child: Text('+ ${items.length - maxVisible} more', style: const TextStyle(fontSize: 12)),
-          ),
-        ],
-      ],
-    );
-  }
 
-  String _formatUseType(String useType) {
-    switch (useType.toLowerCase()) {
-      case 'staff': return 'Staff Only';
-      case 'patient': return 'Patient Only';
-      case 'both': return 'Staff & Patient';
-      default: return useType;
-    }
+            const SizedBox(height: 16),
+
+            // Categories
+            FutureBuilder<List<String>>(
+              future: _categoriesFuture,
+              builder: (context, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+                  );
+                }
+
+                final categories = snap.data ?? <String>[];
+                if (categories.isEmpty) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                      const SizedBox(height: 8),
+                      const Text('No categories found for the current view.', style: TextStyle(color: Colors.grey)),
+                      TextButton.icon(
+                        onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Reload categories'),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                  );
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: categories
+                          .map((category) => FilterChip(
+                                label: Text(category),
+                                selected: _filters.categories.contains(category),
+                                onSelected: (selected) {
+                                  setState(() {
+                                    final newCategories = Set<String>.from(_filters.categories);
+                                    if (selected) {
+                                      newCategories.add(category);
+                                    } else {
+                                      newCategories.remove(category);
+                                    }
+                                    _filters = _filters.copyWith(categories: newCategories);
+                                  });
+                                },
+                              ))
+                          .toList(),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                );
+              },
+            ),
+
+            // Locations (if any are selected, show them)
+            if (_filters.locationIds.isNotEmpty) ...[
+              const Text('Locations', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _filters.locationIds
+                    .map((locationId) => FilterChip(
+                          label: Text(locationId),
+                          selected: true,
+                          onSelected: (selected) {
+                            if (!selected) {
+                              setState(() {
+                                final newLocationIds = Set<String>.from(_filters.locationIds);
+                                newLocationIds.remove(locationId);
+                                _filters = _filters.copyWith(locationIds: newLocationIds);
+                              });
+                            }
+                          },
+                        ))
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }

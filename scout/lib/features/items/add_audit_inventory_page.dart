@@ -1,13 +1,13 @@
 // lib/features/items/add_audit_inventory_page.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../utils/audit.dart';
 import '../../data/product_enrichment_service.dart';
 import 'new_item_page.dart';
-import 'item_detail_page.dart';
 
 enum InventoryAction { addNew, auditExisting }
 
@@ -1146,24 +1146,10 @@ class _AuditOptionsState extends State<_AuditOptions> {
 
   void _addNewLot() {
     // Navigate to item detail page with lots tab selected
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ItemDetailPage(
-          itemId: widget.itemId,
-          itemName: widget.itemName,
-        ),
-      ),
-    ).then((_) => widget.onAction()); // Refresh when returning
+    GoRouter.of(context).push('/items/${widget.itemId}').then((_) => widget.onAction());
   }
 
   void _viewItemDetails() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ItemDetailPage(
-          itemId: widget.itemId,
-          itemName: widget.itemName,
-        ),
-      ),
-    );
+    GoRouter.of(context).push('/items/${widget.itemId}');
   }
 }

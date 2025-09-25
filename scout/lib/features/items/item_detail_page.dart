@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import '../../utils/audit.dart';
 import '../../widgets/scanner_sheet.dart';
@@ -9,26 +10,52 @@ import 'new_item_page.dart';
 String _normalizeBarcode(String s) =>
   s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
 
-// Helper to generate lot codes in YMM+letter format (e.g., 509A)
-String _generateLotCode(String productCode) {
+// Helper to generate lot codes in YYMM-XXX format (e.g., 2509-001)
+Future<String> _generateLotCode(String itemId) async {
   final now = DateTime.now();
-  final y = now.year.toString().substring(3); // Last digit of year
+  final yy = now.year.toString().substring(2); // Last two digits of year
   final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-  // Use sequential letters for uniqueness (A, B, C, etc.)
-  final unique = now.millisecondsSinceEpoch % 26; // 26 letters
-  final letter = String.fromCharCode(65 + unique); // 65 = 'A'
-  return '$y$mm$letter';
+  final monthPrefix = '$yy$mm';
+
+  // Query existing lot codes for this month to find the next sequential number
+  final db = FirebaseFirestore.instance;
+  final lotsQuery = await db
+      .collection('items')
+      .doc(itemId)
+      .collection('lots')
+      .where('lotCode', isGreaterThanOrEqualTo: monthPrefix)
+      .where('lotCode', isLessThan: '${monthPrefix}Z')
+      .orderBy('lotCode', descending: true)
+      .limit(1)
+      .get();
+
+  int nextNumber = 1; // Default to 001
+  if (lotsQuery.docs.isNotEmpty) {
+    final lastLotCode = lotsQuery.docs.first.data()['lotCode'] as String?;
+    if (lastLotCode != null && lastLotCode.startsWith(monthPrefix) && lastLotCode.length >= 7) {
+      // Extract the number part (last 3 characters) and increment
+      final numberPart = lastLotCode.substring(lastLotCode.length - 3);
+      final currentNumber = int.tryParse(numberPart) ?? 0;
+      nextNumber = currentNumber + 1;
+    }
+  }
+
+  // Format as 3-digit number with leading zeros
+  final formattedNumber = nextNumber.toString().padLeft(3, '0');
+  return '$monthPrefix-$formattedNumber';
 }
 
 class ItemDetailPage extends StatelessWidget {
   final String itemId;
   final String itemName;
-  const ItemDetailPage({super.key, required this.itemId, required this.itemName});
+  final String? lotId; // Optional: highlight this specific lot
+  const ItemDetailPage({super.key, required this.itemId, required this.itemName, this.lotId});
 
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
       length: 2,
+      initialIndex: lotId != null ? 1 : 0, // Start on "Manage Lots" tab if lotId provided
       child: Scaffold(
         appBar: AppBar(
           title: Text(itemName),
@@ -47,7 +74,7 @@ class ItemDetailPage extends StatelessWidget {
         body: TabBarView(
           children: [
             _ItemSummaryTab(itemId: itemId),
-            _LotsTab(itemId: itemId),
+            _LotsTab(itemId: itemId, highlightLotId: lotId),
           ],
         ),
       ),
@@ -98,6 +125,18 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
   void initState() {
     super.initState();
     _loadUsageData();
+  }
+
+  Future<void> _syncToAlgolia() async {
+    final fn = FirebaseFunctions.instance.httpsCallable('syncItemToAlgoliaCallable');
+    try {
+      await fn.call({'itemId': widget.itemId});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync requested')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync failed: $e')));
+    }
   }
 
   Future<void> _loadUsageData() async {
@@ -593,7 +632,7 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
           ),
         ),
         const SizedBox(height: 2),
-        Text(
+        SelectableText(
           value,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             fontWeight: FontWeight.w500,
@@ -635,6 +674,14 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
                     onPressed: () => _showAddStockSheet(context),
                     icon: const Icon(Icons.add_circle),
                     label: const Text('Add Stock'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _syncToAlgolia,
+                    icon: const Icon(Icons.sync),
+                    label: const Text('Sync to Algolia'),
                   ),
                 ),
               ],
@@ -708,7 +755,7 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
               children: [
                 for (final b in (data['barcodes'] as List?)?.cast<String>() ?? const <String>[])
                   InputChip(
-                    label: Text(b),
+                    label: SelectableText(b),
                     onDeleted: () async {
                       await ref.set(
                         Audit.updateOnly({'barcodes': FieldValue.arrayRemove([b])}),
@@ -727,16 +774,18 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
     );
   }
 
-  void _showQuickUseSheet(BuildContext context) {
+  void _showQuickUseSheet(BuildContext context) async {
     // Get item name from the current data
     final db = FirebaseFirestore.instance;
     final ref = db.collection('items').doc(widget.itemId);
-    
-    ref.get().then((doc) {
-      if (doc.exists && mounted) {
+
+    try {
+      final doc = await ref.get();
+      if (!mounted) return;
+      if (doc.exists) {
         final data = doc.data()!;
         final itemName = data['name'] as String? ?? 'Unknown Item';
-        
+        if (!context.mounted) return;
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -747,7 +796,9 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
           ),
         );
       }
-    });
+    } catch (_) {
+      // ignore errors
+    }
   }
 
   void _showAddStockSheet(BuildContext context) {
@@ -763,17 +814,19 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
 
 class _LotsTab extends StatelessWidget {
   final String itemId;
-  const _LotsTab({required this.itemId});
+  final String? highlightLotId;
+  const _LotsTab({required this.itemId, this.highlightLotId});
 
   @override
   Widget build(BuildContext context) {
-    return _LotsTabContent(itemId: itemId);
+    return _LotsTabContent(itemId: itemId, highlightLotId: highlightLotId);
   }
 }
 
 class _LotsTabContent extends StatefulWidget {
   final String itemId;
-  const _LotsTabContent({required this.itemId});
+  final String? highlightLotId;
+  const _LotsTabContent({required this.itemId, this.highlightLotId});
 
   @override
   State<_LotsTabContent> createState() => _LotsTabContentState();
@@ -781,6 +834,41 @@ class _LotsTabContent extends StatefulWidget {
 
 class _LotsTabContentState extends State<_LotsTabContent> {
   bool _showArchived = false;
+  final ScrollController _scrollController = ScrollController();
+  bool _hasScrolledToHighlight = false;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Scroll to highlighted lot after the first build
+    if (widget.highlightLotId != null && !_hasScrolledToHighlight) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToHighlightedLot();
+      });
+    }
+  }
+
+  void _scrollToHighlightedLot() {
+    if (widget.highlightLotId == null || !mounted) return;
+    
+    // We need to wait for the StreamBuilder to have data
+    // This is called after the first build, but we need to scroll after data loads
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Try again in the next frame to ensure data is loaded
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (!mounted) return;
+        // The scrolling will be handled by the ListView automatically maintaining position
+        // For now, just ensure the highlighted item is visible
+        _hasScrolledToHighlight = true;
+      });
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -836,6 +924,21 @@ class _LotsTabContentState extends State<_LotsTabContent> {
                   return ea.compareTo(eb); // soonest first
                 });
 
+              // Scroll to highlighted lot after data loads
+              if (widget.highlightLotId != null && !_hasScrolledToHighlight) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  final highlightedIndex = docs.indexWhere((doc) => doc.id == widget.highlightLotId);
+                  if (highlightedIndex >= 0) {
+                    _scrollController.animateTo(
+                      highlightedIndex * 72.0, // Approximate height of each list item
+                      duration: const Duration(milliseconds: 500),
+                      curve: Curves.easeInOut,
+                    );
+                  }
+                  _hasScrolledToHighlight = true;
+                });
+              }
+
               if (docs.isEmpty) {
                 return Center(
                   child: Text(
@@ -847,12 +950,14 @@ class _LotsTabContentState extends State<_LotsTabContent> {
               }
 
               return ListView.separated(
+                controller: _scrollController,
                 itemCount: docs.length,
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (ctx, i) => _LotRow(
                   itemId: widget.itemId,
                   lotDoc: docs[i],
                   isArchived: _showArchived,
+                  isHighlighted: docs[i].id == widget.highlightLotId,
                 ),
               );
             },
@@ -867,7 +972,8 @@ class _LotRow extends StatelessWidget {
   final String itemId;
   final QueryDocumentSnapshot<Map<String, dynamic>> lotDoc;
   final bool isArchived;
-  const _LotRow({required this.itemId, required this.lotDoc, this.isArchived = false});
+  final bool isHighlighted;
+  const _LotRow({required this.itemId, required this.lotDoc, this.isArchived = false, this.isHighlighted = false});
 
   @override
   Widget build(BuildContext context) {
@@ -890,33 +996,36 @@ class _LotRow extends StatelessWidget {
 
     final lotCode = (d['lotCode'] ?? lotDoc.id.substring(0, 6)) as String;
 
-    return ListTile(
-      title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
-      subtitle: Text(sub),
-      onTap: () => _showEditLotSheet(context, itemId, lotDoc.id, d),
-      trailing: PopupMenuButton<String>(
-        onSelected: (key) async {
-          if (!context.mounted) return;
-          switch (key) {
-            case 'adjust': await showAdjustSheet(context, itemId, lotDoc.id, qtyRemaining, opened); break;
-            case 'edit':   await _showEditLotSheet(context, itemId, lotDoc.id, d); break;
-            case 'archive': await _showArchiveLotDialog(context, itemId, lotDoc.id, d); break;
-            case 'unarchive': await _showUnarchiveLotDialog(context, itemId, lotDoc.id, d); break;
-            case 'delete': await _showDeleteLotDialog(context, itemId, lotDoc.id, d); break;
-            case 'qr':     _showQrScan(context, itemId, lotDoc.id); break;
-          }
-        },
-        itemBuilder: (_) => [
-          if (!isArchived) ...[
-            const PopupMenuItem(value: 'adjust', child: Text('Adjust remaining')),
-            const PopupMenuItem(value: 'edit',   child: Text('Edit dates/rules')),
-            const PopupMenuItem(value: 'archive', child: Text('Archive lot')),
-          ] else ...[
-            const PopupMenuItem(value: 'unarchive', child: Text('Unarchive lot')),
+    return Container(
+      color: isHighlighted ? Theme.of(context).colorScheme.primaryContainer.withAlpha((0.3 * 255).round()) : null,
+      child: ListTile(
+        title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
+        subtitle: Text(sub),
+        onTap: () => _showEditLotSheet(context, itemId, lotDoc.id, d),
+        trailing: PopupMenuButton<String>(
+          onSelected: (key) async {
+            if (!context.mounted) return;
+            switch (key) {
+              case 'adjust': await showAdjustSheet(context, itemId, lotDoc.id, qtyRemaining, opened); break;
+              case 'edit':   await _showEditLotSheet(context, itemId, lotDoc.id, d); break;
+              case 'archive': await _showArchiveLotDialog(context, itemId, lotDoc.id, d); break;
+              case 'unarchive': await _showUnarchiveLotDialog(context, itemId, lotDoc.id, d); break;
+              case 'delete': await _showDeleteLotDialog(context, itemId, lotDoc.id, d); break;
+              case 'qr':     _showQrScan(context, itemId, lotDoc.id); break;
+            }
+          },
+          itemBuilder: (_) => [
+            if (!isArchived) ...[
+              const PopupMenuItem(value: 'adjust', child: Text('Adjust remaining')),
+              const PopupMenuItem(value: 'edit',   child: Text('Edit dates/rules')),
+              const PopupMenuItem(value: 'archive', child: Text('Archive lot')),
+            ] else ...[
+              const PopupMenuItem(value: 'unarchive', child: Text('Unarchive lot')),
+            ],
+            const PopupMenuItem(value: 'delete', child: Text('Delete lot')),
+            const PopupMenuItem(value: 'qr',     child: Text('Scan/QR (stub)')),
           ],
-          const PopupMenuItem(value: 'delete', child: Text('Delete lot')),
-          const PopupMenuItem(value: 'qr',     child: Text('Scan/QR (stub)')),
-        ],
+        ),
       ),
     );
   }
@@ -993,11 +1102,9 @@ class _RowAddBarcodeState extends State<_RowAddBarcode> {
 Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
   final db = FirebaseFirestore.instance;
 
-    final itemDoc = await db.collection('items').doc(itemId).get();
+  final itemDoc = await db.collection('items').doc(itemId).get();
   if (!itemDoc.exists || !context.mounted) return;
-  final itemData = itemDoc.data()!;
-  final productCode = itemData['code'] as String? ?? itemId.substring(0, 4).toUpperCase();
-  final suggestedLotCode = _generateLotCode(productCode);
+  final suggestedLotCode = await _generateLotCode(itemId);
 
   final cQtyInit = TextEditingController();
   final cQtyRemain = TextEditingController();
@@ -1006,6 +1113,8 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
   DateTime? expiresAt;
   int? expiresAfterOpenDays;
   String baseUnit = 'each';
+
+  if (!context.mounted) return;
 
   await showModalBottomSheet(
     context: context,

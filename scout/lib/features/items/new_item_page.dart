@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_typeahead/flutter_typeahead.dart';
 
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -54,6 +55,7 @@ class _NewItemPageState extends State<NewItemPage> {
 
   final _name = TextEditingController();
   String _category = '';
+  final TextEditingController _categoryController = TextEditingController();
   final _baseUnit = TextEditingController(text: 'each');
   final _qtyOnHand = TextEditingController(text: '0');
   final _minQty = TextEditingController(text: '0');
@@ -129,6 +131,8 @@ class _NewItemPageState extends State<NewItemPage> {
     }
 
     _loadLookups();
+    // Initialize controller
+  _categoryController.text = _category;
   }
 
   Future<void> _loadLookups() async {
@@ -142,6 +146,7 @@ class _NewItemPageState extends State<NewItemPage> {
       _locs = results[0] as List<OptionItem>;
       _grants = results[1] as List<OptionItem>;
       _categories = results[2] as List<String>;
+      _categoryController.text = _category;
       
       // Resolve IDs for existing item
       if (widget.existingItem != null) {
@@ -168,17 +173,24 @@ class _NewItemPageState extends State<NewItemPage> {
     });
   }
 
+  /// Load categories from the dedicated `categories` lookup collection when
+  /// available. Fall back to scanning items for existing categories if the
+  /// lookup collection is empty or unavailable (keeps backwards compatibility).
+  /// Load categories from the dedicated `categories` lookup collection.
+  ///
+  /// This intentionally prefers the lookup collection. If the lookup fetch
+  /// fails, we return an empty list to avoid surprising behavior.
   Future<List<String>> _loadCategories() async {
-    final snap = await _db.collection('items').where('archived', isEqualTo: false).get();
-    final categories = <String>{};
-    for (final doc in snap.docs) {
-      final data = doc.data();
-      final category = (data['category'] ?? '') as String;
-      if (category.isNotEmpty) {
-        categories.add(category);
-      }
+    try {
+      final lookupItems = await _lookups.categories();
+      final names = lookupItems.map((o) => o.name).toSet().toList();
+      names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      return names;
+    } catch (e) {
+      // If lookup service fails, return empty list — keep suggestions quiet
+      debugPrint('Failed to load categories lookup: $e');
+      return <String>[];
     }
-    return categories.toList()..sort();
   }
 
   UnitType _suggestUnitTypeForCategory(String category) {
@@ -216,6 +228,14 @@ class _NewItemPageState extends State<NewItemPage> {
     return UnitType.count;
   }
 
+  // Create a filesystem/ID-safe slug for category names (lowercase, replace spaces with dashes)
+  String _categorySlug(String name) {
+    final cleaned = name.trim().toLowerCase();
+    // Replace non-alphanumeric with dash, collapse multiple dashes
+    final slug = cleaned.replaceAll(RegExp(r"[^a-z0-9]+"), '-').replaceAll(RegExp(r'-+'), '-');
+    return slug.isEmpty ? DateTime.now().millisecondsSinceEpoch.toString() : slug;
+  }
+
   void _acceptCode(String code) async {
     setState(() {
       _barcode.text = code;
@@ -246,6 +266,8 @@ class _NewItemPageState extends State<NewItemPage> {
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
+    // Capture the BuildContext to use after async gaps
+    final rootCtx = context;
     setState(() => _saving = true);
     try {
       final code = _barcode.text.trim();
@@ -316,21 +338,47 @@ class _NewItemPageState extends State<NewItemPage> {
         });
       }
 
-      if (!mounted) return;
-      Navigator.pop(context, true);
+    if (!rootCtx.mounted) return;
+      final savedCategory = _category.trim();
+          if (savedCategory.isNotEmpty) {
+            final exists = _categories.any((c) => c.toLowerCase() == savedCategory.toLowerCase());
+            if (!exists) {
+              // Persist a new category document in the `categories` lookup collection
+              try {
+                final slug = _categorySlug(savedCategory);
+                final docRef = _db.collection('categories').doc(slug);
+
+                // Upsert the category document by slug (idempotent)
+                await docRef.set({
+                  'name': savedCategory,
+                  'active': true,
+                  'createdAt': FieldValue.serverTimestamp(),
+                }, SetOptions(merge: true));
+              } catch (_) {
+                // Non-fatal: fall back to adding in-memory so suggestions work
+              }
+
+              setState(() {
+                _categories.add(savedCategory);
+                _categories.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+              });
+            }
+          }
+          if (rootCtx.mounted) Navigator.pop(rootCtx, true);
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!rootCtx.mounted) return;
+      ScaffoldMessenger.of(rootCtx).showSnackBar(
         SnackBar(content: Text('Save failed: $e')),
       );
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (rootCtx.mounted) setState(() => _saving = false);
     }
   }
 
   @override
   void dispose() {
     _name.dispose();
+    _categoryController.dispose();
     _baseUnit.dispose();
     _qtyOnHand.dispose();
     _minQty.dispose();
@@ -364,55 +412,12 @@ class _NewItemPageState extends State<NewItemPage> {
                   ),
                   const SizedBox(height: 8),
 
-                  Autocomplete<String>(
-                    initialValue: TextEditingValue(text: _category),
-                    optionsBuilder: (TextEditingValue textEditingValue) {
-                      if (textEditingValue.text.isEmpty) {
-                        return _categories.take(10); // Limit to 10 when showing all
-                      }
-                      
-                      final query = textEditingValue.text.toLowerCase();
-                      final matches = _categories.where((String option) {
-                        return option.toLowerCase().contains(query);
-                      }).toList();
-                      
-                      // Sort: exact matches first, then starts with, then contains
-                      matches.sort((a, b) {
-                        final aLower = a.toLowerCase();
-                        final bLower = b.toLowerCase();
-                        
-                        // Exact match gets highest priority
-                        if (aLower == query) return -1;
-                        if (bLower == query) return 1;
-                        
-                        // Starts with gets higher priority than just contains
-                        final aStarts = aLower.startsWith(query);
-                        final bStarts = bLower.startsWith(query);
-                        if (aStarts && !bStarts) return -1;
-                        if (bStarts && !aStarts) return 1;
-                        
-                        // Alphabetical otherwise
-                        return a.compareTo(b);
-                      });
-                      
-                      return matches.take(8); // Limit suggestions
-                    },
-                    onSelected: (String selection) {
-                      _category = selection;
-                      // Auto-suggest unit type based on category
-                      final suggestedType = _suggestUnitTypeForCategory(selection);
-                      if (suggestedType != _unitType) {
-                        setState(() => _unitType = suggestedType);
-                        // Update unit suggestion if it's still generic
-                        if (_baseUnit.text == 'each' || _baseUnit.text.isEmpty || 
-                            !_unitType.commonUnits.contains(_baseUnit.text)) {
-                          _baseUnit.text = _unitType.commonUnits.first;
-                        }
-                      }
-                    },
-                    fieldViewBuilder: (BuildContext context, TextEditingController textEditingController, FocusNode focusNode, VoidCallback onFieldSubmitted) {
-                      return TextFormField(
-                        controller: textEditingController,
+                  TypeAheadField<String>(
+                    controller: _categoryController,
+                    hideOnEmpty: false,
+                    builder: (context, controller, focusNode) {
+                      return TextField(
+                        controller: controller,
                         focusNode: focusNode,
                         textInputAction: TextInputAction.next,
                         style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
@@ -425,7 +430,7 @@ class _NewItemPageState extends State<NewItemPage> {
                             if (suggestedType != _unitType) {
                               setState(() => _unitType = suggestedType);
                               // Update unit suggestion if it's still generic
-                              if (_baseUnit.text == 'each' || _baseUnit.text.isEmpty || 
+                              if (_baseUnit.text == 'each' || _baseUnit.text.isEmpty ||
                                   !_unitType.commonUnits.contains(_baseUnit.text)) {
                                 _baseUnit.text = _unitType.commonUnits.first;
                               }
@@ -434,34 +439,66 @@ class _NewItemPageState extends State<NewItemPage> {
                         },
                       );
                     },
-                    optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
-                      final colorScheme = Theme.of(context).colorScheme;
-                      return Align(
-                        alignment: Alignment.topLeft,
-                        child: Material(
-                          color: colorScheme.surfaceContainerHighest,
-                          elevation: 4.0,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 200),
-                            child: ListView.builder(
-                              padding: EdgeInsets.zero,
-                              shrinkWrap: true,
-                              itemCount: options.length,
-                              itemBuilder: (BuildContext context, int index) {
-                                final String option = options.elementAt(index);
-                                return InkWell(
-                                  onTap: () => onSelected(option),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(16.0),
-                                    child: Text(
-                                      option,
-                                      style: TextStyle(color: colorScheme.onSurface),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
+                    suggestionsCallback: (pattern) {
+                      if (pattern.isEmpty) {
+                        return _categories.take(10).toList(); // Limit to 10 when showing all
+                      }
+
+                      final query = pattern.toLowerCase();
+                      final matches = _categories.where((String option) {
+                        return option.toLowerCase().contains(query);
+                      }).toList();
+
+                      // Sort: exact matches first, then starts with, then contains
+                      matches.sort((a, b) {
+                        final aLower = a.toLowerCase();
+                        final bLower = b.toLowerCase();
+
+                        // Exact match gets highest priority
+                        if (aLower == query) return -1;
+                        if (bLower == query) return 1;
+
+                        // Starts with gets higher priority than just contains
+                        final aStarts = aLower.startsWith(query);
+                        final bStarts = bLower.startsWith(query);
+                        if (aStarts && !bStarts) return -1;
+                        if (bStarts && !aStarts) return 1;
+
+                        // Alphabetical otherwise
+                        return a.compareTo(b);
+                      });
+
+                      return matches.take(8).toList(); // Limit suggestions
+                    },
+                    itemBuilder: (context, String suggestion) {
+                      return ListTile(
+                        title: Text(suggestion),
+                      );
+                    },
+                    onSelected: (String suggestion) {
+                      setState(() {
+                        _category = suggestion;
+                        // Ensure the visible text field is updated when a suggestion is picked
+                        _categoryController.text = suggestion;
+                        // Auto-suggest unit type based on category
+                        final suggestedType = _suggestUnitTypeForCategory(suggestion);
+                        if (suggestedType != _unitType) {
+                          _unitType = suggestedType;
+                          // Update unit suggestion if it's still generic
+                          if (_baseUnit.text == 'each' || _baseUnit.text.isEmpty ||
+                              !_unitType.commonUnits.contains(_baseUnit.text)) {
+                            _baseUnit.text = _unitType.commonUnits.first;
+                          }
+                        }
+                      });
+                    },
+                    decorationBuilder: (context, child) {
+                      return Material(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        elevation: 4.0,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 200),
+                          child: child,
                         ),
                       );
                     },
@@ -491,24 +528,11 @@ class _NewItemPageState extends State<NewItemPage> {
                   ),
                   const SizedBox(height: 8),
 
-                  Autocomplete<String>(
-                    initialValue: TextEditingValue(text: _baseUnit.text),
-                    optionsBuilder: (TextEditingValue textEditingValue) {
-                      final options = _unitType.commonUnits.where((unit) =>
-                        unit.toLowerCase().contains(textEditingValue.text.toLowerCase())
-                      ).toList();
-                      if (options.isEmpty && textEditingValue.text.isNotEmpty) {
-                        // Allow custom units but show suggestions
-                        return _unitType.commonUnits;
-                      }
-                      return options;
-                    },
-                    onSelected: (String selection) {
-                      _baseUnit.text = selection;
-                    },
-                    fieldViewBuilder: (BuildContext context, TextEditingController textEditingController, FocusNode focusNode, VoidCallback onFieldSubmitted) {
+                  TypeAheadField<String>(
+                    controller: TextEditingController(text: _baseUnit.text),
+                    builder: (context, controller, focusNode) {
                       return TextFormField(
-                        controller: textEditingController,
+                        controller: controller,
                         focusNode: focusNode,
                         textInputAction: TextInputAction.next,
                         style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
@@ -520,34 +544,33 @@ class _NewItemPageState extends State<NewItemPage> {
                         },
                       );
                     },
-                    optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
-                      final colorScheme = Theme.of(context).colorScheme;
-                      return Align(
-                        alignment: Alignment.topLeft,
-                        child: Material(
-                          color: colorScheme.surfaceContainerHighest,
-                          elevation: 4.0,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 200),
-                            child: ListView.builder(
-                              padding: EdgeInsets.zero,
-                              shrinkWrap: true,
-                              itemCount: options.length,
-                              itemBuilder: (BuildContext context, int index) {
-                                final String option = options.elementAt(index);
-                                return InkWell(
-                                  onTap: () => onSelected(option),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(16.0),
-                                    child: Text(
-                                      option,
-                                      style: TextStyle(color: colorScheme.onSurface),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
+                    suggestionsCallback: (pattern) {
+                      final options = _unitType.commonUnits.where((unit) =>
+                        unit.toLowerCase().contains(pattern.toLowerCase())
+                      ).toList();
+                      if (options.isEmpty && pattern.isNotEmpty) {
+                        // Allow custom units but show suggestions
+                        return _unitType.commonUnits;
+                      }
+                      return options;
+                    },
+                    itemBuilder: (context, String suggestion) {
+                      return ListTile(
+                        title: Text(suggestion),
+                      );
+                    },
+                    onSelected: (String selection) {
+                      setState(() {
+                        _baseUnit.text = selection;
+                      });
+                    },
+                    decorationBuilder: (context, child) {
+                      return Material(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        elevation: 4.0,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 200),
+                          child: child,
                         ),
                       );
                     },

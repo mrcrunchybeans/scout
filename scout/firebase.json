@@ -1,1 +1,53 @@
-{"firestore":{"rules":"firestore.rules","indexes":"firestore.indexes.json"},"functions":[{"source":"functions","codebase":"default","ignore":["node_modules",".git","firebase-debug.log","firebase-debug.*.log","*.local"],"predeploy":["npm --prefix \"$RESOURCE_DIR\" run lint","npm --prefix \"$RESOURCE_DIR\" run build"]}],"hosting":{"public":"build/web","ignore":["firebase.json","**/.*","**/node_modules/**"],"rewrites":[{"source":"**","destination":"/index.html"}]},"flutter":{"platforms":{"dart":{"lib/firebase_options.dart":{"projectId":"scout-litteempathy","configurations":{"android":"1:407644437940:android:8a2564bc0311889f6106e1","ios":"1:407644437940:ios:0074bd6c74089b766106e1","macos":"1:407644437940:ios:54d774285229fa0a6106e1","web":"1:407644437940:web:3b08719a1f9f1f506106e1","windows":"1:407644437940:web:9bb76441a306127e6106e1"}}}}}}
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"functions\" run lint",
+        "npm --prefix \"functions\" run build"
+      ]
+    }
+  ],
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "scout-litteempathy",
+          "configurations": {
+            "android": "1:407644437940:android:8a2564bc0311889f6106e1",
+            "ios": "1:407644437940:ios:0074bd6c74089b766106e1",
+            "macos": "1:407644437940:ios:54d774285229fa0a6106e1",
+            "web": "1:407644437940:web:3b08719a1f9f1f506106e1",
+            "windows": "1:407644437940:web:9bb76441a306127e6106e1"
+          }
+        }
+      }
+    }
+  }
+}

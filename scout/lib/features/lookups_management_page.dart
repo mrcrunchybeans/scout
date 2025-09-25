@@ -15,7 +15,7 @@ class _LookupsManagementPageState extends State<LookupsManagementPage> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Manage Lookups'),
@@ -27,6 +27,7 @@ class _LookupsManagementPageState extends State<LookupsManagementPage> {
               Tab(text: 'Locations'),
               Tab(text: 'Interventions'),
               Tab(text: 'Flag Thresholds'),
+              Tab(text: 'Categories'),
             ],
           ),
         ),
@@ -37,6 +38,7 @@ class _LookupsManagementPageState extends State<LookupsManagementPage> {
             _LookupManager(collection: 'locations', title: 'Locations'),
             _InterventionManager(),
             _FlagThresholdsManager(),
+            _LookupManager(collection: 'categories', title: 'Categories'),
           ],
         ),
       ),

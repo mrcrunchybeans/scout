@@ -1,0 +1,48 @@
+name: Build and (optional) Deploy Functions
+
+on:
+  push:
+    paths:
+      - 'functions/**'
+      - '.github/workflows/deploy-functions.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run ci:lint
+      - name: Build
+        run: npm run ci:build
+
+  deploy:
+    needs: build
+    if: secrets.FIREBASE_TOKEN != null
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Deploy to Firebase
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          npm run build
+          firebase deploy --only functions
