@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:scout/features/items/new_item_page.dart';
@@ -474,8 +475,8 @@ class _ItemsPageState extends State<ItemsPage> {
                         },
                       )
                     : null,
-                title: SelectableText(name),
-                subtitle: SelectableText(
+                title: Text(name),
+                subtitle: Text(
                     '${category.isNotEmpty ? '$category • ' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}'),
                 onTap: _selectionMode
                     ? () {
@@ -559,11 +560,16 @@ class _ItemsPageState extends State<ItemsPage> {
                               _updateSearchFuture();
                             });
                             if (!context.mounted) return;
+                          } else if (action == 'copy') {
+                            final details = '$name\n${category.isNotEmpty ? 'Category: $category\n' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}';
+                            await Clipboard.setData(ClipboardData(text: details));
+                            if (!context.mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('${_viewMode == ViewMode.active ? 'Archived' : 'Unarchived'} "$name"')));
+                                const SnackBar(content: Text('Item details copied to clipboard')));
                           }
                         },
                         itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'copy', child: Text('Copy Details')),
                           PopupMenuItem(value: 'edit', child: Text('Edit Item')),
                           PopupMenuItem(value: 'archive', child: Text('Archive/Unarchive')),
                           PopupMenuItem(value: 'delete', child: Text('Delete')),

@@ -14,7 +14,8 @@ let algoliaClient: ReturnType<typeof algoliasearch> | null = null;
 function getAlgoliaClient(): ReturnType<typeof algoliasearch> {
   if (algoliaClient) return algoliaClient;
   // Prefer environment variables, fall back to firebase functions config
-  // (set with `firebase functions:config:set algolia.app_id="..." algolia.admin_key="..." algolia.index_name="..."`)
+  // (set with `firebase functions:config:set algolia.app_id="..."`)
+  // algolia.admin_key="..." algolia.index_name="..."`)
   const appId = process.env.ALGOLIA_APP_ID || (functions && (functions.config as any)?.algolia?.app_id);
   const apiKey = process.env.ALGOLIA_ADMIN_API_KEY || (functions && (functions.config as any)?.algolia?.admin_key); // server-side admin key
   if (!appId || !apiKey) throw new Error("Algolia credentials not configured (process.env or functions.config)");
@@ -169,6 +170,7 @@ async function recomputeItemAggregates(itemId: string) {
   const flagExcess = minQty > 0 && qtyOnHand >= EXCESS_FACTOR * minQty;
   const flagStale = daysSince(lastUsedAt, now) >= STALE_DAYS;
   const flagExpiringSoon = isExpiringSoon(earliest, now);
+  const flagExpired = earliest ? (earliest as Date).getTime() < now.getTime() : false;
 
   // Write back (merge)
   const patch: Record<string, any> = {
@@ -177,6 +179,7 @@ async function recomputeItemAggregates(itemId: string) {
     flagExcess,
     flagStale,
     flagExpiringSoon,
+    flagExpired,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     earliestExpiresAt: earliest ?
       admin.firestore.Timestamp.fromDate(earliest) :
@@ -503,6 +506,38 @@ export const triggerFullReindex = onCall(async (req) => {
   }, {merge: true});
 
   return {success: true, totalIndexed: total};
+});
+
+// Callable function to recalculate all item aggregates/flags
+export const recalculateAllItemAggregates = onCall(async (req) => {
+  // minimal auth check: require auth
+  if (!req.auth) {
+    throw new Error("unauthenticated");
+  }
+
+  const PAGE = 100;
+  let last: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+  let processed = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let q = db.collection("items").orderBy("updatedAt", "desc").limit(PAGE);
+    if (last) q = q.startAfter(last);
+    const snap = await q.get();
+    if (snap.empty) break;
+
+    for (const doc of snap.docs) {
+      await recomputeItemAggregates(doc.id);
+      processed++;
+    }
+    last = snap.docs[snap.docs.length - 1];
+  }
+
+  return {
+    success: true,
+    message: `Recalculated aggregates for ${processed} items`,
+    processed,
+  };
 });
 
 export const configureAlgoliaIndex = onCall(async (req) => {

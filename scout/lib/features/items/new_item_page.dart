@@ -62,6 +62,15 @@ class _NewItemPageState extends State<NewItemPage> {
   final _barcode = TextEditingController();
   final _barcodeFocus = FocusNode();
 
+  // Multiple barcodes support
+  final List<TextEditingController> _barcodeControllers = [];
+  final List<FocusNode> _barcodeFocusNodes = [];
+
+  // Lot management fields
+  final _lotCode = TextEditingController();
+  DateTime? _lotExpirationDate;
+  bool _hasExpiration = false;
+
   List<OptionItem>? _locs;
   List<OptionItem>? _grants;
   List<String> _categories = [];
@@ -71,6 +80,22 @@ class _NewItemPageState extends State<NewItemPage> {
   UnitType _unitType = UnitType.count;
 
   bool _saving = false;
+
+  void _addBarcodeField({String? initialValue}) {
+    final controller = TextEditingController(text: initialValue ?? '');
+    final focusNode = FocusNode();
+    _barcodeControllers.add(controller);
+    _barcodeFocusNodes.add(focusNode);
+  }
+
+  void _removeBarcodeField(int index) {
+    if (_barcodeControllers.length > 1) {
+      _barcodeControllers[index].dispose();
+      _barcodeFocusNodes[index].dispose();
+      _barcodeControllers.removeAt(index);
+      _barcodeFocusNodes.removeAt(index);
+    }
+  }
 
   String _generateBatchCode() {
     final now = DateTime.now();
@@ -88,6 +113,9 @@ class _NewItemPageState extends State<NewItemPage> {
   void initState() {
     super.initState();
     
+    // Initialize with at least one barcode field
+    _addBarcodeField();
+    
     // Handle editing existing item
     if (widget.existingItem != null) {
       final item = widget.existingItem!;
@@ -96,7 +124,20 @@ class _NewItemPageState extends State<NewItemPage> {
       _baseUnit.text = item['baseUnit'] ?? 'each';
       _qtyOnHand.text = (item['qtyOnHand'] ?? 0).toString();
       _minQty.text = (item['minQty'] ?? 0).toString();
-      _barcode.text = item['barcode'] ?? '';
+      
+      // Handle existing barcodes
+      final existingBarcodes = (item['barcodes'] as List?)?.cast<String>() ?? [];
+      if (existingBarcodes.isNotEmpty) {
+        // Clear default empty field and add existing barcodes
+        _barcodeControllers.clear();
+        _barcodeFocusNodes.clear();
+        for (final barcode in existingBarcodes) {
+          _addBarcodeField(initialValue: barcode);
+        }
+      } else if (item['barcode'] != null) {
+        // Handle legacy single barcode field
+        _barcodeControllers[0].text = item['barcode'];
+      }
       
       // Handle additional fields
       if (item['homeLocationId'] != null) {
@@ -111,8 +152,8 @@ class _NewItemPageState extends State<NewItemPage> {
       // Handle new item creation
       final prefill = widget.initialBarcode ?? '';
       if (prefill.isNotEmpty) {
-        _barcode.text = prefill;
-        _barcode.selection = TextSelection(baseOffset: 0, extentOffset: prefill.length);
+        _barcodeControllers[0].text = prefill;
+        _barcodeFocusNodes[0].requestFocus();
       }
 
       // Prefill with product info from APIs
@@ -133,6 +174,9 @@ class _NewItemPageState extends State<NewItemPage> {
     _loadLookups();
     // Initialize controller
   _categoryController.text = _category;
+  
+  // Initialize lot code
+  _lotCode.text = _generateBatchCode();
   }
 
   Future<void> _loadLookups() async {
@@ -237,11 +281,37 @@ class _NewItemPageState extends State<NewItemPage> {
   }
 
   void _acceptCode(String code) async {
+    // Find the first empty barcode field, or the focused one
+    int targetIndex = -1;
+    
+    // First check if any field is focused
+    for (int i = 0; i < _barcodeFocusNodes.length; i++) {
+      if (_barcodeFocusNodes[i].hasFocus) {
+        targetIndex = i;
+        break;
+      }
+    }
+    
+    // If no field is focused, find the first empty one
+    if (targetIndex == -1) {
+      for (int i = 0; i < _barcodeControllers.length; i++) {
+        if (_barcodeControllers[i].text.isEmpty) {
+          targetIndex = i;
+          break;
+        }
+      }
+    }
+    
+    // If still no target, use the first field
+    if (targetIndex == -1) {
+      targetIndex = 0;
+    }
+    
     setState(() {
-      _barcode.text = code;
-      _barcode.selection = TextSelection(baseOffset: 0, extentOffset: code.length);
+      _barcodeControllers[targetIndex].text = code;
+      _barcodeControllers[targetIndex].selection = TextSelection(baseOffset: 0, extentOffset: code.length);
     });
-    FocusScope.of(context).requestFocus(_barcodeFocus);
+    FocusScope.of(context).requestFocus(_barcodeFocusNodes[targetIndex]);
 
     // If name is empty, try to enrich from external APIs
     if (_name.text.trim().isEmpty) {
@@ -266,11 +336,26 @@ class _NewItemPageState extends State<NewItemPage> {
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
+    
+    // Additional validation for lot fields
+    if (_hasExpiration && _lotExpirationDate == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select an expiration date or uncheck "Has expiration date"')),
+      );
+      return;
+    }
+    
     // Capture the BuildContext to use after async gaps
     final rootCtx = context;
     setState(() => _saving = true);
     try {
-      final code = _barcode.text.trim();
+      // Collect all non-empty barcodes
+      final barcodes = _barcodeControllers
+          .map((controller) => controller.text.trim())
+          .where((barcode) => barcode.isNotEmpty)
+          .toList();
+      
       final qtyOnHand = num.tryParse(_qtyOnHand.text.trim()) ?? 0;
       
       final itemData = Audit.attach({
@@ -292,9 +377,10 @@ class _NewItemPageState extends State<NewItemPage> {
         'tags': <String>[],
         'imageUrl': null,
 
-        // barcode: single + array
-        if (code.isNotEmpty) 'barcode': code,
-        if (code.isNotEmpty) 'barcodes': FieldValue.arrayUnion([code]),
+        // barcodes: array of all barcodes
+        if (barcodes.isNotEmpty) 'barcodes': barcodes,
+        // Keep legacy single barcode field for backward compatibility (first barcode)
+        if (barcodes.isNotEmpty) 'barcode': barcodes.first,
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
@@ -317,13 +403,13 @@ class _NewItemPageState extends State<NewItemPage> {
         // Create initial lot if qtyOnHand > 0
         String? batchCode;
         if (qtyOnHand > 0) {
-          batchCode = _generateBatchCode();
+          batchCode = _lotCode.text.trim().isNotEmpty ? _lotCode.text.trim() : _generateBatchCode();
           final lotRef = ref.collection('lots').doc();
           await lotRef.set({
             'lotCode': batchCode,
             'qtyRemaining': qtyOnHand,
             'baseUnit': _baseUnit.text.trim().isEmpty ? 'each' : _baseUnit.text.trim(),
-            'expiresAt': null,
+            'expiresAt': _hasExpiration && _lotExpirationDate != null ? Timestamp.fromDate(_lotExpirationDate!) : null,
             'openAt': null,
             'createdAt': FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
@@ -333,7 +419,7 @@ class _NewItemPageState extends State<NewItemPage> {
         await Audit.log('item.create', {
           'itemId': ref.id,
           'name': _name.text.trim(),
-          if (code.isNotEmpty) 'barcode': code,
+          if (barcodes.isNotEmpty) 'barcodes': barcodes,
           if (batchCode != null) 'batchCode': batchCode,
         });
       }
@@ -376,18 +462,6 @@ class _NewItemPageState extends State<NewItemPage> {
   }
 
   @override
-  void dispose() {
-    _name.dispose();
-    _categoryController.dispose();
-    _baseUnit.dispose();
-    _qtyOnHand.dispose();
-    _minQty.dispose();
-    _barcode.dispose();
-    _barcodeFocus.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     // Don't block on lookups - show form immediately and populate dropdowns as data loads
     return Scaffold(
@@ -397,9 +471,14 @@ class _NewItemPageState extends State<NewItemPage> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            // USB wedge: only capture into barcode if field is focused or empty
+            // USB wedge: capture into the first empty barcode field, or the focused one
             UsbWedgeScanner(
-              allow: (_) => _barcodeFocus.hasFocus || _barcode.text.isEmpty,
+              allow: (_) {
+                // Allow if any barcode field is focused
+                if (_barcodeFocusNodes.any((node) => node.hasFocus)) return true;
+                // Or if the first barcode field is empty
+                return _barcodeControllers.isNotEmpty && _barcodeControllers[0].text.isEmpty;
+              },
               onCode: _acceptCode,
             ),
 
@@ -598,7 +677,85 @@ class _NewItemPageState extends State<NewItemPage> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 16),
+
+                  // Lot Management Section
+                  Text(
+                    'Initial Lot Information',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
                   const SizedBox(height: 8),
+
+                  TextFormField(
+                    controller: _lotCode,
+                    textInputAction: TextInputAction.next,
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+                    decoration: const InputDecoration(
+                      labelText: 'Lot Code / Batch Number',
+                      hintText: 'Auto-generated, or enter custom',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: CheckboxListTile(
+                          title: const Text('Has expiration date'),
+                          value: _hasExpiration,
+                          onChanged: (value) {
+                            setState(() {
+                              _hasExpiration = value ?? false;
+                              if (!value!) {
+                                _lotExpirationDate = null;
+                              }
+                            });
+                          },
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  if (_hasExpiration)
+                    InkWell(
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: _lotExpirationDate ?? DateTime.now().add(const Duration(days: 365)),
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime.now().add(const Duration(days: 365 * 10)), // 10 years from now
+                        );
+                        if (picked != null) {
+                          setState(() => _lotExpirationDate = picked);
+                        }
+                      },
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Expiration Date',
+                          suffixIcon: Icon(Icons.calendar_today),
+                        ),
+                        child: Text(
+                          _lotExpirationDate != null
+                              ? '${_lotExpirationDate!.month}/${_lotExpirationDate!.day}/${_lotExpirationDate!.year}'
+                              : 'Tap to select date',
+                          style: TextStyle(
+                            color: _lotExpirationDate != null
+                                ? Theme.of(context).colorScheme.onSurface
+                                : Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  if (_hasExpiration)
+                    const SizedBox(height: 8),
+
+                  const SizedBox(height: 16),
 
                   DropdownButtonFormField<OptionItem>(
                     initialValue: _homeLoc,
@@ -645,40 +802,76 @@ class _NewItemPageState extends State<NewItemPage> {
                   ),
                   const SizedBox(height: 8),
 
-                  // Barcode with scan button — uses ScannerSheet
-                  TextFormField(
-                    controller: _barcode,
-                    focusNode: _barcodeFocus,
-                    textInputAction: TextInputAction.done,
-                    decoration: InputDecoration(
-                      labelText: 'Barcode / QR (optional)',
-                      prefixIcon: IconButton(
-                        tooltip: 'Scan',
-                        icon: const Icon(Icons.qr_code),
-                        onPressed: () async {
-  // capture the exact BuildContext you’ll use after the await
-  final rootCtx = context;
-
-  final code = await showModalBottomSheet<String>(
-    context: rootCtx,
-    isScrollControlled: true,
-    builder: (_) => const ScannerSheet(
-      title: 'Scan barcode for new item',
-    ),
-  );
-
-  // Guard the same context var you’ll pass to ScaffoldMessenger
-  if (!rootCtx.mounted) return;
-  if (code == null || code.isEmpty) return;
-
-  _acceptCode(code);
-  ScaffoldMessenger.of(rootCtx).showSnackBar(
-    SnackBar(content: Text('Scanned: $code')),
-  );
-},
-
-                      ),
+                  // Multiple Barcodes Section
+                  Text(
+                    'Barcodes / QR Codes',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Dynamic barcode fields
+                  ...List.generate(_barcodeControllers.length, (index) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _barcodeControllers[index],
+                              focusNode: _barcodeFocusNodes[index],
+                              textInputAction: TextInputAction.done,
+                              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+                              decoration: InputDecoration(
+                                labelText: 'Barcode / QR ${index + 1}${index == 0 ? ' (optional)' : ''}',
+                                prefixIcon: IconButton(
+                                  tooltip: 'Scan',
+                                  icon: const Icon(Icons.qr_code),
+                                  onPressed: () async {
+                                    // capture the exact BuildContext you'll use after the await
+                                    final rootCtx = context;
+
+                                    final code = await showModalBottomSheet<String>(
+                                      context: rootCtx,
+                                      isScrollControlled: true,
+                                      builder: (_) => ScannerSheet(
+                                        title: 'Scan barcode ${index + 1}',
+                                      ),
+                                    );
+
+                                    // Guard the same context var you'll pass to ScaffoldMessenger
+                                    if (!rootCtx.mounted) return;
+                                    if (code == null || code.isEmpty) return;
+
+                                    setState(() {
+                                      _barcodeControllers[index].text = code;
+                                    });
+                                    ScaffoldMessenger.of(rootCtx).showSnackBar(
+                                      SnackBar(content: Text('Scanned: $code')),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_barcodeControllers.length > 1)
+                            IconButton(
+                              icon: const Icon(Icons.remove_circle_outline),
+                              onPressed: () => setState(() => _removeBarcodeField(index)),
+                              tooltip: 'Remove barcode',
+                            ),
+                        ],
+                      ),
+                    );
+                  }),
+
+                  // Add barcode button
+                  OutlinedButton.icon(
+                    onPressed: () => setState(() => _addBarcodeField()),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Another Barcode'),
                   ),
 
                   const SizedBox(height: 16),
@@ -694,5 +887,25 @@ class _NewItemPageState extends State<NewItemPage> {
               ),
             ),
     );
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _categoryController.dispose();
+    _baseUnit.dispose();
+    _qtyOnHand.dispose();
+    _minQty.dispose();
+    _barcode.dispose();
+    _barcodeFocus.dispose();
+    _lotCode.dispose();
+    // Dispose barcode controllers and focus nodes
+    for (final controller in _barcodeControllers) {
+      controller.dispose();
+    }
+    for (final focusNode in _barcodeFocusNodes) {
+      focusNode.dispose();
+    }
+    super.dispose();
   }
 }

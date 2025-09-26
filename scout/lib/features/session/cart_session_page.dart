@@ -140,8 +140,22 @@ class _CartSessionPageState extends State<CartSessionPage> {
   // ---------- Unified code handler (USB / camera / manual) ----------
   void _refocusQuickAdd() {
     if (!mounted) return;
+    // Ensure the quick-add input keeps focus and place the caret at the end
+    // without selecting the whole text. Selecting the whole text on every
+    // refocus caused the typing/caret to behave oddly for some users.
     FocusScope.of(context).requestFocus(_barcodeFocus);
-    _barcodeC.selection = TextSelection(baseOffset: 0, extentOffset: _barcodeC.text.length);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final len = _barcodeC.text.length;
+      _barcodeC.selection = TextSelection.collapsed(offset: len);
+    });
+  }
+
+  @override
+  void dispose() {
+    _barcodeC.dispose();
+    _barcodeFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _handleCode(String rawCode) async {
@@ -986,55 +1000,86 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 }
 
-class _LineRow extends StatelessWidget {
+class _LineRow extends StatefulWidget {
   final CartLine line;
   final void Function(CartLine) onChanged;
   final VoidCallback onRemove;
   const _LineRow({required this.line, required this.onChanged, required this.onRemove});
 
   @override
-  Widget build(BuildContext context) {
-    final cInit = TextEditingController(text: line.initialQty.toString());
-    final cEnd = TextEditingController(text: line.endQty?.toString() ?? '');
+  State<_LineRow> createState() => _LineRowState();
+}
 
+class _LineRowState extends State<_LineRow> {
+  late final TextEditingController _cInit;
+  late final TextEditingController _cEnd;
+
+  @override
+  void initState() {
+    super.initState();
+    _cInit = TextEditingController(text: widget.line.initialQty.toString());
+    _cEnd = TextEditingController(text: widget.line.endQty?.toString() ?? '');
+  }
+
+  @override
+  void didUpdateWidget(_LineRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Only update text if the line data actually changed, not on every rebuild
+    if (oldWidget.line.initialQty != widget.line.initialQty) {
+      _cInit.text = widget.line.initialQty.toString();
+    }
+    if (oldWidget.line.endQty != widget.line.endQty) {
+      _cEnd.text = widget.line.endQty?.toString() ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _cInit.dispose();
+    _cEnd.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Card(
       child: ListTile(
-        title: Text(line.itemName),
+        title: Text(widget.line.itemName),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Unit: ${line.baseUnit}'
-                '${line.lotId != null ? ' • lot ${line.lotId!.substring(0, 6)}…' : ''}'),
+            Text('Unit: ${widget.line.baseUnit}'
+                '${widget.line.lotId != null ? ' • lot ${widget.line.lotId!.substring(0, 6)}…' : ''}'),
             const SizedBox(height: 6),
             Row(
               children: [
                 Expanded(
                   child: TextField(
-                    controller: cInit,
+                    controller: _cInit,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'Loaded'),
-                    onChanged: (s) => onChanged(CartLine(
-                      itemId: line.itemId,
-                      itemName: line.itemName,
-                      baseUnit: line.baseUnit,
-                      lotId: line.lotId,
-                      initialQty: num.tryParse(s) ?? line.initialQty,
-                      endQty: line.endQty,
+                    onChanged: (s) => widget.onChanged(CartLine(
+                      itemId: widget.line.itemId,
+                      itemName: widget.line.itemName,
+                      baseUnit: widget.line.baseUnit,
+                      lotId: widget.line.lotId,
+                      initialQty: num.tryParse(s) ?? widget.line.initialQty,
+                      endQty: widget.line.endQty,
                     )),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
-                    controller: cEnd,
+                    controller: _cEnd,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(labelText: 'Leftover (at close)'),
-                    onChanged: (s) => onChanged(CartLine(
-                      itemId: line.itemId,
-                      itemName: line.itemName,
-                      baseUnit: line.baseUnit,
-                      lotId: line.lotId,
-                      initialQty: line.initialQty,
+                    onChanged: (s) => widget.onChanged(CartLine(
+                      itemId: widget.line.itemId,
+                      itemName: widget.line.itemName,
+                      baseUnit: widget.line.baseUnit,
+                      lotId: widget.line.lotId,
+                      initialQty: widget.line.initialQty,
                       endQty: s.trim().isEmpty ? null : num.tryParse(s),
                     )),
                   ),
@@ -1042,13 +1087,13 @@ class _LineRow extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
-            Text('Used this session: ${line.usedQty} ${line.baseUnit}'),
+            Text('Used this session: ${widget.line.usedQty} ${widget.line.baseUnit}'),
           ],
         ),
         trailing: IconButton(
           tooltip: 'Remove',
           icon: const Icon(Icons.delete_outline),
-          onPressed: onRemove,
+          onPressed: widget.onRemove,
         ),
       ),
     );

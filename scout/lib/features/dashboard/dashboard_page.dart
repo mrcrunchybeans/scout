@@ -17,7 +17,6 @@ import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
 import '../reports/usage_report_page.dart';
-import '../audit/audit_logs_page.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -125,8 +124,7 @@ class _DashboardPageState extends State<DashboardPage> {
     // --- Server-side flag queries ---
     final lowQ = db
         .collection('items')
-        .where('flagLow', isEqualTo: true)
-        .orderBy('updatedAt', descending: true);
+        .where('flagLow', isEqualTo: true);
 
     final expiringQ = db
         .collection('items')
@@ -135,18 +133,11 @@ class _DashboardPageState extends State<DashboardPage> {
 
     final staleQ = db
         .collection('items')
-        .where('flagStale', isEqualTo: true)
-        .orderBy('updatedAt', descending: true);
-
-    final excessQ = db
-        .collection('items')
-        .where('flagExcess', isEqualTo: true)
-        .orderBy('updatedAt', descending: true);
+        .where('flagStale', isEqualTo: true);
 
     final expiredQ = db
         .collection('items')
-        .where('flagExpired', isEqualTo: true)
-        .orderBy('updatedAt', descending: true);
+        .where('flagExpired', isEqualTo: true);
 
     return Scaffold(
       appBar: AppBar(
@@ -184,7 +175,7 @@ class _DashboardPageState extends State<DashboardPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Primary Action Buttons - Large and prominent
+          // Primary Action Buttons - Large and prominent (2x3 grid)
           const SizedBox(height: 8),
           Row(
             children: [
@@ -215,11 +206,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   },
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
+              const SizedBox(width: 12),
               Expanded(
                 child: _PrimaryActionButton(
                   icon: Icons.playlist_add_check_circle,
@@ -233,7 +220,11 @@ class _DashboardPageState extends State<DashboardPage> {
                   },
                 ),
               ),
-              const SizedBox(width: 12),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
               Expanded(
                 child: _PrimaryActionButton(
                   icon: Icons.inventory_2,
@@ -247,14 +238,69 @@ class _DashboardPageState extends State<DashboardPage> {
                   },
                 ),
               ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _PrimaryActionButton(
+                  icon: Icons.list_alt,
+                  color: Colors.blue.shade600,
+                  label: 'Sessions',
+                  subtitle: 'View session history',
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SessionsListPage()),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _PrimaryActionButton(
+                  icon: Icons.add_box,
+                  color: Colors.green.shade600,
+                  label: 'New Item',
+                  subtitle: 'Add to inventory',
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const NewItemPage()),
+                    );
+                  },
+                ),
+              ),
             ],
           ),
 
-          const SizedBox(height: 32),
+          const SizedBox(height: 40),
 
-          // Status Overview Cards
+          // Welcome message
+          Center(
+            child: Column(
+              children: [
+                Text(
+                  'Welcome to SCOUT',
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: colorScheme.onSurface,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Manage your inventory with ease',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 40),
+
+          // Inventory Status Overview
           Text(
-            'Inventory Status',
+            'Quick Status',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.w600,
               color: colorScheme.onSurface,
@@ -312,28 +358,10 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _StatusCard(
-                  title: 'Excess',
-                  count: 0,
-                  icon: Icons.inventory,
-                  color: colorScheme.primary,
-                  stream: excessQ.snapshots(),
-                  filterType: 'excess',
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Empty space for now
-              const Expanded(child: SizedBox()),
-            ],
-          ),
 
           const SizedBox(height: 32),
 
-          // Status Buckets (reorganized)
+          // Items Needing Attention
           Text(
             'Items Needing Attention',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
@@ -364,92 +392,8 @@ class _DashboardPageState extends State<DashboardPage> {
             query: staleQ,
             showLastUsed: true,
           ),
-          const SizedBox(height: 8),
-          _BucketSection(
-            title: 'Excess items',
-            icon: Icons.inventory,
-            color: colorScheme.primary,
-            query: excessQ,
-          ),
 
-          const SizedBox(height: 32),
-
-          // Quick Access Actions
-          Text(
-            'Quick Actions',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _QuickActionTile(
-                  icon: Icons.history,
-                  label: 'Audit Logs',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const AuditLogsPage()),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _QuickActionTile(
-                  icon: Icons.analytics,
-                  label: 'Reports',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const UsageReportPage()),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _QuickActionTile(
-                  icon: Icons.list_alt,
-                  label: 'Sessions',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const SessionsListPage()),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _QuickActionTile(
-                  icon: Icons.add_box,
-                  label: 'New Item',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const NewItemPage()),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 24),
-          Text(
-            'Notes:\n'
-            '• Status counts are updated automatically by Cloud Functions.\n'
-            '• Tap any status card or bucket to view detailed items.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-
-          const SizedBox(height: 32),
+          const SizedBox(height: 40),
 
           // Version Footer
           FutureBuilder<String>(
@@ -631,61 +575,7 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-// --- Quick Action Tile (Smaller, secondary actions) ---
-class _QuickActionTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _QuickActionTile({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: colorScheme.surfaceContainerHighest,
-          border: Border.all(
-            color: colorScheme.outline.withValues(alpha:0.3),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 24, color: colorScheme.onSurfaceVariant),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-            Icon(
-              Icons.arrow_forward_ios,
-              size: 16,
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
+// --- Bucket Section ---
 class _BucketSection extends StatelessWidget {
   final String title;
   final IconData icon;

@@ -58,6 +58,11 @@ class ItemDetailPage extends StatelessWidget {
       initialIndex: lotId != null ? 1 : 0, // Start on "Manage Lots" tab if lotId provided
       child: Scaffold(
         appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back to Items',
+            onPressed: () => Navigator.of(context).pop(),
+          ),
           title: Text(itemName),
           actions: [
             IconButton(
@@ -1053,9 +1058,29 @@ class _RowAddBarcodeState extends State<_RowAddBarcode> {
         Expanded(
           child: TextField(
             controller: _c,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Add barcode',
-              hintText: 'Type or paste',
+              hintText: 'Type, paste, or scan',
+              prefixIcon: IconButton(
+                tooltip: 'Scan barcode',
+                icon: const Icon(Icons.qr_code),
+                onPressed: () async {
+                  final rootCtx = context;
+                  final code = await showModalBottomSheet<String>(
+                    context: rootCtx,
+                    isScrollControlled: true,
+                    builder: (_) => const ScannerSheet(
+                      title: 'Scan barcode to add',
+                    ),
+                  );
+                  if (!rootCtx.mounted) return;
+                  if (code == null || code.isEmpty) return;
+                  setState(() => _c.text = _normalizeBarcode(code));
+                  ScaffoldMessenger.of(rootCtx).showSnackBar(
+                    SnackBar(content: Text('Scanned: $code')),
+                  );
+                },
+              ),
             ),
             onSubmitted: (_) => _add(),
           ),

@@ -113,6 +113,26 @@ class _AdminPageState extends State<AdminPage> {
     }
   }
 
+  Future<void> _recalculateItemAggregates() async {
+    setState(() => _busy = true);
+    try {
+      await _searchService.recalculateAllItemAggregates();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Item aggregates recalculated successfully')),
+      );
+      // Navigate back to dashboard to refresh the counts
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to recalculate item aggregates: $e')),
+      );
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
   Future<void> _createBackup() async {
     setState(() => _busy = true);
     try {
@@ -547,6 +567,18 @@ class _AdminPageState extends State<AdminPage> {
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _syncItemsToAlgolia();
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.calculate, color: Colors.green.shade700),
+                      title: Text('Recalculate Item Flags', style: TextStyle(color: Colors.green.shade900)),
+                      subtitle: Text('Update expired/low stock flags for all items', style: TextStyle(color: Colors.green.shade700)),
+                      trailing: Icon(Icons.chevron_right, color: Colors.green.shade700),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          _recalculateItemAggregates();
                         }
                       },
                     ),

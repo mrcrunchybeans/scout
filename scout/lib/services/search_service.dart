@@ -989,4 +989,10 @@ class SearchService {
       throw Exception('Failed to sync item $itemId to Algolia: $e');
     }
   }
+
+  /// Recalculate aggregates and flags for all items
+  Future<void> recalculateAllItemAggregates() async {
+    final fn = FirebaseFunctions.instance.httpsCallable('recalculateAllItemAggregates');
+    await fn();
+  }
 }

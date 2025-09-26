@@ -101,7 +101,7 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
           });
         },
         child: Container(
-          decoration: BoxDecoration(border: Border.all(color: _selectedKey == key ? Colors.orange : color), color: color.withOpacity(0.06)),
+          decoration: BoxDecoration(border: Border.all(color: _selectedKey == key ? Colors.orange : color), color: color.withValues(alpha:0.06)),
           child: Stack(children: [
             Center(child: Text(label, style: const TextStyle(fontSize: 12))),
             // Resize handle (bottom-right)
