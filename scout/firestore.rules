@@ -109,7 +109,14 @@ service cloud.firestore {
     // ---------- Usage logs (append-only) ----------
     match /usage_logs/{usageId} {
       allow create: if isAuthed();
-      allow update, delete: if false;
+      allow update: if isAuthed() && isOnlyMarkingReversed();
+      allow delete: if false;
+
+      function isOnlyMarkingReversed() {
+        // Allow updates only if we're adding reversal fields without changing core data
+        return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['reversed', 'reversedAt', 'reversedReason', 'operatorName', 'updatedAt']);
+      }
 
       function validUsage(d) {
         return strMax(d.itemId, 64)

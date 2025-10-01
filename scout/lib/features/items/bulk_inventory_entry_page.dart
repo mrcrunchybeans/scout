@@ -1413,7 +1413,6 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                     .collection('items')
                     .doc(widget.itemId)
                     .collection('lots')
-                    .where('archived', isEqualTo: null)
                     .orderBy('expiresAt', descending: false)
                     .snapshots(),
                 builder: (context, snapshot) {
@@ -1426,8 +1425,14 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                   }
 
                   final lots = snapshot.data!.docs;
+                  
+                  // Filter to only active lots (not archived)
+                  final activeLots = lots.where((doc) {
+                    final data = doc.data() as Map<String, dynamic>?;
+                    return data != null && data['archived'] != true;
+                  }).toList();
 
-                  if (lots.isEmpty) {
+                  if (activeLots.isEmpty) {
                     return const Text('No existing lots found. A new lot will be created.');
                   }
 
@@ -1437,7 +1442,7 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                       border: OutlineInputBorder(),
                       labelText: 'Select Lot',
                     ),
-                    items: lots.map((lotDoc) {
+                    items: activeLots.map((lotDoc) {
                       final data = lotDoc.data() as Map<String, dynamic>;
                       final lotCode = data['lotCode'] as String? ?? lotDoc.id.substring(0, 6);
                       final qtyRemaining = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;
@@ -1745,7 +1750,6 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                       .collection('items')
                       .doc(widget.product.itemId)
                       .collection('lots')
-                      .where('archived', isEqualTo: null)
                       .orderBy('expiresAt', descending: false)
                       .snapshots(),
                   builder: (context, snapshot) {
@@ -1758,8 +1762,14 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                     }
 
                     final lots = snapshot.data!.docs;
+                    
+                    // Filter to only active lots (not archived)
+                    final activeLots = lots.where((doc) {
+                      final data = doc.data() as Map<String, dynamic>?;
+                      return data != null && data['archived'] != true;
+                    }).toList();
 
-                    if (lots.isEmpty) {
+                    if (activeLots.isEmpty) {
                       return const Text('No existing lots found. A new lot will be created.');
                     }
 
@@ -1769,7 +1779,7 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                         border: OutlineInputBorder(),
                         labelText: 'Select Lot',
                       ),
-                      items: lots.map((lotDoc) {
+                      items: activeLots.map((lotDoc) {
                         final data = lotDoc.data() as Map<String, dynamic>;
                         final lotCode = data['lotCode'] as String? ?? lotDoc.id.substring(0, 6);
                         final qtyRemaining = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;

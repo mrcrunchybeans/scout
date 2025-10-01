@@ -409,7 +409,7 @@ class _QuickUseSheetState extends State<QuickUseSheet> {
                       onPressed: () async {
                         final v = await showDialog<num>(
                           context: context,
-                          builder: (_) => _NumberDialog(isDecimal: _unitType != UnitType.count),
+                          builder: (_) => const _NumberDialog(isDecimal: true), // Always allow decimals
                         );
                         if (!context.mounted) return;
                         if (v != null && v > 0) setState(() => qty = v);
@@ -565,7 +565,7 @@ class _NumberDialogState extends State<_NumberDialog> {
       ),
       content: TextField(
         controller: c,
-        keyboardType: widget.isDecimal ? TextInputType.numberWithOptions(decimal: true) : TextInputType.number,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true), // Always allow decimals
         style: TextStyle(color: colorScheme.onSurface),
         decoration: InputDecoration(
           prefixText: '-',
@@ -591,9 +591,7 @@ class _NumberDialogState extends State<_NumberDialog> {
         ),
         FilledButton(
           onPressed: () {
-            final v = widget.isDecimal 
-              ? double.tryParse(c.text.trim()) 
-              : int.tryParse(c.text.trim());
+            final v = double.tryParse(c.text.trim()); // Always parse as double
             Navigator.pop<num>(context, (v == null || v < 0.01) ? 1 : v);
           },
           child: const Text('Done'),

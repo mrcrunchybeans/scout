@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:scout/features/admin/admin_pin_page.dart';
 import 'package:scout/features/admin/backup_history_page.dart';
 import 'package:scout/features/admin/backup_settings_page.dart';
+import 'package:scout/features/admin/time_tracking_settings_page.dart';
 import 'package:scout/features/audit/audit_logs_page.dart';
 import 'package:scout/features/csv_import_export_page.dart';
 import 'package:scout/features/lookups_management_page.dart';
@@ -480,6 +481,18 @@ class _AdminPageState extends State<AdminPage> {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const LabelDesignerPage()),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.schedule),
+                      title: const Text('Time Tracking'),
+                      subtitle: const Text('Configure time tracking URL for staff care'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const TimeTrackingSettingsPage()),
                         );
                       },
                     ),

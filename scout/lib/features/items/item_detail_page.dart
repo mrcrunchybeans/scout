@@ -1,7 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../utils/audit.dart';
+import '../../utils/operator_store.dart';
 import '../../widgets/scanner_sheet.dart';
 import 'quick_use_sheet.dart';
 import 'bulk_inventory_entry_page.dart';
@@ -53,34 +54,41 @@ class ItemDetailPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      initialIndex: lotId != null ? 1 : 0, // Start on "Manage Lots" tab if lotId provided
-      child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back to Items',
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-          title: Text(itemName),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.edit),
-              tooltip: 'Edit Item',
-              onPressed: () => _editItem(context),
+    return PopScope(
+      canPop: true,
+      child: DefaultTabController(
+        length: 3,
+        initialIndex: lotId != null ? 1 : 0, // Start on "Manage Lots" tab if lotId provided
+        child: Scaffold(
+          appBar: AppBar(
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Back to Items',
+              onPressed: () => GoRouter.of(context).canPop() 
+                  ? GoRouter.of(context).pop()
+                  : GoRouter.of(context).go('/'),
             ),
-          ],
-          bottom: const TabBar(tabs: [
-            Tab(text: 'Details'),
-            Tab(text: 'Manage Lots'),
-          ]),
-        ),
-        body: TabBarView(
-          children: [
-            _ItemSummaryTab(itemId: itemId),
-            _LotsTab(itemId: itemId, highlightLotId: lotId),
-          ],
+            title: Text(itemName),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.edit),
+                tooltip: 'Edit Item',
+                onPressed: () => _editItem(context),
+              ),
+            ],
+            bottom: const TabBar(tabs: [
+              Tab(text: 'Details'),
+              Tab(text: 'Manage Lots'),
+              Tab(text: 'Usage History'),
+            ]),
+          ),
+          body: TabBarView(
+            children: [
+              _ItemSummaryTab(itemId: itemId),
+              _LotsTab(itemId: itemId, highlightLotId: lotId),
+              _UsageHistoryTab(itemId: itemId),
+            ],
+          ),
         ),
       ),
     );
@@ -130,18 +138,6 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
   void initState() {
     super.initState();
     _loadUsageData();
-  }
-
-  Future<void> _syncToAlgolia() async {
-    final fn = FirebaseFunctions.instance.httpsCallable('syncItemToAlgoliaCallable');
-    try {
-      await fn.call({'itemId': widget.itemId});
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync requested')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync failed: $e')));
-    }
   }
 
   Future<void> _loadUsageData() async {
@@ -681,14 +677,6 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
                     label: const Text('Add Stock'),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _syncToAlgolia,
-                    icon: const Icon(Icons.sync),
-                    label: const Text('Sync to Algolia'),
-                  ),
-                ),
               ],
             ),
           ],
@@ -878,10 +866,17 @@ class _LotsTabContentState extends State<_LotsTabContent> {
   @override
   Widget build(BuildContext context) {
     final db = FirebaseFirestore.instance;
-    final lotsQ = db.collection('items').doc(widget.itemId).collection('lots')
-      .where('archived', isEqualTo: _showArchived ? true : null) // Show archived or active lots
+    
+    // Build the base query
+    var lotsQ = db.collection('items').doc(widget.itemId).collection('lots')
       .orderBy('expiresAt', descending: false) // FEFO; nulls last (Firestore sorts nulls first—handle in UI)
       .limit(200);
+    
+    // Add archived filter only when showing archived lots
+    // For active lots, we'll filter client-side to include lots without the archived field
+    if (_showArchived) {
+      lotsQ = lotsQ.where('archived', isEqualTo: true);
+    }
 
     return Column(
       children: [
@@ -916,18 +911,32 @@ class _LotsTabContentState extends State<_LotsTabContent> {
             builder: (ctx, snap) {
               if (snap.hasError) return Center(child: Text('Error: ${snap.error}'));
               if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+              
+              // Filter lots based on archived status
+              var docs = snap.data!.docs.where((doc) {
+                final data = doc.data();
+                final isArchived = data['archived'] == true;
+                
+                if (_showArchived) {
+                  // Show only archived lots
+                  return isArchived;
+                } else {
+                  // Show only active lots (not archived or archived field doesn't exist)
+                  return !isArchived;
+                }
+              }).toList();
+              
               // Push null-expiry lots to the end for FEFO UX
-              final docs = snap.data!.docs.toList()
-                ..sort((a, b) {
-                  DateTime? ea, eb;
-                  final ta = a.data()['expiresAt'], tb = b.data()['expiresAt'];
-                  ea = (ta is Timestamp) ? ta.toDate() : null;
-                  eb = (tb is Timestamp) ? tb.toDate() : null;
-                  if (ea == null && eb == null) return 0;
-                  if (ea == null) return 1; // null last
-                  if (eb == null) return -1;
-                  return ea.compareTo(eb); // soonest first
-                });
+              docs.sort((a, b) {
+                DateTime? ea, eb;
+                final ta = a.data()['expiresAt'], tb = b.data()['expiresAt'];
+                ea = (ta is Timestamp) ? ta.toDate() : null;
+                eb = (tb is Timestamp) ? tb.toDate() : null;
+                if (ea == null && eb == null) return 0;
+                if (ea == null) return 1; // null last
+                if (eb == null) return -1;
+                return ea.compareTo(eb); // soonest first
+              });
 
               // Scroll to highlighted lot after data loads
               if (widget.highlightLotId != null && !_hasScrolledToHighlight) {
@@ -961,7 +970,7 @@ class _LotsTabContentState extends State<_LotsTabContent> {
                 itemBuilder: (ctx, i) => _LotRow(
                   itemId: widget.itemId,
                   lotDoc: docs[i],
-                  isArchived: _showArchived,
+                  isArchived: docs[i].data()['archived'] == true,
                   isHighlighted: docs[i].id == widget.highlightLotId,
                 ),
               );
@@ -1174,13 +1183,13 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                 const SizedBox(height: 8),
                 TextField(
                   controller: cQtyInit,
-                  keyboardType: TextInputType.number,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(labelText: 'Initial quantity'),
                 ),
                 const SizedBox(height: 8),
                 TextField(
                   controller: cQtyRemain,
-                  keyboardType: TextInputType.number,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: const InputDecoration(labelText: 'Starting remaining (optional)'),
                 ),
                 const SizedBox(height: 8),
@@ -1461,8 +1470,8 @@ class _AdjustSheetContentState extends State<_AdjustSheetContent> {
           const SizedBox(height: 8),
           TextField(
             controller: cDelta,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(prefixText: '', labelText: 'Delta (e.g., -2)'),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(prefixText: '', labelText: 'Delta (e.g., -2.5)'),
           ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
@@ -1804,6 +1813,600 @@ Future<void> _showDeleteLotDialog(BuildContext context, String itemId, String lo
           SnackBar(content: Text('Error deleting lot: $e')),
         );
       }
+    }
+  }
+}
+
+// Usage History Tab Widget
+class _UsageHistoryTab extends StatefulWidget {
+  final String itemId;
+  
+  const _UsageHistoryTab({required this.itemId});
+
+  @override
+  State<_UsageHistoryTab> createState() => _UsageHistoryTabState();
+}
+
+class _UsageHistoryTabState extends State<_UsageHistoryTab> {
+  bool _showReversals = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('usage_logs')
+          .where('itemId', isEqualTo: widget.itemId)
+          .orderBy('usedAt', descending: true)
+          .limit(100) // Show last 100 usage records
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 48),
+                const SizedBox(height: 16),
+                Text('Error loading usage history: ${snapshot.error}'),
+              ],
+            ),
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final usageDocs = snapshot.data?.docs ?? [];
+        
+        // Filter based on toggle setting
+        final filteredDocs = usageDocs.where((doc) {
+          final usage = doc.data() as Map<String, dynamic>;
+          final isReversal = usage['isReversal'] == true;
+          final qtyUsed = (usage['qtyUsed'] ?? 0) as num;
+          
+          if (!_showReversals) {
+            // Filter out reversal entries (they confuse the history)
+            return !isReversal && qtyUsed > 0;
+          } else {
+            // Show all entries when toggle is on
+            return true;
+          }
+        }).toList();
+        
+        // Count how many were filtered out
+        final reversalsCount = usageDocs.length - filteredDocs.length;
+        
+        if (filteredDocs.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.history, color: Colors.grey, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  _showReversals ? 'No usage history found' : 'No active usage history found',
+                  style: const TextStyle(color: Colors.grey, fontSize: 16),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _showReversals 
+                    ? 'This item hasn\'t been used in any cart sessions yet.'
+                    : 'This item hasn\'t been used in any active cart sessions.',
+                  style: const TextStyle(color: Colors.grey, fontSize: 14),
+                ),
+                if (reversalsCount > 0 && !_showReversals) ...[
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => setState(() => _showReversals = true),
+                    icon: const Icon(Icons.visibility),
+                    label: Text('Show $reversalsCount deleted session${reversalsCount == 1 ? '' : 's'}'),
+                  ),
+                ],
+              ],
+            ),
+          );
+        }
+
+        return Column(
+          children: [
+            // Toggle for showing reversals
+            if (reversalsCount > 0 || _showReversals)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _showReversals 
+                        ? 'Showing all entries (${filteredDocs.length})'
+                        : 'Showing active entries (${filteredDocs.length})',
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                        fontSize: 14,
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          'Show deleted sessions',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 14,
+                          ),
+                        ),
+                        Switch(
+                          value: _showReversals,
+                          onChanged: (value) => setState(() => _showReversals = value),
+                          activeThumbColor: Theme.of(context).colorScheme.primary,
+                          activeTrackColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                          inactiveThumbColor: Theme.of(context).colorScheme.onSurfaceVariant,
+                          inactiveTrackColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            
+            // List
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: () async {
+                  // The StreamBuilder will automatically refresh
+                },
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: filteredDocs.length + 1, // +1 for summary card
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      // Summary card
+                      return _UsageSummaryCard(usageDocs: filteredDocs);
+                    }
+                    final usage = filteredDocs[index - 1].data() as Map<String, dynamic>;
+                    return _UsageHistoryCard(usage: usage);
+                  },
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// Usage Summary Card
+class _UsageSummaryCard extends StatelessWidget {
+  final List<QueryDocumentSnapshot> usageDocs;
+  
+  const _UsageSummaryCard({required this.usageDocs});
+
+  @override
+  Widget build(BuildContext context) {
+    if (usageDocs.isEmpty) return const SizedBox.shrink();
+    
+    // Calculate summary statistics
+    double totalUsed = 0;
+    final Map<String, double> sessionTotals = {};
+    final Set<String> uniqueSessions = {};
+    String? mostCommonUnit;
+    final Map<String, int> unitCounts = {};
+    
+    for (final doc in usageDocs) {
+      final usage = doc.data() as Map<String, dynamic>;
+      final qtyUsed = (usage['qtyUsed'] ?? 0) as num;
+      final sessionId = usage['sessionId'] as String?;
+      final unit = usage['unit'] as String? ?? 'each';
+      
+      totalUsed += qtyUsed.toDouble();
+      
+      if (sessionId != null) {
+        uniqueSessions.add(sessionId);
+        sessionTotals[sessionId] = (sessionTotals[sessionId] ?? 0) + qtyUsed.toDouble();
+      }
+      
+      unitCounts[unit] = (unitCounts[unit] ?? 0) + 1;
+    }
+    
+    // Find most common unit
+    if (unitCounts.isNotEmpty) {
+      mostCommonUnit = unitCounts.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+    }
+    
+    // Find last usage date
+    final lastUsage = usageDocs.first.data() as Map<String, dynamic>;
+    final lastUsedAt = lastUsage['usedAt'] as Timestamp?;
+    
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      color: Colors.blue.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.analytics, color: Colors.blue.shade700),
+                const SizedBox(width: 8),
+                Text(
+                  'Usage Summary',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue.shade700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            
+            // Summary stats in a grid
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              children: [
+                _buildSummaryItem(
+                  'Total Used',
+                  '${totalUsed.toString()} ${mostCommonUnit ?? 'items'}',
+                  Icons.inventory,
+                ),
+                _buildSummaryItem(
+                  'Sessions',
+                  '${uniqueSessions.length}',
+                  Icons.shopping_cart,
+                ),
+                _buildSummaryItem(
+                  'Records',
+                  '${usageDocs.length}',
+                  Icons.list,
+                ),
+                if (lastUsedAt != null)
+                  _buildSummaryItem(
+                    'Last Used',
+                    _formatDateTime(lastUsedAt.toDate()),
+                    Icons.schedule,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryItem(String label, String value, IconData icon) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: Colors.grey[600]),
+        const SizedBox(width: 4),
+        Text(
+          '$label: ',
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey[600],
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    final now = DateTime.now();
+    final difference = now.difference(dateTime);
+    
+    if (difference.inDays == 0) {
+      // Today - show time
+      final hour = dateTime.hour.toString().padLeft(2, '0');
+      final minute = dateTime.minute.toString().padLeft(2, '0');
+      return 'Today $hour:$minute';
+    } else if (difference.inDays == 1) {
+      // Yesterday
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      // This week - show day of week
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[dateTime.weekday - 1];
+    } else {
+      // Older - show date
+      final month = dateTime.month.toString().padLeft(2, '0');
+      final day = dateTime.day.toString().padLeft(2, '0');
+      return '${dateTime.year}-$month-$day';
+    }
+  }
+}
+
+// Individual usage history card
+class _UsageHistoryCard extends StatefulWidget {
+  final Map<String, dynamic> usage;
+  
+  const _UsageHistoryCard({required this.usage});
+
+  @override
+  State<_UsageHistoryCard> createState() => _UsageHistoryCardState();
+}
+
+class _UsageHistoryCardState extends State<_UsageHistoryCard> {
+  String? _lotCode;
+  String? _sessionName;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAdditionalData();
+  }
+
+  Future<void> _loadAdditionalData() async {
+    final sessionId = widget.usage['sessionId'] as String?;
+    final lotId = widget.usage['lotId'] as String?;
+    final itemId = widget.usage['itemId'] as String?;
+    
+    try {
+      final futures = <Future>[];
+      
+      // Fetch lot code if lotId exists
+      if (lotId != null && itemId != null) {
+        futures.add(
+          FirebaseFirestore.instance
+            .collection('items')
+            .doc(itemId)
+            .collection('lots')
+            .doc(lotId)
+            .get()
+            .then((doc) {
+              if (doc.exists) {
+                final data = doc.data()!;
+                _lotCode = data['lotCode'] as String? ?? lotId.substring(0, 6);
+              }
+            })
+        );
+      }
+      
+      // Fetch session name if sessionId exists
+      if (sessionId != null) {
+        futures.add(
+          FirebaseFirestore.instance
+            .collection('cart_sessions')
+            .doc(sessionId)
+            .get()
+            .then((doc) {
+              if (doc.exists) {
+                final data = doc.data()!;
+                final interventionName = data['interventionName'] as String?;
+                final locationText = data['locationText'] as String?;
+                final startedAt = data['startedAt'] as Timestamp?;
+                
+                // Build a human-readable session name
+                if (interventionName != null) {
+                  String sessionName = interventionName;
+                  if (locationText != null && locationText.isNotEmpty) {
+                    sessionName += ' on $locationText';
+                  }
+                  if (startedAt != null) {
+                    final date = startedAt.toDate();
+                    final now = DateTime.now();
+                    final difference = now.difference(date);
+                    
+                    if (difference.inDays == 0) {
+                      final hour = date.hour.toString().padLeft(2, '0');
+                      final minute = date.minute.toString().padLeft(2, '0');
+                      sessionName += ' (Today $hour:$minute)';
+                    } else if (difference.inDays == 1) {
+                      sessionName += ' (Yesterday)';
+                    } else if (difference.inDays < 7) {
+                      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                      sessionName += ' (${days[date.weekday - 1]})';
+                    } else {
+                      final month = date.month.toString().padLeft(2, '0');
+                      final day = date.day.toString().padLeft(2, '0');
+                      sessionName += ' (${date.year}-$month-$day)';
+                    }
+                  }
+                  _sessionName = sessionName;
+                } else {
+                  _sessionName = 'Session ${sessionId.substring(0, 8)}';
+                }
+              } else {
+                _sessionName = 'Session ${sessionId.substring(0, 8)} (deleted)';
+              }
+            })
+        );
+      }
+      
+      await Future.wait(futures);
+    } catch (e) {
+      // Handle errors silently - show IDs as fallback
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final qtyUsed = widget.usage['qtyUsed'] ?? 0;
+    final unit = widget.usage['unit'] ?? 'each';
+    final usedAt = widget.usage['usedAt'] as Timestamp?;
+    final sessionId = widget.usage['sessionId'] as String?;
+    final lotId = widget.usage['lotId'] as String?;
+    final interventionName = widget.usage['interventionName'] as String?;
+    final grantId = widget.usage['grantId'] as String?;
+    final notes = widget.usage['notes'] as String?;
+    final operatorName = widget.usage['operatorName'] as String?;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header with quantity and date
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${qtyUsed.toString()} $unit used',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                if (usedAt != null)
+                  Text(
+                    _formatDateTime(usedAt.toDate()),
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            
+            // Session information with loading state
+            if (sessionId != null)
+              _buildInfoRow(
+                'Session', 
+                _loading 
+                  ? 'Loading...' 
+                  : (_sessionName ?? sessionId), 
+                Icons.shopping_cart
+              ),
+            
+            // Lot information with loading state
+            if (lotId != null)
+              _buildInfoRow(
+                'Lot', 
+                _loading 
+                  ? 'Loading...' 
+                  : (_lotCode ?? lotId), 
+                Icons.inventory_2
+              ),
+            
+            // Intervention/Program
+            if (interventionName != null)
+              _buildInfoRow('Program', interventionName, Icons.medical_services),
+            
+            // Grant information
+            if (grantId != null)
+              _buildInfoRow('Grant', grantId, Icons.account_balance),
+            
+            // Operator
+            () {
+              String? displayName = operatorName;
+              if (displayName == null || displayName.isEmpty || displayName.startsWith('User ')) {
+                displayName = OperatorStore.name.value;
+              }
+              if (displayName != null && displayName.isNotEmpty && !displayName.startsWith('User ')) {
+                return _buildInfoRow('Operator', displayName, Icons.person);
+              }
+              return const SizedBox.shrink();
+            }(),
+            
+            // Notes
+            if (notes != null && notes.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.note, size: 16, color: Colors.grey[600]),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Notes',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w500,
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        notes,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Colors.grey[600]),
+          const SizedBox(width: 8),
+          Text(
+            '$label: ',
+            style: TextStyle(
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[600],
+              fontSize: 14,
+            ),
+          ),
+          Flexible(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 14),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    final now = DateTime.now();
+    final difference = now.difference(dateTime);
+    
+    if (difference.inDays == 0) {
+      // Today - show time
+      final hour = dateTime.hour.toString().padLeft(2, '0');
+      final minute = dateTime.minute.toString().padLeft(2, '0');
+      return 'Today $hour:$minute';
+    } else if (difference.inDays == 1) {
+      // Yesterday
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      // This week - show day of week
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[dateTime.weekday - 1];
+    } else {
+      // Older - show date
+      final month = dateTime.month.toString().padLeft(2, '0');
+      final day = dateTime.day.toString().padLeft(2, '0');
+      return '${dateTime.year}-$month-$day';
     }
   }
 }

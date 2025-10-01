@@ -4,15 +4,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
-import '../../services/search_service.dart';
 import '../../services/version_service.dart';
-import '../items/items_page.dart';
 import '../items/new_item_page.dart';
 import '../items/item_detail_page.dart';
 import '../items/add_audit_inventory_page.dart';
 import '../items/bulk_inventory_entry_page.dart';
 import '../session/cart_session_page.dart';
-import '../session/sessions_list_page.dart';
 import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
@@ -124,20 +121,24 @@ class _DashboardPageState extends State<DashboardPage> {
     // --- Server-side flag queries ---
     final lowQ = db
         .collection('items')
-        .where('flagLow', isEqualTo: true);
+        .where('flagLow', isEqualTo: true)
+        .where('archived', isEqualTo: false);
 
     final expiringQ = db
         .collection('items')
         .where('flagExpiringSoon', isEqualTo: true)
+        .where('archived', isEqualTo: false)
         .orderBy('earliestExpiresAt');
 
     final staleQ = db
         .collection('items')
-        .where('flagStale', isEqualTo: true);
+        .where('flagStale', isEqualTo: true)
+        .where('archived', isEqualTo: false);
 
     final expiredQ = db
         .collection('items')
-        .where('flagExpired', isEqualTo: true);
+        .where('flagExpired', isEqualTo: true)
+        .where('archived', isEqualTo: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -232,9 +233,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   label: 'View Items',
                   subtitle: 'Browse inventory',
                   onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ItemsPage()),
-                    );
+                    context.go('/items');
                   },
                 ),
               ),
@@ -246,9 +245,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   label: 'Sessions',
                   subtitle: 'View session history',
                   onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const SessionsListPage()),
-                    );
+                    context.go('/sessions');
                   },
                 ),
               ),
@@ -517,21 +514,8 @@ class _StatusCard extends StatelessWidget {
         return InkWell(
           borderRadius: BorderRadius.circular(12),
           onTap: () {
-            // Navigate to filtered items view
-            final filters = switch (filterType) {
-              'low' => const SearchFilters(hasLowStock: true),
-              'expiring' => const SearchFilters(hasExpiringSoon: true),
-              'stale' => const SearchFilters(hasStale: true), 
-              'excess' => const SearchFilters(hasExcess: true),
-              'expired' => const SearchFilters(hasExpired: true),
-              _ => const SearchFilters(),
-            };
-            
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => ItemsPage(initialFilters: filters, isFromDashboard: true),
-              ),
-            );
+            // Navigate to items page - filters will be handled by the items page itself
+            context.go('/items');
           },
           child: Container(
             padding: const EdgeInsets.all(16),

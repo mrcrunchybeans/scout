@@ -3,6 +3,7 @@ class CartLine {
   final String itemName;
   final String baseUnit;
   final String? lotId;        // optional, if using lots
+  final String? lotCode;      // the human-readable lot code (e.g., "2509-001")
   final num initialQty;
   final num? endQty;          // null until closing
 
@@ -11,6 +12,7 @@ class CartLine {
     required this.itemName,
     required this.baseUnit,
     this.lotId,
+    this.lotCode,
     required this.initialQty,
     this.endQty,
   });
@@ -22,6 +24,7 @@ class CartLine {
     'itemName': itemName,
     'baseUnit': baseUnit,
     'lotId': lotId,
+    'lotCode': lotCode,
     'initialQty': initialQty,
     'endQty': endQty,
   };
@@ -31,6 +34,7 @@ class CartLine {
     itemName: (m['itemName'] ?? 'Unnamed') as String,
     baseUnit: (m['baseUnit'] ?? 'each') as String,
     lotId: m['lotId'] as String?,
+    lotCode: m['lotCode'] as String?,
     initialQty: (m['initialQty'] ?? 0) as num,
     endQty: m['endQty'] as num?,
   );

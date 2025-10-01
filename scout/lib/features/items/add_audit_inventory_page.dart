@@ -429,7 +429,6 @@ class _AuditOptionsState extends State<_AuditOptions> {
               .collection('items')
               .doc(widget.itemId)
               .collection('lots')
-              .where('archived', isEqualTo: null) // Only non-archived lots
               .orderBy('expiresAt', descending: false) // FEFO order
               .limit(50)
               .snapshots(),
@@ -453,8 +452,14 @@ class _AuditOptionsState extends State<_AuditOptions> {
             }
 
             final lots = snapshot.data!.docs;
+            
+            // Filter to only active lots (not archived)
+            final activeLots = lots.where((doc) {
+              final data = doc.data();
+              return data['archived'] != true;
+            }).toList();
 
-            if (lots.isEmpty) {
+            if (activeLots.isEmpty) {
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -474,7 +479,7 @@ class _AuditOptionsState extends State<_AuditOptions> {
             }
 
             // Sort lots: null expiration dates last
-            lots.sort((a, b) {
+            activeLots.sort((a, b) {
               final aExp = a.data()['expiresAt'];
               final bExp = b.data()['expiresAt'];
               if (aExp == null && bExp == null) return 0;
@@ -484,7 +489,7 @@ class _AuditOptionsState extends State<_AuditOptions> {
             });
 
             return Column(
-              children: lots.map((lotDoc) => _buildLotCard(lotDoc)).toList(),
+              children: activeLots.map((lotDoc) => _buildLotCard(lotDoc)).toList(),
             );
           },
         ),
@@ -1044,13 +1049,17 @@ class _AuditOptionsState extends State<_AuditOptions> {
         .collection('items')
         .doc(widget.itemId)
         .collection('lots')
-        .where('archived', isEqualTo: null)
         .get();
 
     double totalQty = 0;
+    
+    // Filter to only active lots (not archived) and calculate total
     for (final lotDoc in lotsSnapshot.docs) {
-      final qtyRemaining = (lotDoc.data()['qtyRemaining'] as num?)?.toDouble() ?? 0.0;
-      totalQty += qtyRemaining;
+      final data = lotDoc.data();
+      if (data['archived'] != true) {
+        final qty = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;
+        totalQty += qty;
+      }
     }
 
     // Update item total

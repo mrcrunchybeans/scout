@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:scout/features/items/new_item_page.dart';
 import 'package:scout/widgets/label_sheet_preview.dart';
-import '../dashboard/dashboard_page.dart';
 import '../lookups_management_page.dart';
 import '../../services/search_service.dart';
 import '../../utils/audit.dart';
@@ -173,7 +172,7 @@ class _ItemsPageState extends State<ItemsPage> {
               tooltip: 'Dashboard',
               icon: const Icon(Icons.dashboard_outlined),
               onPressed: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DashboardPage()));
+                context.go('/');
               },
             ),
             // Quick Select-all visible button (when not in bulk mode)

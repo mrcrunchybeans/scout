@@ -27,7 +27,6 @@ dependencies:
   fl_chart: ^1.1.1
   syncfusion_flutter_charts: ^31.1.20
   file_picker: ^10.3.3
-  yaml: ^3.1.2
   uuid: ^4.4.0
   pdf: ^3.10.7
   qr_flutter: ^4.1.0
