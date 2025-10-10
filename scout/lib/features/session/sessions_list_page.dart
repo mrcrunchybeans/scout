@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import 'cart_session_page.dart';
 
@@ -43,6 +44,13 @@ class _SessionsListPageState extends State<SessionsListPage> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back to Dashboard',
+            onPressed: () {
+              GoRouter.of(context).go('/');
+            },
+          ),
           title: const Text('Sessions'),
           elevation: 0,
           actions: [

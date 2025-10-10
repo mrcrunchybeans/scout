@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:scout/services/label_export_service.dart';
 
 Future<void> main() async {
@@ -17,5 +18,5 @@ Future<void> main() async {
   final path = 'build/test-labels/test_label_${DateTime.now().millisecondsSinceEpoch}.pdf';
   final file = File(path);
   await file.writeAsBytes(bytes);
-  print('Wrote test label to: $path');
+  debugPrint('Wrote test label to: $path');
 }

@@ -2,7 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:scout/utils/audit.dart';
 import 'package:scout/widgets/scanner_sheet.dart';
 
 
@@ -40,6 +39,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   String? _defaultGrantId;
   String _locationText = '';
   String _notes = '';
+  DateTime? _customStartDate;
   final String _status = 'open';
   String? _sessionId;
   bool _busy = false;
@@ -72,6 +72,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
         _defaultGrantId = data['grantId'] as String?;
         _locationText = data['locationText'] as String? ?? '';
         _notes = data['notes'] as String? ?? '';
+        // Load custom start date if it exists
+        final startedAt = data['startedAt'];
+        if (startedAt is Timestamp) {
+          _customStartDate = startedAt.toDate();
+        }
         // Set selected intervention if interventions are already loaded
         if (_interventionId != null && _interventions != null) {
           _selectedIntervention = _interventions!.where((i) => i.id == _interventionId).firstOrNull;
@@ -391,16 +396,28 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 onTap: () async {
                   final data = d.data();
                   final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
+              final now = DateTime.now();
+                  final user = FirebaseAuth.instance.currentUser;
+                  
                   await d.reference.set(
-                    Audit.updateOnly({
+                    {
                       'barcodes': FieldValue.arrayUnion([code]),
                       if (!hasSingle) 'barcode': code,
-                    }),
+                      'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+                      'updatedAt': now,
+                    },
                     SetOptions(merge: true),
                   );
-                  await Audit.log('item.barcode.attach', {
-                    'itemId': d.id,
-                    'barcode': code,
+                  
+                  await _db.collection('audit_logs').add({
+                    'type': 'item.barcode.attach',
+                    'data': {
+                      'itemId': d.id,
+                      'barcode': code,
+                    },
+                    'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+                    'createdBy': user?.uid,
+                    'createdAt': now,
                   });
                   if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                   if (sheetCtx.mounted) {
@@ -425,22 +442,33 @@ class _CartSessionPageState extends State<CartSessionPage> {
           : _db.collection('cart_sessions').doc(_sessionId);
 
       final isNew = _sessionId == null;
-      final payload = isNew ? Audit.attach({
+      final basePayload = {
         'interventionId': _interventionId,
         'interventionName': _interventionName,
         'grantId': _defaultGrantId,
         'locationText': _locationText.trim().isEmpty ? null : _locationText.trim(),
         'notes': _notes.trim().isEmpty ? null : _notes.trim(),
         'status': 'open',
-        'startedAt': FieldValue.serverTimestamp(),
-      }) : Audit.updateOnly({
-        'interventionId': _interventionId,
-        'interventionName': _interventionName,
-        'grantId': _defaultGrantId,
-        'locationText': _locationText.trim().isEmpty ? null : _locationText.trim(),
-        'notes': _notes.trim().isEmpty ? null : _notes.trim(),
-        'status': 'open',
-      });
+        if (_customStartDate != null) 'startedAt': Timestamp.fromDate(_customStartDate!),
+      };
+      
+  final now = DateTime.now();
+  final user = FirebaseAuth.instance.currentUser;
+      
+      // Manual audit fields to avoid FieldValue.serverTimestamp()
+      final payload = isNew 
+          ? {
+              ...basePayload,
+              'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+              'createdBy': user?.uid,
+              'createdAt': Timestamp.fromDate(now),
+              'updatedAt': Timestamp.fromDate(now),
+            }
+          : {
+              ...basePayload,
+              'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+              'updatedAt': Timestamp.fromDate(now),
+            };
 
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
@@ -449,13 +477,28 @@ class _CartSessionPageState extends State<CartSessionPage> {
       for (final line in _lines) {
         final lid = _lineId(line);
         final lref = sref.collection('lines').doc(lid);
-        batch.set(lref, Audit.attach(line.toMap()), SetOptions(merge: true));
+        // Manual audit fields for line data
+        final linePayload = {
+          ...line.toMap(),
+          'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+          'createdBy': user?.uid,
+          'createdAt': Timestamp.fromDate(now),
+          'updatedAt': Timestamp.fromDate(now),
+        };
+        batch.set(lref, linePayload, SetOptions(merge: true));
       }
       await batch.commit();
 
-      await Audit.log('session.save', {
-        'sessionId': _sessionId,
-        'numLines': _lines.length,
+      // Manual audit log to avoid FieldValue.serverTimestamp()
+      await _db.collection('audit_logs').add({
+        'type': 'session.save',
+        'data': {
+          'sessionId': _sessionId,
+          'numLines': _lines.length,
+        },
+        'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+        'createdBy': user?.uid,
+        'createdAt': Timestamp.fromDate(now),
       });
 
   final ctx = context;
@@ -473,11 +516,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _closeSession() async {
+    debugPrint('CartSessionPage: Starting session close for session $_sessionId');
     if (_sessionId == null) {
       await _saveDraft();
       if (!mounted) return;
       if (_sessionId == null) return;
     }
+    debugPrint('CartSessionPage: Session ID is $_sessionId');
+    
     if (_interventionId == null) {
       if (mounted) {
         SoundFeedback.error();
@@ -486,167 +532,258 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
       return;
     }
+    debugPrint('CartSessionPage: Intervention ID is $_interventionId');
 
     setState(() => _busy = true);
     try {
       final sref = _db.collection('cart_sessions').doc(_sessionId);
+      debugPrint('CartSessionPage: Processing ${_lines.length} lines');
 
-      num totalQtyUsed = 0;
+  num totalQtyUsed = 0;
+  final auditLogs = <Map<String, dynamic>>[]; // Collect audit data
+  final now = DateTime.now();
+
+      // Collect all document references for parallel reads
+  final itemRefs = <DocumentReference<Map<String, dynamic>>>[];
+  final lotRefs = <DocumentReference<Map<String, dynamic>>>[];
+      final lineInfoMap = <String, CartLine>{}; // Track which line corresponds to each ref
+      
+      for (final line in _lines) {
+        if (line.usedQty <= 0) continue;
+        
+        final itemRef = _db.collection('items').doc(line.itemId);
+        itemRefs.add(itemRef);
+        lineInfoMap[itemRef.path] = line;
+        
+        if (line.lotId != null) {
+          final lotRef = itemRef.collection('lots').doc(line.lotId);
+          lotRefs.add(lotRef);
+          lineInfoMap[lotRef.path] = line;
+        }
+      }
+
+      // Read all documents in parallel
+      debugPrint('CartSessionPage: Reading ${itemRefs.length} items and ${lotRefs.length} lots in parallel');
+  final futures = <Future<DocumentSnapshot<Map<String, dynamic>>>>[];
+      futures.addAll(itemRefs.map((ref) => ref.get()));
+      futures.addAll(lotRefs.map((ref) => ref.get()));
+      
+      final snapshots = await Future.wait(futures);
+      
+      // Build lookup maps for fast access
+  final itemSnapMap = <String, DocumentSnapshot<Map<String, dynamic>>>{};
+  final lotSnapMap = <String, DocumentSnapshot<Map<String, dynamic>>>{};
+      
+      for (int i = 0; i < itemRefs.length; i++) {
+        itemSnapMap[itemRefs[i].path] = snapshots[i];
+      }
+      for (int i = 0; i < lotRefs.length; i++) {
+        lotSnapMap[lotRefs[i].path] = snapshots[itemRefs.length + i];
+      }
+
+      // Build single large batch with all operations
+      final batch = _db.batch();
+      var operationCount = 0;
+
+      // Process each line with pre-loaded data
       for (final line in _lines) {
         final used = line.usedQty;
         if (used <= 0) continue;
         totalQtyUsed += used;
 
         final itemRef = _db.collection('items').doc(line.itemId);
-        final usedAtTs = FieldValue.serverTimestamp();
+        final itemSnap = itemSnapMap[itemRef.path]!;
 
-        if (line.lotId != null) {
-          final lotRef = itemRef.collection('lots').doc(line.lotId);
-          await _db.runTransaction((tx) async {
-            // DO ALL READS FIRST
-            final lotSnap = await tx.get(lotRef);
+        try {
+          if (line.lotId != null) {
+            // Process lot-based item
+            final lotRef = itemRef.collection('lots').doc(line.lotId);
+            final lotSnap = lotSnapMap[lotRef.path]!;
+            
             if (!lotSnap.exists) {
               throw Exception('Lot ${line.lotId} no longer exists');
             }
-            
-            final itemSnap = await tx.get(itemRef);
             if (!itemSnap.exists) {
               throw Exception('Item ${line.itemName} no longer exists');
             }
 
-            // Process lot data
             final lotData = lotSnap.data() as Map<String, dynamic>;
-            final rem = (lotData['qtyRemaining'] ?? 0) as num;
+            final itemData = itemSnap.data() as Map<String, dynamic>;
+            
+            final lotRem = (lotData['qtyRemaining'] ?? 0) as num;
+            final itemQty = (itemData['qtyOnHand'] ?? 0) as num;
 
-            // Assert sufficient stock before decrement
-            if (rem < used) {
-              throw Exception('Stock changed, please refresh. Lot ${line.lotId} has insufficient stock.');
+            if (lotRem < used) {
+              throw Exception('Insufficient stock in lot ${line.lotId} for ${line.itemName}');
             }
 
-            final newRem = (rem - used).clamp(0, double.infinity);
+            final newLotRem = (lotRem - used).clamp(0, double.infinity);
+            final newItemQty = (itemQty - used).clamp(0, double.infinity);
 
-            // Process item data
-            final itemData = itemSnap.data() as Map<String, dynamic>;
-            final currentItemQty = (itemData['qtyOnHand'] ?? 0) as num;
-            final newItemQty = (currentItemQty - used).clamp(0, double.infinity);
-
-            // NOW DO ALL WRITES
-            final lotPatch = <String, dynamic>{
-              'qtyRemaining': newRem,
+            // Add lot update to batch
+            final lotUpdateData = <String, dynamic>{
+              'qtyRemaining': newLotRem,
+              'updatedAt': Timestamp.fromDate(now),
             };
-            if (lotData['openAt'] == null) lotPatch['openAt'] = FieldValue.serverTimestamp();
-            tx.set(lotRef, Audit.updateOnly(lotPatch), SetOptions(merge: true));
+            if (lotData['openAt'] == null) {
+              lotUpdateData['openAt'] = Timestamp.fromDate(now);
+            }
+            batch.update(lotRef, lotUpdateData);
+            operationCount++;
 
-            tx.set(
-              itemRef,
-              Audit.updateOnly({
-                'qtyOnHand': newItemQty,
-                'lastUsedAt': usedAtTs,
-              }),
-              SetOptions(merge: true),
-            );
+            // Add item update to batch
+            batch.update(itemRef, {
+              'qtyOnHand': newItemQty,
+              'lastUsedAt': Timestamp.fromDate(now),
+              'updatedAt': Timestamp.fromDate(now),
+            });
+            operationCount++;
 
+            // Add usage log to batch
             final usageRef = _db.collection('usage_logs').doc();
-            tx.set(usageRef, Audit.attach({
+            batch.set(usageRef, {
               'sessionId': _sessionId,
               'itemId': line.itemId,
               'lotId': line.lotId,
               'qtyUsed': used,
               'unit': line.baseUnit,
-              'usedAt': usedAtTs,
+              'usedAt': Timestamp.fromDate(now),
               'interventionId': _interventionId,
               'interventionName': _interventionName,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
-            }));
-
-            await Audit.log('usage.create', {
-              'sessionId': _sessionId,
-              'itemId': line.itemId,
-              'lotId': line.lotId,
-              'qtyUsed': used,
-              'unit': line.baseUnit,
+              'createdBy': FirebaseAuth.instance.currentUser?.uid,
+              'createdAt': Timestamp.fromDate(now),
             });
-          });
-        } else {
-          await _db.runTransaction((tx) async {
-            final itemSnap = await tx.get(itemRef);
+            operationCount++;
+          } else {
+            // Process non-lot item
             if (!itemSnap.exists) {
               throw Exception('Item ${line.itemName} no longer exists');
             }
-            final data = itemSnap.data() as Map<String, dynamic>;
-            final currentQty = (data['qtyOnHand'] ?? 0) as num;
 
-            // Assert sufficient stock before decrement
-            if (currentQty < used) {
-              throw Exception('Stock changed, please refresh. Insufficient stock for ${line.itemName}.');
+            final itemData = itemSnap.data() as Map<String, dynamic>;
+            final itemQty = (itemData['qtyOnHand'] ?? 0) as num;
+
+            if (itemQty < used) {
+              throw Exception('Insufficient stock for ${line.itemName}');
             }
 
-            final newQty = (currentQty - used).clamp(0, double.infinity);
+            final newItemQty = (itemQty - used).clamp(0, double.infinity);
 
-            tx.set(itemRef, Audit.updateOnly({
-              'qtyOnHand': newQty,
-              'lastUsedAt': usedAtTs,
-            }), SetOptions(merge: true));
+            // Add item update to batch
+            batch.update(itemRef, {
+              'qtyOnHand': newItemQty,
+              'lastUsedAt': Timestamp.fromDate(now),
+              'updatedAt': Timestamp.fromDate(now),
+            });
+            operationCount++;
 
+            // Add usage log to batch
             final usageRef = _db.collection('usage_logs').doc();
-            tx.set(usageRef, Audit.attach({
+            batch.set(usageRef, {
               'sessionId': _sessionId,
               'itemId': line.itemId,
               'qtyUsed': used,
               'unit': line.baseUnit,
-              'usedAt': usedAtTs,
+              'usedAt': Timestamp.fromDate(now),
               'interventionId': _interventionId,
               'interventionName': _interventionName,
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
-            }));
-
-            await Audit.log('usage.create', {
-              'sessionId': _sessionId,
-              'itemId': line.itemId,
-              'qtyUsed': used,
-              'unit': line.baseUnit,
+              'createdBy': FirebaseAuth.instance.currentUser?.uid,
+              'createdAt': Timestamp.fromDate(now),
             });
+            operationCount++;
+          }
+
+          // Collect audit data
+          auditLogs.add({
+            'sessionId': _sessionId,
+            'itemId': line.itemId,
+            'lotId': line.lotId,
+            'qtyUsed': used,
+            'unit': line.baseUnit,
           });
+
+          debugPrint('CartSessionPage: Prepared operations for ${line.itemName}');
+        } catch (e) {
+          debugPrint('CartSessionPage: Validation failed for ${line.itemName}: $e');
+          throw Exception('Validation failed for ${line.itemName}: $e');
         }
       }
 
+      // Single atomic commit
+      debugPrint('CartSessionPage: Committing $operationCount operations in single batch');
+      await batch.commit();
+      debugPrint('CartSessionPage: All operations committed successfully');
+
+      debugPrint('CartSessionPage: All lines processed successfully');
+
+      // Log all audit entries after transactions complete (move outside transaction)
+      // Note: Audit.log calls are moved outside transactions to avoid potential issues
+
       await sref.set(
-        Audit.updateOnly({
+        {
           'status': 'closed',
-          'closedAt': FieldValue.serverTimestamp(),
+          'closedAt': now,
           'closedBy': FirebaseAuth.instance.currentUser?.uid,
-        }),
+          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'updatedAt': now,
+        },
         SetOptions(merge: true),
       );
 
-      // High-level audit for the close
-      await Audit.log('session.close', {
-        'sessionId': _sessionId,
-        'interventionId': _interventionId,
-        'numLines': _lines.length,
-        'totalQtyUsed': totalQtyUsed,
-      });
+      // High-level audit for the close (simplified)
+      try {
+        await _db.collection('audit_logs').add({
+          'type': 'session.close',
+          'data': {
+            'sessionId': _sessionId,
+            'interventionId': _interventionId,
+            'numLines': _lines.length,
+            'totalQtyUsed': totalQtyUsed,
+          },
+          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'createdBy': FirebaseAuth.instance.currentUser?.uid,
+          'createdAt': now,
+        });
+      } catch (auditError) {
+        debugPrint('CartSessionPage: Warning - audit log failed: $auditError');
+        // Continue even if audit fails
+      }
 
       final ctx = context;
       if (!ctx.mounted) return;
       SoundFeedback.ok();
       ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Session closed')));
       Navigator.of(ctx).pop(true);
-    } catch (e) {
+    } catch (e, stackTrace) {
       final ctx = context;
       if (!ctx.mounted) return;
       SoundFeedback.error();
 
+      // Log the full error for debugging
+      debugPrint('CartSessionPage: Error closing session: $e');
+      debugPrint('Stack trace: $stackTrace');
+
       // Handle stock-related errors with user-friendly messages
-      String errorMessage = 'Error: $e';
-      if (e.toString().contains('Stock changed, please refresh')) {
+      String errorMessage = 'Error closing session: $e';
+      final errorString = e.toString().toLowerCase();
+      if (errorString.contains('stock changed, please refresh')) {
         errorMessage = 'Stock changed, please refresh and try again.';
-      } else if (e.toString().contains('no longer exists')) {
+      } else if (errorString.contains('no longer exists')) {
         errorMessage = 'Some items are no longer available. Please refresh and try again.';
+      } else if (errorString.contains('insufficient stock')) {
+        errorMessage = 'Insufficient stock for one or more items. Please check quantities and try again.';
+      } else if (errorString.contains('permission')) {
+        errorMessage = 'Permission denied. Please check your access rights.';
+      } else if (errorString.contains('network') || errorString.contains('unavailable')) {
+        errorMessage = 'Network error. Please check your connection and try again.';
       }
 
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(errorMessage)));
@@ -663,87 +800,50 @@ class _CartSessionPageState extends State<CartSessionPage> {
         await _db.collection('items').orderBy('updatedAt', descending: true).limit(50).get();
     if (!mounted) return;
 
-    await showModalBottomSheet(
+    final result = await showModalBottomSheet<List<Map<String, dynamic>>>(
       context: context,
       isScrollControlled: true,
       builder: (sheetCtx) {
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text('Add items to cart', style: Theme.of(sheetCtx).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            for (final d in itemsSnap.docs)
-              ListTile(
-                title: Text((d.data()['name'] ?? 'Unnamed') as String),
-                subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
-                onTap: () async {
-                  final lots = await _db.collection('items').doc(d.id).collection('lots').get();
-                  final baseUnit = (d.data()['baseUnit'] ?? d.data()['unit'] ?? 'each') as String;
-
-                  String? lotId;
-                  if (lots.docs.isNotEmpty) {
-                    final list = lots.docs.toList()
-                      ..sort((a, b) {
-                        DateTime? ea = (a.data()['expiresAt'] is Timestamp)
-                            ? (a.data()['expiresAt'] as Timestamp).toDate()
-                            : null;
-                        DateTime? eb = (b.data()['expiresAt'] is Timestamp)
-                            ? (b.data()['expiresAt'] as Timestamp).toDate()
-                            : null;
-                        if (ea == null && eb == null) return 0;
-                        if (ea == null) return 1;
-                        if (eb == null) return -1;
-                        return ea.compareTo(eb);
-                      });
-                    
-                    // Find first lot with qtyRemaining > 0, or use first lot if none found
-                    QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
-                    for (final lot in list) {
-                      final q = lot.data()['qtyRemaining'];
-                      if ((q is num) && q > 0) {
-                        withQty = lot;
-                        break;
-                      }
-                    }
-                    // If no lot with qty > 0 found, use the first lot
-                    withQty ??= list.first;
-                    lotId = withQty.id;
-                  }
-
-                  final line = CartLine(
-                    itemId: d.id,
-                    itemName: (d.data()['name'] ?? 'Unnamed') as String,
-                    baseUnit: baseUnit,
-                    lotId: lotId,
-                    initialQty: 1,
-                  );
-
-                  if (!mounted) return;
-                  setState(() {
-                    final id = _lineId(line);
-                    final idx = _lines.indexWhere((x) => _lineId(x) == id);
-                    if (idx >= 0) {
-                      final old = _lines[idx];
-                      _lines[idx] = CartLine(
-                        itemId: old.itemId,
-                        itemName: old.itemName,
-                        baseUnit: old.baseUnit,
-                        lotId: old.lotId,
-                        initialQty: old.initialQty + 1,
-                        endQty: old.endQty,
-                      );
-                    } else {
-                      _lines.add(line);
-                    }
-                  });
-
-                  if (sheetCtx.mounted) Navigator.of(sheetCtx).pop();
-                },
-              ),
-          ],
+        return SizedBox(
+          height: MediaQuery.of(context).size.height * 0.8,
+          child: _AddItemsSheet(items: itemsSnap.docs),
         );
       },
     );
+
+    if (result != null && result.isNotEmpty && mounted) {
+      for (final itemData in result) {
+        final line = CartLine(
+          itemId: itemData['itemId'] as String,
+          itemName: itemData['itemName'] as String,
+          baseUnit: itemData['baseUnit'] as String,
+          lotId: itemData['lotId'] as String?,
+          initialQty: 1,
+        );
+
+        setState(() {
+          final id = _lineId(line);
+          final idx = _lines.indexWhere((x) => _lineId(x) == id);
+          if (idx >= 0) {
+            final old = _lines[idx];
+            _lines[idx] = CartLine(
+              itemId: old.itemId,
+              itemName: old.itemName,
+              baseUnit: old.baseUnit,
+              lotId: old.lotId,
+              initialQty: old.initialQty + 1,
+              endQty: old.endQty,
+            );
+          } else {
+            _lines.add(line);
+          }
+        });
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added ${result.length} item${result.length == 1 ? '' : 's'} to cart')),
+      );
+    }
   }
 
   Future<void> _copyFromLast() async {
@@ -808,7 +908,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 ? (b.data()['expiresAt'] as Timestamp).toDate()
                 : null;
             if (ea == null && eb == null) return 0;
-            if (ea == null) return 1;
+            if (ea == null) return 1; // nulls last
             if (eb == null) return -1;
             return ea.compareTo(eb);
           });
@@ -849,7 +949,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     return PopScope(
       canPop: true,
-      onPopInvoked: (bool didPop) async {
+      onPopInvokedWithResult: (bool didPop, Object? result) async {
         // Handle browser back button navigation - auto-save draft before leaving
         if (didPop && _status == 'open' && _lines.isNotEmpty && !_busy) {
           debugPrint('CartSessionPage: Browser back navigation - auto-saving draft');
@@ -942,6 +1042,36 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   maxLines: 2,
                   onChanged: (s) => _notes = s,
                 ),
+                const SizedBox(height: 12),
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _customStartDate ?? DateTime.now(),
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now().add(const Duration(days: 1)),
+                    );
+                    if (picked != null) {
+                      setState(() => _customStartDate = picked);
+                    }
+                  },
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Session Date (optional)',
+                      suffixIcon: Icon(Icons.calendar_today),
+                    ),
+                    child: Text(
+                      _customStartDate != null
+                          ? '${_customStartDate!.month}/${_customStartDate!.day}/${_customStartDate!.year}'
+                          : 'Use current date',
+                      style: TextStyle(
+                        color: _customStartDate != null
+                            ? Theme.of(context).colorScheme.onSurface
+                            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ),
+                ),
 
                 // Quick add by barcode (USB or typing)
                 const SizedBox(height: 16),
@@ -1020,6 +1150,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   ),
 
                 const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.save),
+                  label: const Text('Save draft'),
+                  onPressed: _busy ? null : _saveDraft,
+                ),
+                const SizedBox(height: 12),
                 FilledButton.icon(
                   icon: const Icon(Icons.check_circle),
                   label: const Text('Close session'),
@@ -1050,23 +1186,60 @@ class _LineRow extends StatefulWidget {
 class _LineRowState extends State<_LineRow> {
   late final TextEditingController _cInit;
   late final TextEditingController _cEnd;
+  String? _lotCode;
 
   @override
   void initState() {
     super.initState();
     _cInit = TextEditingController(text: widget.line.initialQty.toString());
     _cEnd = TextEditingController(text: widget.line.endQty?.toString() ?? '');
+    _loadLotCode();
+  }
+
+  Future<void> _loadLotCode() async {
+    if (widget.line.lotId != null) {
+      try {
+        final lotDoc = await FirebaseFirestore.instance
+            .collection('items')
+            .doc(widget.line.itemId)
+            .collection('lots')
+            .doc(widget.line.lotId)
+            .get();
+        if (lotDoc.exists && mounted) {
+          setState(() {
+            _lotCode = lotDoc.data()?['lotCode'] ?? widget.line.lotId!.substring(0, 6);
+          });
+        }
+      } catch (e) {
+        // If we can't load the lot code, fall back to truncated ID
+        if (mounted) {
+          setState(() {
+            _lotCode = widget.line.lotId!.substring(0, 6);
+          });
+        }
+      }
+    }
   }
 
   @override
   void didUpdateWidget(_LineRow oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Only update text if the line data actually changed, not on every rebuild
-    if (oldWidget.line.initialQty != widget.line.initialQty) {
+    // Only update text if the line data actually changed from external source (not from our own onChanged)
+    // We check if the parsed value differs from current controller value to avoid interfering with user input
+    final currentInitValue = num.tryParse(_cInit.text) ?? 0;
+    final currentEndValue = num.tryParse(_cEnd.text) ?? 0;
+
+    if (oldWidget.line.initialQty != widget.line.initialQty && currentInitValue != widget.line.initialQty) {
       _cInit.text = widget.line.initialQty.toString();
+      _cInit.selection = TextSelection.collapsed(offset: _cInit.text.length);
     }
-    if (oldWidget.line.endQty != widget.line.endQty) {
+    if ((oldWidget.line.endQty ?? 0) != (widget.line.endQty ?? 0) && currentEndValue != (widget.line.endQty ?? 0)) {
       _cEnd.text = widget.line.endQty?.toString() ?? '';
+      _cEnd.selection = TextSelection.collapsed(offset: _cEnd.text.length);
+    }
+    // Reload lot code if the lot ID changed
+    if (oldWidget.line.lotId != widget.line.lotId) {
+      _loadLotCode();
     }
   }
 
@@ -1086,7 +1259,7 @@ class _LineRowState extends State<_LineRow> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Unit: ${widget.line.baseUnit}'
-                '${widget.line.lotId != null ? ' • lot ${widget.line.lotId!.substring(0, 6)}…' : ''}'),
+                '${widget.line.lotId != null ? ' • lot ${_lotCode ?? 'Loading...'}' : ''}'),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -1095,7 +1268,7 @@ class _LineRowState extends State<_LineRow> {
                     controller: _cInit,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Loaded'),
-                    onChanged: (s) => widget.onChanged(CartLine(
+                    onSubmitted: (s) => widget.onChanged(CartLine(
                       itemId: widget.line.itemId,
                       itemName: widget.line.itemName,
                       baseUnit: widget.line.baseUnit,
@@ -1111,7 +1284,7 @@ class _LineRowState extends State<_LineRow> {
                     controller: _cEnd,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Leftover (at close)'),
-                    onChanged: (s) => widget.onChanged(CartLine(
+                    onSubmitted: (s) => widget.onChanged(CartLine(
                       itemId: widget.line.itemId,
                       itemName: widget.line.itemName,
                       baseUnit: widget.line.baseUnit,
@@ -1133,6 +1306,335 @@ class _LineRowState extends State<_LineRow> {
           onPressed: widget.onRemove,
         ),
       ),
+    );
+  }
+}
+
+class LotSelectionDialog extends StatefulWidget {
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> selectedItems;
+
+  const LotSelectionDialog({super.key, required this.selectedItems});
+
+  @override
+  State<LotSelectionDialog> createState() => _LotSelectionDialogState();
+}
+
+class _LotSelectionDialogState extends State<LotSelectionDialog> {
+  final Map<String, String?> _selectedLotIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize with null selections - lots will be loaded via FutureBuilder
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Select Lots'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: widget.selectedItems.length,
+          itemBuilder: (context, index) {
+            final item = widget.selectedItems[index];
+            final itemName = (item.data()['name'] ?? 'Unnamed') as String;
+            final baseUnit = (item.data()['baseUnit'] ?? item.data()['unit'] ?? 'each') as String;
+
+            return FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              future: FirebaseFirestore.instance.collection('items').doc(item.id).collection('lots').get(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return ListTile(
+                    title: Text(itemName),
+                    subtitle: const Text('Loading lots...'),
+                  );
+                }
+
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return ListTile(
+                    title: Text(itemName),
+                    subtitle: const Text('No lots available'),
+                  );
+                }
+
+                final lots = snapshot.data!.docs.toList()
+                  ..sort((a, b) {
+                    DateTime? ea = (a.data()['expiresAt'] is Timestamp)
+                        ? (a.data()['expiresAt'] as Timestamp).toDate()
+                        : null;
+                    DateTime? eb = (b.data()['expiresAt'] is Timestamp)
+                        ? (b.data()['expiresAt'] as Timestamp).toDate()
+                        : null;
+                    if (ea == null && eb == null) return 0;
+                    if (ea == null) return 1; // nulls last
+                    if (eb == null) return -1;
+                    return ea.compareTo(eb);
+                  });
+
+                // Auto-select FEFO lot if not already selected
+                if (_selectedLotIds[item.id] == null && lots.isNotEmpty) {
+                  // Find first lot with qtyRemaining > 0, or use first lot if none found
+                  QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
+                  for (final lot in lots) {
+                    final q = lot.data()['qtyRemaining'];
+                    if ((q is num) && q > 0) {
+                      withQty = lot;
+                      break;
+                    }
+                  }
+                  withQty ??= lots.first;
+                  _selectedLotIds[item.id] = withQty.id;
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        itemName,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    ...lots.map((lot) {
+                      final lotData = lot.data();
+                      final qtyRemaining = lotData['qtyRemaining'] ?? 0;
+                      final expiresAt = lotData['expiresAt'] is Timestamp
+                          ? (lotData['expiresAt'] as Timestamp).toDate()
+                          : null;
+                      final lotCode = lotData['lotCode'] ?? lot.id;
+
+                      // ignore: deprecated_member_use
+                      return RadioListTile<String>(
+                        title: Text('$lotCode • $qtyRemaining $baseUnit'),
+                        subtitle: expiresAt != null
+                            ? Text('Expires: ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}')
+                            : null,
+                        value: lot.id,
+                        // ignore: deprecated_member_use
+                        groupValue: _selectedLotIds[item.id],
+                        // ignore: deprecated_member_use
+                        onChanged: qtyRemaining > 0 ? (value) {
+                          setState(() {
+                            _selectedLotIds[item.id] = value;
+                          });
+                        } : null,
+                        dense: true,
+                      );
+                    }),
+                    const Divider(),
+                  ],
+                );
+              },
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final itemDetails = widget.selectedItems.map((item) {
+              final baseUnit = (item.data()['baseUnit'] ?? item.data()['unit'] ?? 'each') as String;
+              return {
+                'itemId': item.id,
+                'itemName': (item.data()['name'] ?? 'Unnamed') as String,
+                'baseUnit': baseUnit,
+                'lotId': _selectedLotIds[item.id],
+              };
+            }).toList();
+
+            Navigator.of(context).pop(itemDetails);
+          },
+          child: const Text('Add to Cart'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AddItemsSheet extends StatefulWidget {
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
+
+  const _AddItemsSheet({required this.items});
+
+  @override
+  State<_AddItemsSheet> createState() => _AddItemsSheetState();
+}
+
+class _AddItemsSheetState extends State<_AddItemsSheet> {
+  final _searchController = TextEditingController();
+  String _searchText = '';
+  final Set<String> _selectedItemIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      setState(() {
+        _searchText = _searchController.text.toLowerCase();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> get _filteredItems {
+    if (_searchText.isEmpty) return widget.items;
+    return widget.items.where((item) {
+      final name = (item.data()['name'] ?? 'Unnamed') as String;
+      return name.toLowerCase().contains(_searchText);
+    }).toList();
+  }
+
+  void _toggleSelection(String itemId) {
+    setState(() {
+      if (_selectedItemIds.contains(itemId)) {
+        _selectedItemIds.remove(itemId);
+      } else {
+        _selectedItemIds.add(itemId);
+      }
+    });
+  }
+
+  void _addSingleItem(QueryDocumentSnapshot<Map<String, dynamic>> item) async {
+    // Show lot selection dialog for single item
+    final result = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (context) => LotSelectionDialog(selectedItems: [item]),
+    );
+
+    if (result != null) {
+      // Use a post-frame callback to ensure we're on the right context
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) {
+          Navigator.of(context).pop(result);
+        }
+      });
+    }
+  }
+
+  Future<void> _addSelectedItems() async {
+    if (_selectedItemIds.isEmpty) return;
+
+    final selectedItems = widget.items.where((item) => _selectedItemIds.contains(item.id)).toList();
+
+    // Show lot selection dialog
+    final result = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (context) => LotSelectionDialog(selectedItems: selectedItems),
+    );
+
+    if (result != null) {
+      // Use a post-frame callback to ensure we're on the right context
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) {
+          Navigator.of(context).pop(result);
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // Header with title and search
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Add items to cart', style: Theme.of(context).textTheme.titleLarge),
+                  ),
+                  if (_selectedItemIds.isNotEmpty)
+                    Text(
+                      '${_selectedItemIds.length} selected',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _searchController,
+                decoration: const InputDecoration(
+                  hintText: 'Search items...',
+                  prefixIcon: Icon(Icons.search),
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        // Items list
+        Expanded(
+          child: ListView.builder(
+            itemCount: _filteredItems.length,
+            itemBuilder: (context, index) {
+              final d = _filteredItems[index];
+              final isSelected = _selectedItemIds.contains(d.id);
+              
+              return ListTile(
+                leading: Checkbox(
+                  value: isSelected,
+                  onChanged: (bool? value) => _toggleSelection(d.id),
+                  activeColor: Theme.of(context).colorScheme.primary,
+                ),
+                title: Text((d.data()['name'] ?? 'Unnamed') as String),
+                subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)} • Tap to add individually'),
+                onTap: () => _addSingleItem(d),
+              );
+            },
+          ),
+        ),
+        
+        // Bottom action bar
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(
+              top: BorderSide(
+                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
+                width: 1,
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _selectedItemIds.isEmpty
+                      ? 'Select items to add'
+                      : '${_selectedItemIds.length} item${_selectedItemIds.length == 1 ? '' : 's'} selected',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              const SizedBox(width: 16),
+              FilledButton.icon(
+                onPressed: _selectedItemIds.isNotEmpty ? _addSelectedItems : null,
+                icon: const Icon(Icons.add),
+                label: const Text('Add Selected'),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

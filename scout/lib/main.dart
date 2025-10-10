@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:web/web.dart' as web;
 import 'package:go_router/go_router.dart';
-import 'package:url_strategy/url_strategy.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
 // JS interop removed; go_router and url_strategy handle routing for web
@@ -19,31 +19,40 @@ import 'features/session/sessions_list_page.dart';
 import 'dev/label_qr_test_page.dart';
 import 'features/admin/algolia_config_page.dart';
 import 'features/admin/label_config_page.dart';
+import 'services/search_service.dart';
 
 /// Navigation observer for debugging navigation issues
 class ScoutNavigationObserver extends NavigatorObserver {
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
     super.didPush(route, previousRoute);
-    debugPrint('Navigation: Pushed ${route.settings.name} from ${previousRoute?.settings.name}');
+    if (kDebugMode) {
+      debugPrint('Navigation: Pushed ${route.settings.name} from ${previousRoute?.settings.name}');
+    }
   }
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
     super.didPop(route, previousRoute);
-    debugPrint('Navigation: Popped ${route.settings.name} to ${previousRoute?.settings.name}');
+    if (kDebugMode) {
+      debugPrint('Navigation: Popped ${route.settings.name} to ${previousRoute?.settings.name}');
+    }
   }
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
     super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
-    debugPrint('Navigation: Replaced ${oldRoute?.settings.name} with ${newRoute?.settings.name}');
+    if (kDebugMode) {
+      debugPrint('Navigation: Replaced ${oldRoute?.settings.name} with ${newRoute?.settings.name}');
+    }
   }
 
   @override
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
     super.didRemove(route, previousRoute);
-    debugPrint('Navigation: Removed ${route.settings.name}');
+    if (kDebugMode) {
+      debugPrint('Navigation: Removed ${route.settings.name}');
+    }
   }
 }
 
@@ -107,6 +116,9 @@ Future<void> _bootstrap() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
+  // Note: Firestore persistence settings left as default for web to avoid
+  // compatibility issues across browsers/tabs. We can revisit with targeted testing.
+
   // Auth persistence: LOCAL → SESSION → NONE
   try {
     await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
@@ -166,7 +178,9 @@ Map<String, String>? _parseLegacyHash() {
 void main() {
   // Use path URL strategy (no hash) for clean URLs on web
   try {
-    setPathUrlStrategy();
+    if (kIsWeb) {
+      setUrlStrategy(PathUrlStrategy());
+    }
   } catch (_) {}
 
   runApp(const ScoutApp());
@@ -176,7 +190,7 @@ void main() {
 final GoRouter _router = GoRouter(
   initialLocation: '/',
   navigatorKey: navigatorKey,
-  debugLogDiagnostics: true, // Enable debug logging for navigation issues
+  debugLogDiagnostics: kDebugMode, // Only log in debug to reduce overhead in release
   errorBuilder: (context, state) => _ErrorPage(error: state.error),
   redirect: (context, state) {
     // Handle any route redirects or authentication checks here
@@ -191,7 +205,89 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/items',
       name: 'items',
-      builder: (context, state) => const ItemsPage(),
+      builder: (context, state) {
+        final qp = state.queryParams;
+        final bucket = qp['bucket'];
+        SearchFilters? initial;
+        switch (bucket) {
+          case 'low':
+            initial = const SearchFilters(hasLowStock: true);
+            break;
+          case 'expiring':
+            initial = const SearchFilters(hasExpiringSoon: true);
+            break;
+          case 'stale':
+            initial = const SearchFilters(hasStale: true);
+            break;
+          case 'expired':
+            initial = const SearchFilters(hasExpired: true);
+            break;
+          default:
+            initial = null;
+        }
+        // Hydrate filters from URL params
+        final query = qp['q'];
+        if (query != null && query.isNotEmpty) {
+          initial = (initial ?? const SearchFilters()).copyWith(query: query);
+        }
+        bool toBool(String? v) => v == '1' || v == 'true';
+  if (toBool(qp['low'])) initial = (initial ?? const SearchFilters()).copyWith(hasLowStock: true);
+  if (toBool(qp['lots'])) initial = (initial ?? const SearchFilters()).copyWith(hasLots: true);
+  if (toBool(qp['barcode'])) initial = (initial ?? const SearchFilters()).copyWith(hasBarcode: true);
+  if (toBool(qp['minQty'])) initial = (initial ?? const SearchFilters()).copyWith(hasMinQty: true);
+  if (toBool(qp['expSoon'])) initial = (initial ?? const SearchFilters()).copyWith(hasExpiringSoon: true);
+  if (toBool(qp['stale'])) initial = (initial ?? const SearchFilters()).copyWith(hasStale: true);
+  if (toBool(qp['excess'])) initial = (initial ?? const SearchFilters()).copyWith(hasExcess: true);
+  if (toBool(qp['expired'])) initial = (initial ?? const SearchFilters()).copyWith(hasExpired: true);
+        final cats = qp['cats'];
+        if (cats != null && cats.isNotEmpty) {
+          initial = (initial ?? const SearchFilters()).copyWith(categories: cats.split(',').toSet());
+        }
+        final locs = qp['locs'];
+        if (locs != null && locs.isNotEmpty) {
+          initial = (initial ?? const SearchFilters()).copyWith(locationIds: locs.split(',').toSet());
+        }
+
+        // Sort + archived view
+        SortOption? initialSort;
+        switch (qp['sort']) {
+          case 'name-asc':
+            initialSort = SortOption.nameAsc;
+            break;
+          case 'name-desc':
+            initialSort = SortOption.nameDesc;
+            break;
+          case 'cat-asc':
+            initialSort = SortOption.categoryAsc;
+            break;
+          case 'cat-desc':
+            initialSort = SortOption.categoryDesc;
+            break;
+          case 'qty-asc':
+            initialSort = SortOption.qtyAsc;
+            break;
+          case 'qty-desc':
+            initialSort = SortOption.qtyDesc;
+            break;
+          case 'exp-asc':
+            initialSort = SortOption.expirationAsc;
+            break;
+          case 'exp-desc':
+            initialSort = SortOption.expirationDesc;
+            break;
+          case 'recent':
+          default:
+            initialSort = SortOption.updatedDesc;
+        }
+        final initialArchived = toBool(qp['archived']);
+
+        return ItemsPage(
+          initialFilters: initial,
+          isFromDashboard: bucket != null,
+          initialSort: initialSort,
+          initialArchived: initialArchived,
+        );
+      },
     ),
     GoRoute(
       path: '/items/:id',

@@ -933,7 +933,7 @@ class _LotsTabContentState extends State<_LotsTabContent> {
                 ea = (ta is Timestamp) ? ta.toDate() : null;
                 eb = (tb is Timestamp) ? tb.toDate() : null;
                 if (ea == null && eb == null) return 0;
-                if (ea == null) return 1; // null last
+                if (ea == null) return 1; // nulls last
                 if (eb == null) return -1;
                 return ea.compareTo(eb); // soonest first
               });

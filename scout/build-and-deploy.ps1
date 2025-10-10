@@ -1,5 +1,13 @@
 # Build and Deploy Script
-# Run this instead of 'flutter build web --release' to build and deploy
+# R# Update version in VersionService
+Write-Host "🔄 Updating version in VersionService..." -ForegroundColor Yellow
+$versionServicePath = "lib\services\version_service.dart"
+$versionServiceContent = Get-Content $versionServicePath -Raw
+$currentDate = Get-Date -Format "yyyy-MM-dd"
+$versionServiceContent = $versionServiceContent -replace "static const String _appVersion = '[^']*';", "static const String _appVersion = '$newVersion';"
+$versionServiceContent = $versionServiceContent -replace "static const String _buildDate = '[^']*';", "static const String _buildDate = '$currentDate';"
+Set-Content $versionServicePath $versionServiceContent
+Write-Host "📋 VersionService updated to: $newVersion ($currentDate)" -ForegroundColor Green  instead of 'flutter build web --release' to build and deploy
 
 Write-Host "🔨 Building and deploying SCOUT..." -ForegroundColor Cyan
 
@@ -27,6 +35,12 @@ if ($versionMatch.Success) {
 } else {
     Write-Host "⚠️ Could not parse version from pubspec.yaml" -ForegroundColor Yellow
 }
+
+# Update version in VersionService
+Write-Host "� Updating version in VersionService..." -ForegroundColor Yellow
+$versionServiceContent = $versionServiceContent -replace "static const String _appVersion = '[^']*';", "static const String _appVersion = '$newVersion';"
+Set-Content $versionServicePath $versionServiceContent
+Write-Host "📋 VersionService updated to: $newVersion" -ForegroundColor Green
 
 # Run Flutter build
 & flutter build web --release

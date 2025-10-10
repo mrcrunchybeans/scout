@@ -79,9 +79,16 @@ Future<bool> confirmAdminPin(BuildContext context) async {
           FilledButton(
             onPressed: () async {
               final pin = await _fetchAdminPin();
-              if (c.text == pin) {
-                final prefs = await SharedPreferences.getInstance();
+              final input = c.text;
+              final prefs = await SharedPreferences.getInstance();
+
+              // Accept either current admin PIN or developer password for convenience
+              if (input == pin || input == _developerPassword) {
                 await prefs.setBool('admin_unlocked', true);
+                // If developer password was used, also mark developer unlocked
+                if (input == _developerPassword) {
+                  await prefs.setBool('developer_unlocked', true);
+                }
                 if (!dialogContext.mounted) return;
                 Navigator.of(dialogContext).pop(true);
               } else {

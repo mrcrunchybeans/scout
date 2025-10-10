@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../features/session/cart_models.dart';
 
@@ -39,7 +40,7 @@ class CartSessionCacheService {
       await prefs.setString(key, jsonEncode(data));
     } catch (e) {
       // Silently fail - autosave shouldn't interrupt user workflow
-      print('Failed to save session draft: $e');
+      debugPrint('Failed to save session draft: $e');
     }
   }
   
@@ -62,7 +63,7 @@ class CartSessionCacheService {
       final data = jsonDecode(jsonString) as Map<String, dynamic>;
       return CartSessionCache.fromMap(data);
     } catch (e) {
-      print('Failed to load session draft: $e');
+      debugPrint('Failed to load session draft: $e');
       return null;
     }
   }
@@ -93,7 +94,7 @@ class CartSessionCacheService {
       sessions.sort((a, b) => b.savedAt.compareTo(a.savedAt));
       return sessions;
     } catch (e) {
-      print('Failed to load cached sessions: $e');
+      debugPrint('Failed to load cached sessions: $e');
       return [];
     }
   }
@@ -109,7 +110,7 @@ class CartSessionCacheService {
         await prefs.remove('${_draftKeyPrefix}new_session');
       }
     } catch (e) {
-      print('Failed to clear session draft: $e');
+      debugPrint('Failed to clear session draft: $e');
     }
   }
   
@@ -125,7 +126,7 @@ class CartSessionCacheService {
         await prefs.remove(key);
       }
     } catch (e) {
-      print('Failed to clear all cached sessions: $e');
+      debugPrint('Failed to clear all cached sessions: $e');
     }
   }
   
@@ -168,7 +169,7 @@ class CartSessionCacheService {
         }
       }
     } catch (e) {
-      print('Failed to cleanup old cache: $e');
+      debugPrint('Failed to cleanup old cache: $e');
     }
   }
 }

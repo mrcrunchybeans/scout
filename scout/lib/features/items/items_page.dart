@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -18,8 +20,10 @@ enum ViewMode { active, archived }
 class ItemsPage extends StatefulWidget {
   final SearchFilters? initialFilters;
   final bool isFromDashboard;
+  final SortOption? initialSort;
+  final bool? initialArchived;
 
-  const ItemsPage({super.key, this.initialFilters, this.isFromDashboard = false});
+  const ItemsPage({super.key, this.initialFilters, this.isFromDashboard = false, this.initialSort, this.initialArchived});
   @override
   State<ItemsPage> createState() => _ItemsPageState();
 }
@@ -38,6 +42,66 @@ class _ItemsPageState extends State<ItemsPage> {
     ),
   );
   bool _busy = false;
+  Timer? _searchDebounce;
+  Timer? _urlDebounce;
+  // Pagination controls
+  final int _pageSize = 50;
+  // Paged state
+  List<QueryDocumentSnapshot> _docs = [];
+  QueryDocumentSnapshot? _lastDoc;
+  bool _canPage = false;
+  bool _initialLoading = false;
+  bool _loadingMore = false;
+  int _searchSeq = 0; // used to cancel stale searches
+  // Scroll controller for infinite scroll
+  final ScrollController _scrollController = ScrollController();
+  DateTime? _lastAutoLoadAt;
+  // Search controller/focus for keyboard shortcut and programmatic control
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  // Back-to-top control
+  bool _showBackToTop = false;
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    // If we're close to the bottom and more pages are available, load more
+    final isScrollingDown = pos.userScrollDirection == ScrollDirection.forward;
+    final now = DateTime.now();
+    final okCooldown = _lastAutoLoadAt == null || now.difference(_lastAutoLoadAt!).inMilliseconds > 600;
+    if (_canPage && !_loadingMore && !_initialLoading && isScrollingDown && pos.extentAfter < 800 && okCooldown) {
+      _lastAutoLoadAt = now;
+      _loadMore();
+    }
+
+    // Toggle back-to-top button based on scroll position
+    final shouldShow = pos.pixels > 600;
+    if (shouldShow != _showBackToTop) {
+      setState(() => _showBackToTop = shouldShow);
+    }
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      setState(() {
+        _filters = _filters.copyWith(query: value.trim());
+        _loadFirstPage();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _urlDebounce?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
   late SearchFilters _filters;
   SortOption _sortOption = SortOption.updatedDesc;
   ViewMode _viewMode = ViewMode.active;
@@ -45,20 +109,77 @@ class _ItemsPageState extends State<ItemsPage> {
   bool _showAdvancedFilters = false;
   Future<List<String>>? _categoriesFuture;
   final Set<String> _selectedIds = {};
-  int _refreshCounter = 0; // Counter to force refresh after operations
-  Future<SearchResult>? _searchFuture;
   List<String> _visibleIds = [];
 
   @override
   void initState() {
     super.initState();
     _filters = widget.initialFilters ?? const SearchFilters();
+    if (widget.initialSort != null) _sortOption = widget.initialSort!;
+    if (widget.initialArchived == true) _viewMode = ViewMode.archived;
+    _searchController.text = _filters.query;
     _categoriesFuture = _loadCategories();
-    _updateSearchFuture();
+    _loadFirstPage();
+    _scrollController.addListener(_onScroll);
   }
 
-  void _updateSearchFuture() {
-    // compute sort field and direction from _sortOption
+  Uri _buildItemsUri() {
+    final qp = <String, String>{};
+    if (_filters.query.isNotEmpty) qp['q'] = _filters.query;
+    if (_filters.hasLowStock == true) qp['low'] = '1';
+    if (_filters.hasLots == true) qp['lots'] = '1';
+    if (_filters.hasBarcode == true) qp['barcode'] = '1';
+  if (_filters.hasMinQty == true) qp['minQty'] = '1';
+  if (_filters.hasExpiringSoon == true) qp['expSoon'] = '1';
+  if (_filters.hasStale == true) qp['stale'] = '1';
+  if (_filters.hasExcess == true) qp['excess'] = '1';
+    if (_filters.hasExpired == true) qp['expired'] = '1';
+    if (_filters.categories.isNotEmpty) qp['cats'] = _filters.categories.join(',');
+    if (_filters.locationIds.isNotEmpty) qp['locs'] = _filters.locationIds.join(',');
+    if (_viewMode == ViewMode.archived) qp['archived'] = '1';
+    // sort
+    final sortMap = {
+      SortOption.updatedDesc: 'recent',
+      SortOption.nameAsc: 'name-asc',
+      SortOption.nameDesc: 'name-desc',
+      SortOption.categoryAsc: 'cat-asc',
+      SortOption.categoryDesc: 'cat-desc',
+      SortOption.qtyAsc: 'qty-asc',
+      SortOption.qtyDesc: 'qty-desc',
+      SortOption.expirationAsc: 'exp-asc',
+      SortOption.expirationDesc: 'exp-desc',
+    };
+    qp['sort'] = sortMap[_sortOption] ?? 'recent';
+
+    return Uri(path: '/items', queryParameters: qp.isEmpty ? null : qp);
+  }
+
+  void _syncUrlDebounced() {
+    _urlDebounce?.cancel();
+    _urlDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      final uri = _buildItemsUri();
+      final router = GoRouter.of(context);
+      if (router.location != uri.toString()) {
+        router.go(uri.toString());
+      }
+    });
+  }
+
+  void _loadFirstPage() async {
+    final seq = ++_searchSeq;
+    setState(() {
+      _initialLoading = true;
+      _docs = [];
+      _lastDoc = null;
+      _canPage = false;
+    });
+
+    // Reset scroll to top on a new search/filter
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+
     final sortField = switch (_sortOption) {
       SortOption.updatedDesc => 'updatedAt',
       SortOption.nameAsc || SortOption.nameDesc => 'name',
@@ -66,29 +187,106 @@ class _ItemsPageState extends State<ItemsPage> {
       SortOption.qtyAsc || SortOption.qtyDesc => 'qtyOnHand',
       SortOption.expirationAsc || SortOption.expirationDesc => 'earliestExpiresAt',
     };
-
     final sortDescending = switch (_sortOption) {
       SortOption.updatedDesc || SortOption.nameDesc || SortOption.categoryDesc || SortOption.qtyDesc || SortOption.expirationDesc => true,
       SortOption.nameAsc || SortOption.categoryAsc || SortOption.qtyAsc || SortOption.expirationAsc => false,
     };
 
-    _searchFuture = _searchService.searchItems(
-      filters: _filters,
-      showArchived: _viewMode == ViewMode.archived,
-      sortField: sortField,
-      sortDescending: sortDescending,
-      limit: 1000,
-      showAllItems: widget.isFromDashboard,
-    );
+    try {
+      final page = await _searchService.searchItemsPaged(
+        filters: _filters,
+        showArchived: _viewMode == ViewMode.archived,
+        sortField: sortField,
+        sortDescending: sortDescending,
+        pageSize: _pageSize,
+        startAfter: null,
+        showAllItems: widget.isFromDashboard,
+      );
+      if (!mounted || seq != _searchSeq) return; // stale
+      setState(() {
+        _docs = page.documents;
+        _lastDoc = page.lastDocument;
+        _canPage = page.canPage;
+        _visibleIds = _docs.map((d) => d.id).toList();
+        _initialLoading = false;
+      });
+      // Refresh categories based on the new page
+      _categoriesFuture = _loadCategories();
+      _syncUrlDebounced();
+    } catch (e) {
+      if (!mounted || seq != _searchSeq) return;
+      setState(() {
+        _initialLoading = false;
+      });
+      // Show basic error inline
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Search error: $e')));
+    }
   }
 
-  Future<List<String>> _loadCategories() async {
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_canPage) return;
+    setState(() => _loadingMore = true);
+
+    final sortField = switch (_sortOption) {
+      SortOption.updatedDesc => 'updatedAt',
+      SortOption.nameAsc || SortOption.nameDesc => 'name',
+      SortOption.categoryAsc || SortOption.categoryDesc => 'category',
+      SortOption.qtyAsc || SortOption.qtyDesc => 'qtyOnHand',
+      SortOption.expirationAsc || SortOption.expirationDesc => 'earliestExpiresAt',
+    };
+    final sortDescending = switch (_sortOption) {
+      SortOption.updatedDesc || SortOption.nameDesc || SortOption.categoryDesc || SortOption.qtyDesc || SortOption.expirationDesc => true,
+      SortOption.nameAsc || SortOption.categoryAsc || SortOption.qtyAsc || SortOption.expirationAsc => false,
+    };
+
     try {
+      final page = await _searchService.searchItemsPaged(
+        filters: _filters,
+        showArchived: _viewMode == ViewMode.archived,
+        sortField: sortField,
+        sortDescending: sortDescending,
+        pageSize: _pageSize,
+        startAfter: _lastDoc,
+        showAllItems: widget.isFromDashboard,
+      );
+      if (!mounted) return;
+      setState(() {
+        _docs.addAll(page.documents);
+        _lastDoc = page.lastDocument;
+        _canPage = page.canPage;
+        _visibleIds = _docs.map((d) => d.id).toList();
+      });
+      // Update categories using current accumulated docs
+      _categoriesFuture = _loadCategories();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Load more error: $e')));
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  Future<List<String>> _loadCategories({bool broad = false}) async {
+    try {
+      // Fast path: derive categories from currently loaded page
+      if (!broad) {
+        final set = <String>{};
+        for (final d in _docs) {
+          final data = d.data() as Map<String, dynamic>;
+          final cat = (data['category'] ?? '') as String;
+          if (cat.isNotEmpty) set.add(cat);
+        }
+        final list = set.toList()..sort();
+        if (list.isNotEmpty) return list;
+      }
+
+      // Broader sample: fetch a limited slice ordered by category
       Query query = _db.collection('items');
       if (_viewMode == ViewMode.archived) {
         query = query.where('archived', isEqualTo: true);
       }
-
+      // Prefer to fetch a reasonable sample instead of full collection scan
+      query = query.orderBy('category').limit(broad ? 1000 : 300);
       final q = await query.get();
       final set = <String>{};
       for (final d in q.docs) {
@@ -97,27 +295,6 @@ class _ItemsPageState extends State<ItemsPage> {
         if (cat.isNotEmpty) set.add(cat);
       }
       final list = set.toList()..sort();
-
-      if (list.isNotEmpty) return list;
-
-      // Fallback: if no categories found from the broad query, try to derive from last visible ids
-      if (_visibleIds.isNotEmpty) {
-        try {
-          final docs = await Future.wait(_visibleIds.map((id) => _db.collection('items').doc(id).get()));
-          final set2 = <String>{};
-          for (final doc in docs) {
-            if (!doc.exists) continue;
-            final data = doc.data();
-            final cat = (data == null ? '' : (data['category'] ?? '')) as String;
-            if (cat.isNotEmpty) set2.add(cat);
-          }
-          final list2 = set2.toList()..sort();
-          if (list2.isNotEmpty) return list2;
-        } catch (_) {
-          // ignore fallback errors
-        }
-      }
-
       return list;
     } catch (_) {
       return <String>[];
@@ -128,8 +305,26 @@ class _ItemsPageState extends State<ItemsPage> {
   Widget build(BuildContext context) {
     // sort field/direction are computed in _updateSearchFuture()
 
-    return Scaffold(
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        // Press '/' anywhere to focus the search field (and prevent typing '/').
+        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.slash) {
+          if (!_searchFocus.hasFocus) {
+            _searchFocus.requestFocus();
+            // Clear the slash character that may have been typed into the TextField
+            return KeyEventResult.handled;
+          }
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Back to Dashboard',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/'),
+        ),
         title: const Text('SCOUT — Items'),
         actions: [
           if (_busy)
@@ -143,6 +338,20 @@ class _ItemsPageState extends State<ItemsPage> {
                 ),
               ),
             ),
+          // Share current filters URL
+          IconButton(
+            tooltip: 'Copy shareable link',
+            icon: const Icon(Icons.link),
+            onPressed: () async {
+              final ctx = context;
+              final uri = _buildItemsUri();
+              // Build absolute URL for web sharing
+              final absolute = Uri.base.resolve(uri.toString()).toString();
+              await Clipboard.setData(ClipboardData(text: absolute));
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Link copied to clipboard')));
+            },
+          ),
           if (_selectionMode) ...[
             IconButton(
               icon: const Icon(Icons.select_all),
@@ -254,8 +463,8 @@ class _ItemsPageState extends State<ItemsPage> {
                     setState(() {
                       _viewMode = _viewMode == ViewMode.active ? ViewMode.archived : ViewMode.active;
                       _categoriesFuture = _loadCategories(); // Refresh categories when view mode changes
-                      _updateSearchFuture();
                     });
+                    _loadFirstPage();
                   } else if (key == 'bulk-edit') {
                     setState(() => _selectionMode = true);
                   } else if (key == 'manage-lookups') {
@@ -289,8 +498,10 @@ class _ItemsPageState extends State<ItemsPage> {
           ],
         ],
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_showAdvancedFilters ? 500 : 100),
-          child: Padding(
+          preferredSize: Size.fromHeight(_showAdvancedFilters ? 520 : 220),
+          child: SafeArea(
+            top: false,
+            child: Padding(
             padding: const EdgeInsets.all(8),
             child: Column(
               children: [
@@ -305,11 +516,20 @@ class _ItemsPageState extends State<ItemsPage> {
                     ),
                     border: const OutlineInputBorder(),
                   ),
-                  onChanged: (value) => setState(() {
-                        _filters = _filters.copyWith(query: value.trim());
-                        _updateSearchFuture();
-                      }),
+                  controller: _searchController,
+                  focusNode: _searchFocus,
+                  onChanged: _onSearchChanged,
                 ),
+                const SizedBox(height: 8),
+                Row(
+                  children: const [
+                    Icon(Icons.keyboard, size: 14, color: Colors.grey),
+                    SizedBox(width: 6),
+                    Text("Tip: Press '/' to focus search", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                _buildActiveFiltersSummary(),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -329,7 +549,7 @@ class _ItemsPageState extends State<ItemsPage> {
                       ],
                       onChanged: (value) => setState(() {
                             _sortOption = value!;
-                            _updateSearchFuture();
+                            _loadFirstPage();
                           }),
                     ),
                     const Spacer(),
@@ -351,54 +571,68 @@ class _ItemsPageState extends State<ItemsPage> {
                 ],
               ],
             ),
+            ),
           ),
         ),
       ),
 
-      floatingActionButton: _selectionMode
-          ? FloatingActionButton(
-              onPressed: () => setState(() {
-                _selectionMode = false;
-                _selectedIds.clear();
-              }),
-              child: const Icon(Icons.close),
-            )
-          : FloatingActionButton.extended(
-              heroTag: 'new',
-              onPressed: () async {
-                final ctx = context;
-                final created = await Navigator.of(ctx).push<bool>(
-                  MaterialPageRoute(builder: (_) => const NewItemPage()),
-                );
-                if (!ctx.mounted) return;
-                if (created == true) {
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('Item created')),
-                  );
-                }
-              },
-              label: const Text('New item'),
-              icon: const Icon(Icons.add_box),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (_showBackToTop)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: FloatingActionButton.small(
+                heroTag: 'top',
+                tooltip: 'Back to top',
+                onPressed: () {
+                  if (_scrollController.hasClients) {
+                    _scrollController.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+                  }
+                },
+                child: const Icon(Icons.arrow_upward),
+              ),
             ),
+          _selectionMode
+              ? FloatingActionButton(
+                  heroTag: 'close',
+                  onPressed: () => setState(() {
+                    _selectionMode = false;
+                    _selectedIds.clear();
+                  }),
+                  child: const Icon(Icons.close),
+                )
+              : FloatingActionButton.extended(
+                  heroTag: 'new',
+                  onPressed: () async {
+                    final ctx = context;
+                    final created = await Navigator.of(ctx).push<bool>(
+                      MaterialPageRoute(builder: (_) => const NewItemPage()),
+                    );
+                    if (!ctx.mounted) return;
+                    if (created == true) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(content: Text('Item created')),
+                      );
+                    }
+                  },
+                  label: const Text('New item'),
+                  icon: const Icon(Icons.add_box),
+                ),
+        ],
+      ),
 
-      body: FutureBuilder<SearchResult>(
-        key: ValueKey('${_filters.hashCode}_${_viewMode}_${_sortOption}_$_refreshCounter'),
-        future: _searchFuture,
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(child: Text('Search error: ${snap.error}'));
-          }
-          if (snap.connectionState == ConnectionState.waiting) {
+      body: Builder(
+        builder: (context) {
+          if (_initialLoading) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final result = snap.data!;
-          final docs = result.documents;
-
           // Populate visible ids so select-all can work without refetching
-          _visibleIds = docs.map((d) => d.id).toList();
+          _visibleIds = _docs.map((d) => d.id).toList();
 
-          if (docs.isEmpty) {
+          if (_docs.isEmpty) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -434,11 +668,19 @@ class _ItemsPageState extends State<ItemsPage> {
             );
           }
 
+          final maybeMore = _canPage;
           return ListView.separated(
-            itemCount: docs.length,
+            controller: _scrollController,
+            itemCount: _docs.length + (maybeMore ? 1 : 0),
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
-              final d = docs[i];
+              if (maybeMore && i == _docs.length) {
+                return ListTile(
+                  title: Center(child: _loadingMore ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Load more')),
+                  onTap: _loadingMore ? null : _loadMore,
+                );
+              }
+              final d = _docs[i];
               final data = d.data() as Map<String, dynamic>;
               final name = (data['name'] ?? 'Unnamed') as String;
               final category = (data['category'] ?? '') as String;
@@ -503,10 +745,7 @@ class _ItemsPageState extends State<ItemsPage> {
                               ),
                             ));
                             if (result == true) {
-                              setState(() {
-                                _refreshCounter++;
-                                _updateSearchFuture();
-                              });
+                               _loadFirstPage();
                             }
                           } else if (action == 'delete') {
                             final ok = await showDialog<bool>(
@@ -539,10 +778,7 @@ class _ItemsPageState extends State<ItemsPage> {
                               } catch (e) {
                                 debugPrint('Failed to sync deletion to Algolia: $e');
                               }
-                              setState(() {
-                                _refreshCounter++;
-                                _updateSearchFuture();
-                              });
+                              _loadFirstPage();
                               if (!context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted "$name"')));
                             }
@@ -554,10 +790,9 @@ class _ItemsPageState extends State<ItemsPage> {
                               debugPrint('Failed to sync archive to Algolia: $e');
                             }
                             setState(() {
-                              _refreshCounter++;
                               _categoriesFuture = _loadCategories();
-                              _updateSearchFuture();
                             });
+                            _loadFirstPage();
                             if (!context.mounted) return;
                           } else if (action == 'copy') {
                             final details = '$name\n${category.isNotEmpty ? 'Category: $category\n' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}';
@@ -579,7 +814,8 @@ class _ItemsPageState extends State<ItemsPage> {
           );
         },
       ),
-    );
+    ),
+  );
   }
 
   Future<void> _scanBarcode() async {
@@ -604,7 +840,155 @@ class _ItemsPageState extends State<ItemsPage> {
 
     if (result != null) {
       setState(() => _filters = _filters.copyWith(query: result));
+      _loadFirstPage();
     }
+  }
+
+  Widget _buildActiveFiltersSummary() {
+    final chips = <Widget>[];
+
+    void addBoolChip(bool? flag, String label, void Function() onClear) {
+      if (flag == true) {
+        chips.add(InputChip(
+          label: Text(label),
+          onDeleted: onClear,
+        ));
+      }
+    }
+
+    if (_filters.query.isNotEmpty) {
+      chips.add(InputChip(
+        avatar: const Icon(Icons.search, size: 16),
+        label: Text(_filters.query, overflow: TextOverflow.ellipsis),
+        onDeleted: () {
+          setState(() {
+            _searchController.clear();
+            _filters = _filters.copyWith(query: '');
+            _loadFirstPage();
+          });
+        },
+      ));
+    }
+
+    addBoolChip(_filters.hasLowStock, 'Low stock', () {
+      setState(() {
+        _filters = _filters.copyWith(hasLowStock: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasLots, 'Has lots', () {
+      setState(() {
+        _filters = _filters.copyWith(hasLots: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasBarcode, 'Has barcode', () {
+      setState(() {
+        _filters = _filters.copyWith(hasBarcode: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasMinQty, 'Has min qty', () {
+      setState(() {
+        _filters = _filters.copyWith(hasMinQty: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasExpiringSoon, 'Expiring soon', () {
+      setState(() {
+        _filters = _filters.copyWith(hasExpiringSoon: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasStale, 'Stale', () {
+      setState(() {
+        _filters = _filters.copyWith(hasStale: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasExcess, 'Excess', () {
+      setState(() {
+        _filters = _filters.copyWith(hasExcess: null);
+        _loadFirstPage();
+      });
+    });
+    addBoolChip(_filters.hasExpired, 'Expired', () {
+      setState(() {
+        _filters = _filters.copyWith(hasExpired: null);
+        _loadFirstPage();
+      });
+    });
+
+    for (final cat in _filters.categories) {
+      chips.add(InputChip(
+        avatar: const Icon(Icons.category, size: 16),
+        label: Text(cat),
+        onDeleted: () {
+          setState(() {
+            final set = Set<String>.from(_filters.categories)..remove(cat);
+            _filters = _filters.copyWith(categories: set);
+            _loadFirstPage();
+          });
+        },
+      ));
+    }
+
+    for (final loc in _filters.locationIds) {
+      chips.add(InputChip(
+        avatar: const Icon(Icons.place, size: 16),
+        label: Text(loc),
+        onDeleted: () {
+          setState(() {
+            final set = Set<String>.from(_filters.locationIds)..remove(loc);
+            _filters = _filters.copyWith(locationIds: set);
+            _loadFirstPage();
+          });
+        },
+      ));
+    }
+
+    if (_viewMode == ViewMode.archived) {
+      chips.add(InputChip(
+        avatar: const Icon(Icons.archive, size: 16),
+        label: const Text('Archived view'),
+        onDeleted: () {
+          setState(() {
+            _viewMode = ViewMode.active;
+            _categoriesFuture = _loadCategories();
+            _loadFirstPage();
+          });
+        },
+      ));
+    }
+
+    if (chips.isEmpty) return const SizedBox.shrink();
+
+    return Row(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: chips,
+            ),
+          ),
+        ),
+        TextButton(
+          onPressed: () {
+            setState(() {
+              _searchController.clear();
+              _filters = const SearchFilters();
+              _viewMode = ViewMode.active;
+              _categoriesFuture = _loadCategories();
+              _loadFirstPage();
+            });
+          },
+          child: const Text('Clear'),
+        ),
+      ],
+    );
   }
 
   Future<void> _bulkDelete() async {
@@ -677,9 +1061,8 @@ class _ItemsPageState extends State<ItemsPage> {
       setState(() {
         _selectionMode = false;
         _selectedIds.clear();
-        _refreshCounter++;
-        _updateSearchFuture();
       });
+      _loadFirstPage();
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Deleted $count items')));
     } finally {
@@ -701,10 +1084,9 @@ class _ItemsPageState extends State<ItemsPage> {
       setState(() {
         _selectionMode = false;
         _selectedIds.clear();
-        _refreshCounter++;
         _categoriesFuture = _loadCategories();
-        _updateSearchFuture();
       });
+      _loadFirstPage();
       if (!ctx.mounted) return;
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('${archiving ? 'Archived' : 'Unarchived'} $count items')));
     } finally {
@@ -817,7 +1199,10 @@ class _ItemsPageState extends State<ItemsPage> {
                 const Text('Filters', style: TextStyle(fontWeight: FontWeight.bold)),
                 const Spacer(),
                 TextButton(
-                  onPressed: () => setState(() => _filters = const SearchFilters()),
+                  onPressed: () => setState(() {
+                    _filters = const SearchFilters();
+                    _loadFirstPage();
+                  }),
                   child: const Text('Clear All'),
                 ),
               ],
@@ -834,27 +1219,66 @@ class _ItemsPageState extends State<ItemsPage> {
                 FilterChip(
                   label: const Text('Low Stock'),
                   selected: _filters.hasLowStock == true,
-                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLowStock: selected ? true : null)),
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasLowStock: selected ? true : null);
+                    _loadFirstPage();
+                  }),
                 ),
                 FilterChip(
                   label: const Text('Has Lots'),
                   selected: _filters.hasLots == true,
-                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasLots: selected ? true : null)),
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasLots: selected ? true : null);
+                    _loadFirstPage();
+                  }),
                 ),
                 FilterChip(
                   label: const Text('Has Barcode'),
                   selected: _filters.hasBarcode == true,
-                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasBarcode: selected ? true : null)),
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasBarcode: selected ? true : null);
+                    _loadFirstPage();
+                  }),
+                ),
+                FilterChip(
+                  label: const Text('Has Min Qty'),
+                  selected: _filters.hasMinQty == true,
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasMinQty: selected ? true : null);
+                    _loadFirstPage();
+                  }),
                 ),
                 FilterChip(
                   label: const Text('Expiring Soon'),
                   selected: _filters.hasExpiringSoon == true,
-                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null)),
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null);
+                    _loadFirstPage();
+                  }),
+                ),
+                FilterChip(
+                  label: const Text('Stale'),
+                  selected: _filters.hasStale == true,
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasStale: selected ? true : null);
+                    _loadFirstPage();
+                  }),
+                ),
+                FilterChip(
+                  label: const Text('Excess'),
+                  selected: _filters.hasExcess == true,
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasExcess: selected ? true : null);
+                    _loadFirstPage();
+                  }),
                 ),
                 FilterChip(
                   label: const Text('Expired'),
                   selected: _filters.hasExpired == true,
-                  onSelected: (selected) => setState(() => _filters = _filters.copyWith(hasExpired: selected ? true : null)),
+                  onSelected: (selected) => setState(() {
+                    _filters = _filters.copyWith(hasExpired: selected ? true : null);
+                    _loadFirstPage();
+                  }),
                 ),
               ],
             ),
@@ -879,11 +1303,21 @@ class _ItemsPageState extends State<ItemsPage> {
                     children: [
                       const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                       const SizedBox(height: 8),
-                      const Text('No categories found for the current view.', style: TextStyle(color: Colors.grey)),
-                      TextButton.icon(
-                        onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('Reload categories'),
+                      const Text('No categories found for the current page.', style: TextStyle(color: Colors.grey)),
+                      Row(
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Reload (page)'),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton.icon(
+                            onPressed: () => setState(() => _categoriesFuture = _loadCategories(broad: true)),
+                            icon: const Icon(Icons.travel_explore),
+                            label: const Text('Find more (broader sample)'),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
                     ],
@@ -895,6 +1329,21 @@ class _ItemsPageState extends State<ItemsPage> {
                   children: [
                     const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                     const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Reload (page)'),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: () => setState(() => _categoriesFuture = _loadCategories(broad: true)),
+                          icon: const Icon(Icons.travel_explore),
+                          label: const Text('Find more (broader sample)'),
+                        ),
+                      ],
+                    ),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
@@ -911,6 +1360,7 @@ class _ItemsPageState extends State<ItemsPage> {
                                       newCategories.remove(category);
                                     }
                                     _filters = _filters.copyWith(categories: newCategories);
+                                    _loadFirstPage();
                                   });
                                 },
                               ))
@@ -939,6 +1389,7 @@ class _ItemsPageState extends State<ItemsPage> {
                                 final newLocationIds = Set<String>.from(_filters.locationIds);
                                 newLocationIds.remove(locationId);
                                 _filters = _filters.copyWith(locationIds: newLocationIds);
+                                _loadFirstPage();
                               });
                             }
                           },

@@ -13,7 +13,9 @@ Required environment variables (server-side only)
 - ALGOLIA_ADMIN_API_KEY - Algolia Admin API Key (write privileges). MUST remain secret; do not store in Firestore or client code.
 - ALGOLIA_INDEX_NAME - Target Algolia index name
 
-Recommended: For a firebase-only workflow prefer `firebase functions:config:set` to store secrets used by functions (this avoids extra GCP Secret Manager steps). The functions code will read from `process.env` first and fall back to `functions.config()`.
+Environment configuration strategy (migrated away from functions.config())
+- Local/dev: use a `.env` file in `functions/` (see `.env.example`). The code uses `dotenv` and prefers `process.env`.
+- Production: set runtime environment variables in the Firebase Console for the Functions service, or use Secret Manager. The code prefers `process.env` and only falls back to deprecated `functions.config()` if present.
 
 Helper scripts
 - If you still prefer Secret Manager, helper scripts exist at `functions/scripts/provision_secrets.sh` and `functions/scripts/provision_secrets.ps1` — but they are optional. The instructions below show the firebase CLI approach which works without using GCP Secret Manager.
@@ -37,17 +39,18 @@ Deploying to Firebase (manual)
    firebase projects:list
    firebase use <PROJECT_ID>
 
-2. Provision secrets (firebase CLI preferred):
+2. Set production env vars (preferred going forward)
 
-# Set Algolia values into firebase functions config (bash / WSL)
-cd functions
-firebase functions:config:set algolia.app_id="<APP_ID>" algolia.admin_key="<ADMIN_KEY>" algolia.index_name="<INDEX_NAME>"
+Option A: Firebase Console
+- Go to Firebase Console → Build → Functions → Environment variables, add:
+   - ALGOLIA_APP_ID
+   - ALGOLIA_ADMIN_API_KEY
+   - ALGOLIA_INDEX_NAME
 
-# PowerShell (pwsh.exe)
-cd functions
-firebase functions:config:set "algolia.app_id=<APP_ID>" "algolia.admin_key=<ADMIN_KEY>" "algolia.index_name=<INDEX_NAME>"
+Option B: Secret Manager (optional)
+- Use `functions/scripts/provision_secrets.ps1` or `.sh` to provision ALGOLIA_ADMIN_API_KEY to Secret Manager, then reference it in your deployment configuration.
 
-Note: The code will prefer process.env variables if you set them during deploy, otherwise `functions.config().algolia` will be used at runtime.
+Legacy note: `firebase functions:config:set` is deprecated and will stop working after March 2026. This project will still fall back to `functions.config()` if present for backward compatibility, but you should migrate to runtime envs.
 
 3. (Optional) Use runtime env vars
 

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart';
 import 'package:scout/services/label_export_service.dart';
 
 void main() {
@@ -22,7 +23,7 @@ void main() {
     final path = 'build/test-labels/test_label_${DateTime.now().millisecondsSinceEpoch}.pdf';
     final file = File(path);
     await file.writeAsBytes(bytes);
-    print('Wrote test label to: $path');
+  debugPrint('Wrote test label to: $path');
 
     expect(bytes.length, greaterThan(0));
   });

@@ -159,7 +159,7 @@ class _TimeTrackingSettingsPageState extends State<TimeTrackingSettingsPage> {
                     const SizedBox(height: 16),
                     if (_enabled && _urlController.text.trim().isNotEmpty)
                       Card(
-                        color: Theme.of(context).colorScheme.surfaceVariant,
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(

@@ -182,6 +182,24 @@ class SearchResult {
   });
 }
 
+/// Paged search result with a cursor for fetching subsequent pages
+class PagedSearchResult extends SearchResult {
+  /// Last document of the underlying server query (before client-side filters)
+  final QueryDocumentSnapshot? lastDocument;
+
+  /// Whether more pages are likely available from the server query
+  final bool canPage;
+
+  const PagedSearchResult({
+    required super.documents,
+    super.usedServerSideFiltering = false,
+    super.totalServerSideResults = 0,
+    super.searchStrategy,
+    this.lastDocument,
+    this.canPage = false,
+  });
+}
+
 /// Service for handling search operations across different strategies
 class SearchService {
   final FirebaseFirestore _db;
@@ -213,6 +231,207 @@ class SearchService {
           return _searchHybrid(filters, showArchived, sortField, sortDescending, limit, showAllItems);
         }
     }
+  }
+
+  /// Paged search with Firestore cursor support. Falls back gracefully when
+  /// client-side filtering/sorting prevents reliable cursoring.
+  Future<PagedSearchResult> searchItemsPaged({
+    required SearchFilters filters,
+    required bool showArchived,
+    required String sortField,
+    required bool sortDescending,
+    int pageSize = 50,
+    QueryDocumentSnapshot? startAfter,
+    bool showAllItems = false,
+  }) async {
+    // Determine whether we can do reliable server-side paging
+    final multiValueFilters = [
+      if (filters.categories.isNotEmpty) 'categories',
+      if (filters.locationIds.isNotEmpty) 'locationIds',
+      if (filters.grantIds.isNotEmpty) 'grantIds',
+      if (filters.useTypes.isNotEmpty) 'useTypes',
+    ];
+
+    final needsClientSide = filters.query.isNotEmpty ||
+        filters.hasLots != null ||
+        filters.hasExpiringSoon != null ||
+        filters.hasStale != null ||
+        filters.hasExcess != null ||
+        filters.hasExpired != null ||
+        sortField == 'earliestExpiresAt' ||
+        multiValueFilters.length > 1;
+
+    // Build the base query with server-compatible predicates
+    Query query = _db.collection('items');
+
+    if (showArchived) {
+      // Archived can be filtered server-side
+      query = query.where('archived', isEqualTo: true);
+    }
+
+    if (filters.categories.isNotEmpty) {
+      query = query.where('category', whereIn: filters.categories.toList());
+    }
+    if (filters.locationIds.isNotEmpty) {
+      query = query.where('homeLocationId', whereIn: filters.locationIds.toList());
+    }
+    if (filters.grantIds.isNotEmpty) {
+      query = query.where('grantId', whereIn: filters.grantIds.toList());
+    }
+    if (filters.useTypes.isNotEmpty) {
+      query = query.where('useType', whereIn: filters.useTypes.toList());
+    }
+
+    if (filters.qtyRange != null) {
+      final range = filters.qtyRange!;
+      if (range.start > 0) {
+        query = query.where('qtyOnHand', isGreaterThanOrEqualTo: range.start);
+      }
+      if (range.end < double.maxFinite) {
+        query = query.where('qtyOnHand', isLessThanOrEqualTo: range.end);
+      }
+    }
+
+    if (filters.hasLowStock != null) {
+      query = query.where('flagLow', isEqualTo: filters.hasLowStock);
+    }
+
+    // Sorting: if earliestExpiresAt is requested, we cannot reliably order server-side for all docs
+    if (sortField != 'earliestExpiresAt') {
+      query = query.orderBy(sortField, descending: sortDescending);
+    }
+
+    // If we have a cursor and the query is ordered, apply startAfter
+    if (startAfter != null && sortField != 'earliestExpiresAt') {
+      query = query.startAfterDocument(startAfter);
+    }
+
+    // If client-side filtering is required or we need to exclude archived/zero-qty
+    // items (when not showing archived and not showAllItems), we over-fetch until
+    // we can satisfy a page or run out of results.
+    final requiresClientFilteringForView = !showArchived && !showAllItems;
+    final applyClientFilters = needsClientSide || requiresClientFilteringForView;
+
+    if (!applyClientFilters) {
+      // Pure server-side page
+      final snap = await query.limit(pageSize).get();
+      final docs = snap.docs;
+      return PagedSearchResult(
+        documents: docs,
+        usedServerSideFiltering: true,
+        totalServerSideResults: docs.length,
+        lastDocument: docs.isNotEmpty ? docs.last : null,
+        canPage: docs.length == pageSize,
+        searchStrategy: 'server-side paged',
+      );
+    }
+
+    // Over-fetch loop: fetch up to X times until we have enough filtered docs
+    const int overfetchFactor = 3; // fetch 3x pageSize per iteration
+    const int maxIterations = 5;   // safety cap
+    var accumulated = <QueryDocumentSnapshot>[];
+    QueryDocumentSnapshot? lastServerDoc = startAfter;
+    var iterations = 0;
+    var hadShortPage = false;
+
+    while (accumulated.length < pageSize && iterations < maxIterations) {
+      iterations++;
+      var q = query.limit(pageSize * overfetchFactor);
+      if (lastServerDoc != null && sortField != 'earliestExpiresAt') {
+        q = q.startAfterDocument(lastServerDoc);
+      }
+      final snap = await q.get();
+      final serverDocs = snap.docs;
+      if (serverDocs.isEmpty) {
+        break;
+      }
+
+      // Apply client-side filters
+      for (final doc in serverDocs) {
+        final data = doc.data() as Map<String, dynamic>;
+
+        // View filters for active view
+        if (!showArchived && !showAllItems) {
+          final isArchived = (data['archived'] ?? false) as bool;
+          final qty = (data['qtyOnHand'] ?? 0) as num;
+          if (isArchived || qty <= 0) continue;
+        }
+
+        // Text search
+        if (filters.query.isNotEmpty) {
+          final name = (data['name'] ?? '') as String;
+          final barcode = (data['barcode'] ?? '') as String;
+          final ql = filters.query.toLowerCase();
+          if (!name.toLowerCase().contains(ql) && !barcode.toLowerCase().contains(ql)) continue;
+        }
+
+        // Client-only flags
+        if (filters.hasLots != null) {
+          final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
+          if (hasLots != filters.hasLots) continue;
+        }
+        if (filters.hasBarcode != null) {
+          final barcode = (data['barcode'] ?? '') as String;
+          final has = barcode.isNotEmpty;
+          if (has != filters.hasBarcode) continue;
+        }
+        if (filters.hasMinQty != null) {
+          final minQty = (data['minQty'] ?? 0) as num;
+          final has = minQty > 0;
+          if (has != filters.hasMinQty) continue;
+        }
+        if (filters.hasExpiringSoon != null) {
+          final flag = (data['flagExpiringSoon'] ?? false) as bool;
+          if (flag != filters.hasExpiringSoon) continue;
+        }
+        if (filters.hasStale != null) {
+          final flag = (data['flagStale'] ?? false) as bool;
+          if (flag != filters.hasStale) continue;
+        }
+        if (filters.hasExcess != null) {
+          final flag = (data['flagExcess'] ?? false) as bool;
+          if (flag != filters.hasExcess) continue;
+        }
+        if (filters.hasExpired != null) {
+          final flag = (data['flagExpired'] ?? false) as bool;
+          if (flag != filters.hasExpired) continue;
+        }
+
+        accumulated.add(doc);
+        if (accumulated.length >= pageSize) break;
+      }
+
+      lastServerDoc = serverDocs.last;
+      if (serverDocs.length < pageSize * overfetchFactor) {
+        hadShortPage = true;
+        break; // no more data from server
+      }
+    }
+
+    // For earliestExpiresAt sorting we need to sort client-side
+    if (sortField == 'earliestExpiresAt') {
+      accumulated.sort((a, b) {
+        final aData = a.data() as Map<String, dynamic>;
+        final bData = b.data() as Map<String, dynamic>;
+        final aExpiration = aData['earliestExpiresAt'] != null ? (aData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        final bExpiration = bData['earliestExpiresAt'] != null ? (bData['earliestExpiresAt'] as Timestamp).toDate() : null;
+        final aSortDate = aExpiration ?? DateTime(9999);
+        final bSortDate = bExpiration ?? DateTime(9999);
+        final comparison = aSortDate.compareTo(bSortDate);
+        return sortDescending ? -comparison : comparison;
+      });
+    }
+
+    final pageDocs = accumulated.take(pageSize).toList();
+    final canPage = !hadShortPage && pageDocs.length == pageSize && lastServerDoc != null;
+    return PagedSearchResult(
+      documents: pageDocs,
+      usedServerSideFiltering: !needsClientSide,
+      totalServerSideResults: pageDocs.length,
+      lastDocument: lastServerDoc,
+      canPage: canPage,
+      searchStrategy: 'hybrid paged',
+    );
   }
 
   /// Hybrid search: server-side where possible, client-side for complex queries

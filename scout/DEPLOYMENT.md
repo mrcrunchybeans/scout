@@ -126,3 +126,20 @@ You can integrate this into your development workflow by:
    ```bash
    alias scout-deploy='cd /path/to/scout && ./deploy.ps1'
    ```
+
+## Cloud Functions deployment and dashboard counts
+
+The dashboard uses aggregated counts stored in `meta/dashboard_stats` and maintained by Cloud Functions.
+
+Steps after updating Functions:
+
+1. Deploy Functions from the `functions/` folder.
+   - Ensure you are logged in to Firebase and the project is selected.
+   - Run a deploy from the functions workspace.
+2. From the app, open the Dashboard menu and run "Recalc Dashboard Counts".
+   - This triggers a callable to recompute counts across all items.
+   - The tiles and quick links will update once the `meta/dashboard_stats` document is populated.
+
+Notes:
+
+- Incremental updates occur on item writes; the manual recompute is useful after bulk changes or initial deployment.

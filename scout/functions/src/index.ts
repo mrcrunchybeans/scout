@@ -1,4 +1,6 @@
 import * as admin from "firebase-admin";
+// Load environment variables from .env when present (for local/dev)
+import "dotenv/config";
 import {
   onDocumentCreated,
   onDocumentWritten,
@@ -136,57 +138,77 @@ function daysSince(d?: admin.firestore.Timestamp | null, now = new Date()) {
  * @return {Promise<void>} Resolves when the item aggregates have been written.
  */
 async function recomputeItemAggregates(itemId: string) {
-  const itemRef = db.collection("items").doc(itemId);
-  const [itemSnap, lotsSnap] = await Promise.all([
-    itemRef.get(),
-    itemRef.collection("lots").get(),
-  ]);
+  try {
+    console.error(`Recomputing aggregates for item ${itemId}`);
+    const itemRef = db.collection("items").doc(itemId);
+    const [itemSnap, lotsSnap] = await Promise.all([
+      itemRef.get(),
+      itemRef.collection("lots").get(),
+    ]);
 
-  if (!itemSnap.exists) return;
-
-  const item = itemSnap.data() || {};
-  const minQty = Number(item.minQty || 0);
-  const lastUsedAt = item.lastUsedAt as
-    admin.firestore.Timestamp | null | undefined;
-
-  // Sum remaining from lots & compute earliest expiry
-  let qtyOnHand = 0;
-  let earliest: Date | null = null;
-
-  lotsSnap.forEach((doc) => {
-    const lot = doc.data() as Lot;
-    const rem = Number(lot.qtyRemaining || 0);
-    qtyOnHand += rem;
-
-    const eff = effectiveLotExpiry(lot);
-    if (eff) {
-      if (!earliest || eff < earliest) earliest = eff;
+    if (!itemSnap.exists) {
+      console.error(`Item ${itemId} does not exist`);
+      return;
     }
-  });
 
-  // Flags
-  const now = new Date();
-  const flagLow = minQty > 0 && qtyOnHand <= minQty;
-  const flagExcess = minQty > 0 && qtyOnHand >= EXCESS_FACTOR * minQty;
-  const flagStale = daysSince(lastUsedAt, now) >= STALE_DAYS;
-  const flagExpiringSoon = isExpiringSoon(earliest, now);
-  const flagExpired = earliest ? (earliest as Date).getTime() < now.getTime() : false;
+    const item = itemSnap.data() || {};
+    const minQty = Number(item.minQty || 0);
+    const lastUsedAt = item.lastUsedAt as
+      admin.firestore.Timestamp | null | undefined;
 
-  // Write back (merge)
-  const patch: Record<string, any> = {
-    qtyOnHand,
-    flagLow,
-    flagExcess,
-    flagStale,
-    flagExpiringSoon,
-    flagExpired,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    earliestExpiresAt: earliest ?
-      admin.firestore.Timestamp.fromDate(earliest) :
-      null,
-  };
+    // Sum remaining from lots & compute earliest expiry
+    let qtyOnHand = Number(item.qtyOnHand || 0); // Preserve current qtyOnHand
+    let earliest: Date | null = null;
 
-  await itemRef.set(patch, {merge: true});
+    console.error(`Item ${itemId}: has ${lotsSnap.size} lots, current qtyOnHand: ${qtyOnHand}, minQty: ${minQty}`);
+
+    // Only recalculate qtyOnHand from lots if the item actually has lots
+    if (!lotsSnap.empty) {
+      qtyOnHand = 0; // Reset to recalculate from lots
+      lotsSnap.forEach((doc) => {
+        const lot = doc.data() as Lot;
+        const rem = Number(lot.qtyRemaining || 0);
+        qtyOnHand += rem;
+
+        const eff = effectiveLotExpiry(lot);
+        if (eff) {
+          if (!earliest || eff < earliest) earliest = eff;
+        }
+      });
+      console.error(`Item ${itemId}: recalculated qtyOnHand from lots: ${qtyOnHand}`);
+    } else {
+      console.error(`Item ${itemId}: preserving qtyOnHand: ${qtyOnHand}`);
+    }
+
+    // Flags
+    const now = new Date();
+    const flagLow = minQty > 0 && qtyOnHand <= minQty;
+    const flagExcess = minQty > 0 && qtyOnHand >= EXCESS_FACTOR * minQty;
+    const flagStale = daysSince(lastUsedAt, now) >= STALE_DAYS;
+    const flagExpiringSoon = isExpiringSoon(earliest, now);
+    const flagExpired = earliest ? (earliest as Date).getTime() < now.getTime() : false;
+
+    console.error(`Item ${itemId}: flags - low: ${flagLow}, stale: ${flagStale}, expiringSoon: ${flagExpiringSoon}, expired: ${flagExpired}`);
+
+    // Write back (merge)
+    const patch: Record<string, any> = {
+      qtyOnHand,
+      flagLow,
+      flagExcess,
+      flagStale,
+      flagExpiringSoon,
+      flagExpired,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      earliestExpiresAt: earliest ?
+        admin.firestore.Timestamp.fromDate(earliest) :
+        null,
+    };
+
+    await itemRef.set(patch, {merge: true});
+    console.error(`Item ${itemId}: updated successfully`);
+  } catch (error) {
+    console.error(`Error recomputing aggregates for item ${itemId}:`, error);
+  }
 }
 
 // ---------- Backup Configuration ----------
@@ -364,13 +386,18 @@ export const onLotWrite = onDocumentWritten(
   "items/{itemId}/lots/{lotId}",
   async (event) => {
     const itemId = event.params.itemId as string;
-    // event.data not needed, we recompute from scratch
-    await recomputeItemAggregates(itemId);
-    // Also sync item to Algolia (best-effort)
+    console.error(`onLotWrite triggered for item ${itemId}`);
     try {
-      await syncItemToAlgolia(itemId);
-    } catch (e) {
-      console.error("Algolia sync failed for item", itemId, e);
+      // event.data not needed, we recompute from scratch
+      await recomputeItemAggregates(itemId);
+      // Also sync item to Algolia (best-effort)
+      try {
+        await syncItemToAlgolia(itemId);
+      } catch (e) {
+        console.error("Algolia sync failed for item", itemId, e);
+      }
+    } catch (error) {
+      console.error(`Error in onLotWrite for item ${itemId}:`, error);
     }
   }
 );
@@ -388,7 +415,7 @@ export const onLotWrite = onDocumentWritten(
 async function syncItemToAlgolia(itemId: string) {
   try {
     const client = getAlgoliaClient();
-    const indexName = process.env.ALGOLIA_INDEX_NAME;
+    const indexName = process.env.ALGOLIA_INDEX_NAME || (functions && (functions.config as any)?.algolia?.index_name);
     if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
 
     const doc = await db.collection("items").doc(itemId).get();
@@ -452,7 +479,7 @@ export const triggerFullReindex = onCall(async (req) => {
   }
 
   const client = getAlgoliaClient();
-  const indexName = process.env.ALGOLIA_INDEX_NAME;
+  const indexName = process.env.ALGOLIA_INDEX_NAME || (functions && (functions.config as any)?.algolia?.index_name);
   if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
 
   const index = client.initIndex(indexName);
@@ -546,7 +573,7 @@ export const configureAlgoliaIndex = onCall(async (req) => {
   }
 
   const client = getAlgoliaClient();
-  const indexName = process.env.ALGOLIA_INDEX_NAME;
+  const indexName = process.env.ALGOLIA_INDEX_NAME || (functions && (functions.config as any)?.algolia?.index_name);
   if (!indexName) throw new Error("ALGOLIA_INDEX_NAME not configured");
   const index = client.initIndex(indexName);
 
@@ -602,4 +629,118 @@ export const nightlyExpirySweep = onSchedule("every day 02:15", async () => {
     last = snap.docs[snap.docs.length - 1];
     if (snap.size < PAGE) break;
   }
+});
+
+// --- Dashboard counts aggregation ---
+
+/**
+ * Incrementally maintain meta/dashboard_stats counts when an item changes.
+ * Counts tracked (archived = false only): low, expiring, stale, expired.
+ */
+export const onItemWriteUpdateDashboard = onDocumentWritten(
+  "items/{itemId}",
+  async (event) => {
+    const before = event.data?.before?.data() as Record<string, any> | undefined;
+    const after = event.data?.after?.data() as Record<string, any> | undefined;
+
+    // Helper to check eligibility (flag true and not archived)
+    const eligible = (d: Record<string, any> | undefined, flag: string) => {
+      if (!d) return false;
+      const f = Boolean(d[flag]);
+      const archived = Boolean(d["archived"]);
+      return f && !archived;
+    };
+
+    const flags = [
+      {key: "flagLow", field: "low"},
+      {key: "flagExpiringSoon", field: "expiring"},
+      {key: "flagStale", field: "stale"},
+      {key: "flagExpired", field: "expired"},
+    ] as const;
+
+    // Compute deltas per flag
+    const deltas: Record<string, number> = {};
+    for (const f of flags) {
+      const was = eligible(before, f.key);
+      const now = eligible(after, f.key);
+      if (was === now) continue;
+      deltas[f.field] = (deltas[f.field] || 0) + (now ? 1 : -1);
+    }
+
+    if (Object.keys(deltas).length === 0) {
+      return; // nothing to update
+    }
+
+    const statsRef = db.collection("meta").doc("dashboard_stats");
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(statsRef);
+      // ensure fields exist
+      const base = snap.exists ? snap.data() || {} : {};
+      const update: Record<string, any> = {};
+      for (const [k, v] of Object.entries(deltas)) {
+        // use increment to avoid races
+        update[k] = admin.firestore.FieldValue.increment(v as number);
+      }
+      update["updatedAt"] = admin.firestore.FieldValue.serverTimestamp();
+
+      if (!snap.exists) {
+        // seed missing fields to zero
+        const seed: Record<string, any> = {low: 0, expiring: 0, stale: 0, expired: 0, ...base};
+        tx.set(statsRef, {...seed, ...update}, {merge: true});
+      } else {
+        tx.set(statsRef, update, {merge: true});
+      }
+    });
+  }
+);
+
+/**
+ * Nightly reconciliation job to fully recompute dashboard counts from items.
+ * Ensures counters remain accurate if any incremental updates were missed.
+ */
+async function recomputeDashboardStats() {
+  const PAGE = 1000;
+  let last: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+
+  const totals = {low: 0, expiring: 0, stale: 0, expired: 0};
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let q = db.collection("items").where("archived", "==", false).orderBy("updatedAt", "desc").limit(PAGE);
+    if (last) q = q.startAfter(last);
+    const snap = await q.get();
+    if (snap.empty) break;
+
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      if (d.flagLow) totals.low++;
+      if (d.flagExpiringSoon) totals.expiring++;
+      if (d.flagStale) totals.stale++;
+      if (d.flagExpired) totals.expired++;
+    }
+
+    last = snap.docs[snap.docs.length - 1];
+    if (snap.size < PAGE) break;
+  }
+
+  await db.collection("meta").doc("dashboard_stats").set({
+    ...totals,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastRecalculatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+}
+
+export const nightlyRecalcDashboardStats = onSchedule("every day 02:45", async () => {
+  await recomputeDashboardStats();
+});
+
+import {onCall as onCallHttps} from "firebase-functions/v2/https";
+
+// Callable to force a full dashboard stats recompute (guard with basic auth)
+export const recalcDashboardStatsManual = onCallHttps(async (req) => {
+  if (!req.auth) {
+    throw new Error("unauthenticated");
+  }
+  await recomputeDashboardStats();
+  return {success: true};
 });

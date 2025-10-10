@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
@@ -118,27 +119,27 @@ class _DashboardPageState extends State<DashboardPage> {
     final db = FirebaseFirestore.instance;
     final colorScheme = Theme.of(context).colorScheme;
 
-    // --- Server-side flag queries ---
-    final lowQ = db
-        .collection('items')
-        .where('flagLow', isEqualTo: true)
-        .where('archived', isEqualTo: false);
+  // --- Server-side flag queries for lists ---
+  final lowQ = db
+    .collection('items')
+    .where('flagLow', isEqualTo: true)
+    .where('archived', isEqualTo: false);
 
-    final expiringQ = db
-        .collection('items')
-        .where('flagExpiringSoon', isEqualTo: true)
-        .where('archived', isEqualTo: false)
-        .orderBy('earliestExpiresAt');
+  final expiringQ = db
+    .collection('items')
+    .where('flagExpiringSoon', isEqualTo: true)
+    .where('archived', isEqualTo: false)
+    .orderBy('earliestExpiresAt');
 
-    final staleQ = db
-        .collection('items')
-        .where('flagStale', isEqualTo: true)
-        .where('archived', isEqualTo: false);
+  final staleQ = db
+    .collection('items')
+    .where('flagStale', isEqualTo: true)
+    .where('archived', isEqualTo: false);
 
-    final expiredQ = db
-        .collection('items')
-        .where('flagExpired', isEqualTo: true)
-        .where('archived', isEqualTo: false);
+  final expiredQ = db
+    .collection('items')
+    .where('flagExpired', isEqualTo: true)
+    .where('archived', isEqualTo: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -161,6 +162,30 @@ class _DashboardPageState extends State<DashboardPage> {
           final ok = await AdminPin.ensure(ctx); // shows PIN dialog if needed
           if (!ctx.mounted || !ok) return;
           Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
+        } else if (v == 'recalc-stats') {
+          final ok = await AdminPin.ensure(ctx);
+          if (!ctx.mounted || !ok) return;
+          final confirm = await showDialog<bool>(
+            context: ctx,
+            builder: (_) => AlertDialog(
+              title: const Text('Recalculate Dashboard Counts?'),
+              content: const Text('This recomputes low/expiring/stale/expired counts from all items.'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Recalculate')),
+              ],
+            ),
+          );
+          if (confirm == true) {
+            try {
+              await FirebaseFunctions.instance.httpsCallable('recalcDashboardStatsManual')();
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Recalculation started')));
+            } catch (e) {
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
+            }
+          }
         } else if (v == 'theme') {
           main.ThemeModeNotifier.instance.toggle();
         }
@@ -169,6 +194,8 @@ class _DashboardPageState extends State<DashboardPage> {
         const PopupMenuItem(value: 'theme', child: Text('Toggle Theme')),
         const PopupMenuItem(value: 'reports', child: Text('Usage Reports')),
         const PopupMenuItem(value: 'admin', child: Text('Admin / Config')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'recalc-stats', child: Text('Recalc Dashboard Counts')),
       ],
     ),
   ],
@@ -304,30 +331,90 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
           ),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _StatusCard(
-                  title: 'Low Stock',
-                  count: 0, // Will be populated by stream
-                  icon: Icons.arrow_downward,
-                  color: colorScheme.error,
-                  stream: lowQ.snapshots(),
-                  filterType: 'low',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _StatusCard(
-                  title: 'Expiring Soon',
-                  count: 0,
-                  icon: Icons.schedule,
-                  color: colorScheme.secondary,
-                  stream: expiringQ.snapshots(),
-                  filterType: 'expiring',
-                ),
-              ),
-            ],
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: db.collection('meta').doc('dashboard_stats').snapshots(),
+            builder: (context, statsSnap) {
+              final stats = statsSnap.data?.data();
+              final lowCount = (stats?['low'] as num?)?.toInt() ?? 0;
+              final expiringCount = (stats?['expiring'] as num?)?.toInt() ?? 0;
+              final staleCount = (stats?['stale'] as num?)?.toInt() ?? 0;
+              final expiredCount = (stats?['expired'] as num?)?.toInt() ?? 0;
+              final updatedAtTs = stats?['updatedAt'];
+              DateTime? updatedAt;
+              if (updatedAtTs is Timestamp) {
+                updatedAt = updatedAtTs.toDate();
+              }
+              String updatedLabel() {
+                if (updatedAt == null) return 'Updated: —';
+                final dt = updatedAt.toLocal();
+                String two(int n) => n.toString().padLeft(2, '0');
+                final y = dt.year.toString();
+                final m = two(dt.month);
+                final d = two(dt.day);
+                final hh = two(dt.hour);
+                final mm = two(dt.minute);
+                return 'Updated at $y-$m-$d $hh:$mm';
+              }
+              return Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatusCardStatic(
+                          title: 'Low Stock',
+                          count: lowCount,
+                          icon: Icons.arrow_downward,
+                          color: colorScheme.error,
+                          filterType: 'low',
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _StatusCardStatic(
+                          title: 'Expiring Soon',
+                          count: expiringCount,
+                          icon: Icons.schedule,
+                          color: colorScheme.secondary,
+                          filterType: 'expiring',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatusCardStatic(
+                          title: 'Stale',
+                          count: staleCount,
+                          icon: Icons.inbox_outlined,
+                          color: colorScheme.tertiary,
+                          filterType: 'stale',
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _StatusCardStatic(
+                          title: 'Expired',
+                          count: expiredCount,
+                          icon: Icons.warning,
+                          color: Colors.red.shade700,
+                          filterType: 'expired',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      updatedLabel(),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 8),
           Row(
@@ -372,6 +459,8 @@ class _DashboardPageState extends State<DashboardPage> {
             icon: Icons.arrow_downward,
             color: colorScheme.error,
             query: lowQ,
+            maxItems: 10,
+            bucketParam: 'low',
           ),
           const SizedBox(height: 8),
           _BucketSection(
@@ -380,6 +469,8 @@ class _DashboardPageState extends State<DashboardPage> {
             color: colorScheme.secondary,
             query: expiringQ,
             showEarliestExpiry: true,
+            maxItems: 10,
+            bucketParam: 'expiring',
           ),
           const SizedBox(height: 8),
           _BucketSection(
@@ -388,6 +479,8 @@ class _DashboardPageState extends State<DashboardPage> {
             color: colorScheme.tertiary,
             query: staleQ,
             showLastUsed: true,
+            maxItems: 10,
+            bucketParam: 'stale',
           ),
 
           const SizedBox(height: 40),
@@ -567,6 +660,8 @@ class _BucketSection extends StatelessWidget {
   final Query<Map<String, dynamic>> query;
   final bool showEarliestExpiry;
   final bool showLastUsed;
+  final int? maxItems; // limit visible rows for performance
+  final String? bucketParam; // optional quick-filter param to pass to items
 
   const _BucketSection({
     required this.title,
@@ -575,6 +670,8 @@ class _BucketSection extends StatelessWidget {
     required this.query,
     this.showEarliestExpiry = false,
     this.showLastUsed = false,
+    this.maxItems,
+    this.bucketParam,
   });
 
   @override
@@ -604,6 +701,8 @@ class _BucketSection extends StatelessWidget {
             );
           }
           final docs = snap.data?.docs ?? [];
+          final int cap = maxItems ?? docs.length;
+          final visibleDocs = docs.take(cap).toList();
 
           return ExpansionTile(
             leading: Icon(icon, color: color),
@@ -611,12 +710,18 @@ class _BucketSection extends StatelessWidget {
             subtitle: Text('${docs.length} item(s)'),
             children: [
               if (docs.isEmpty) const ListTile(title: Text('Nothing here — nice!')),
-              for (final d in docs)
+              for (final d in visibleDocs)
                 _ItemRow(
                   id: d.id,
                   data: d.data(),
                   showEarliestExpiry: showEarliestExpiry,
                   showLastUsed: showLastUsed,
+                ),
+              if (docs.length > (maxItems ?? docs.length))
+                ListTile(
+                  title: const Text('See all'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.go(bucketParam == null ? '/items' : '/items?bucket=$bucketParam'),
                 ),
             ],
           );
@@ -749,5 +854,68 @@ class _ItemRow extends StatelessWidget {
         );
       }
     }
+  }
+}
+
+// Static status card that displays a provided count (from aggregated stats)
+class _StatusCardStatic extends StatelessWidget {
+  final String title;
+  final int count;
+  final IconData icon;
+  final Color color;
+  final String filterType;
+
+  const _StatusCardStatic({
+    required this.title,
+    required this.count,
+    required this.icon,
+    required this.color,
+    required this.filterType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => context.go('/items?bucket=$filterType'),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: colorScheme.surface,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 32, color: color),
+            const SizedBox(height: 8),
+            Text(
+              count.toString(),
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              title,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
