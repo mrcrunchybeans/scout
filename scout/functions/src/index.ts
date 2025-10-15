@@ -25,10 +25,36 @@ function getAlgoliaClient(): ReturnType<typeof algoliasearch> {
   return algoliaClient;
 }
 
+function getDeveloperPassword(): string | null {
+  const env = process.env.DEV_PASSWORD;
+  if (env && env.length > 0) return env;
+  const fallback = (functions && (functions.config as any)?.admin?.dev_password) as string | undefined;
+  if (fallback && fallback.length > 0) return fallback;
+  return null;
+}
+
+function assertDeveloperPassword(password: string | undefined) {
+  const expected = getDeveloperPassword();
+  if (!expected) {
+    throw new HttpsError("failed-precondition", "Developer password is not configured on the server.");
+  }
+  if (!password || password !== expected) {
+    throw new HttpsError("permission-denied", "Invalid developer password.");
+  }
+}
+
 // ---------- Tunables ----------
 const STALE_DAYS = 45; // no use for ≥ N days
 const EXCESS_FACTOR = 3; // qtyOnHand ≥ N * minQty
 const EXPIRING_SOON_DAYS = 14; // earliest lot expiration within N days
+const WIPE_BATCH_SIZE = 400;
+
+const COLLECTIONS_TO_WIPE: Array<{collection: string; subcollections?: string[]}> = [
+  {collection: "items", subcollections: ["lots"]},
+  {collection: "sessions"},
+  {collection: "cartSessions"},
+  {collection: "usage_logs"},
+];
 
 // ---------- Helpers ----------
 type Lot = {
@@ -81,6 +107,40 @@ function convertFirestoreTypes(obj: any): any {
     result[key] = convertFirestoreTypes(value);
   }
   return result;
+}
+
+async function deleteSubcollectionDocs(
+  collectionRef: admin.firestore.CollectionReference,
+  batchSize = WIPE_BATCH_SIZE
+) {
+  while (true) {
+    const snapshot = await collectionRef.limit(batchSize).get();
+    if (snapshot.empty) break;
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+}
+
+async function deleteCollectionDocs(
+  collectionPath: string,
+  subcollections: string[] = [],
+  batchSize = WIPE_BATCH_SIZE
+) {
+  const collectionRef = db.collection(collectionPath);
+  while (true) {
+    const snapshot = await collectionRef.limit(batchSize).get();
+    if (snapshot.empty) break;
+
+    const batch = db.batch();
+    for (const doc of snapshot.docs) {
+      for (const sub of subcollections) {
+        await deleteSubcollectionDocs(doc.ref.collection(sub), batchSize);
+      }
+      batch.delete(doc.ref);
+    }
+    await batch.commit();
+  }
 }
 
 /**
@@ -305,7 +365,7 @@ async function cleanupOldBackups() {
 }
 
 // Manual backup trigger (callable function)
-import {onCall} from "firebase-functions/v2/https";
+import {onCall, HttpsError} from "firebase-functions/v2/https";
 
 export const createManualBackup = onCall(async (request) => {
   // Note: Authentication check removed - protected by admin PIN in client
@@ -352,6 +412,50 @@ export const createManualBackup = onCall(async (request) => {
     console.error("Manual backup failed:", error);
     throw new Error(`Backup failed: ${error}`);
   }
+});
+
+export const wipeInventoryData = onCall({
+  region: "us-central1",
+  timeoutSeconds: 540,
+}, async (request) => {
+  const password = (request.data?.password as string | undefined)?.trim();
+  assertDeveloperPassword(password);
+
+  const cleared: string[] = [];
+  for (const entry of COLLECTIONS_TO_WIPE) {
+    await deleteCollectionDocs(entry.collection, entry.subcollections ?? []);
+    cleared.push(entry.collection);
+  }
+
+  // Reset aggregated dashboard stats to zero so UI reflects wiped state
+  try {
+    await db.collection("meta").doc("dashboard_stats").set({
+      low: 0,
+      expiring: 0,
+      stale: 0,
+      expired: 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  } catch (error) {
+    console.error("Failed to reset dashboard stats after wipe:", error);
+  }
+
+  // Clear Algolia index if configured
+  try {
+    const indexName = process.env.ALGOLIA_INDEX_NAME || (functions && (functions.config as any)?.algolia?.index_name);
+    if (indexName) {
+      await getAlgoliaClient().initIndex(indexName).clearObjects();
+    } else {
+      console.warn("ALGOLIA_INDEX_NAME not configured; skipping Algolia clear during wipe.");
+    }
+  } catch (error) {
+    console.error("Failed to clear Algolia index during wipe:", error);
+  }
+
+  return {
+    success: true,
+    cleared,
+  };
 });
 // NOTE: Client adjusts lots, server recomputes totals.
 export const onUsageLogCreate = onDocumentCreated(

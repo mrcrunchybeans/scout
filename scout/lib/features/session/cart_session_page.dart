@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:scout/widgets/scanner_sheet.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 
 import '../../models/option_item.dart';
@@ -11,6 +14,7 @@ import '../../widgets/usb_wedge_scanner.dart';
 import 'cart_models.dart';
 import '../../data/product_enrichment_service.dart';
 import '../../data/lookups_service.dart';
+import '../../services/time_tracking_service.dart';
 
 
 
@@ -30,6 +34,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
   final _lookups = LookupsService();
   final _barcodeC = TextEditingController();
   final _barcodeFocus = FocusNode();
+  final _locationC = TextEditingController();
+  final _notesC = TextEditingController();
   final Map<String, String> _grantNames = {};
   final Map<String, String> _intToGrant = {};
   List<OptionItem>? _interventions;
@@ -45,11 +51,15 @@ class _CartSessionPageState extends State<CartSessionPage> {
   bool _busy = false;
   bool _usbCaptureOn = false;
   final List<CartLine> _lines = [];
+  final Map<String, bool> _overAllocatedLines = {};
+
+  bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
 
   @override
   void initState() {
     super.initState();
     _sessionId = widget.sessionId;
+    _syncFormControllers();
     _loadInterventions();
     if (_sessionId != null) {
       _loadSessionData();
@@ -83,15 +93,20 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
       });
 
+      _syncFormControllers();
+
       // Load lines
       final linesQuery = await _db.collection('cart_sessions').doc(_sessionId).collection('lines').get();
       if (!mounted) return;
 
       setState(() {
         _lines.clear();
+        _overAllocatedLines.clear();
         for (final doc in linesQuery.docs) {
           final lineData = doc.data();
-          _lines.add(CartLine.fromMap(lineData));
+          final line = CartLine.fromMap(lineData);
+          _lines.add(line);
+          _overAllocatedLines[_lineId(line)] = false;
         }
       });
     } catch (e) {
@@ -155,10 +170,29 @@ class _CartSessionPageState extends State<CartSessionPage> {
     });
   }
 
+  void _syncFormControllers() {
+    _locationC
+      ..text = _locationText
+      ..selection = TextSelection.collapsed(offset: _locationText.length);
+    _notesC
+      ..text = _notes
+      ..selection = TextSelection.collapsed(offset: _notes.length);
+  }
+
+  String _formatQty(num value) {
+    if (value % 1 == 0) {
+      return value.toInt().toString();
+    }
+    final formatted = value.toStringAsFixed(2);
+    return formatted.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  }
+
   @override
   void dispose() {
     _barcodeC.dispose();
     _barcodeFocus.dispose();
+    _locationC.dispose();
+    _notesC.dispose();
     super.dispose();
   }
 
@@ -245,34 +279,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
 
       // FEFO lot (prefer first with qtyRemaining > 0)
-      String? lotId;
-      final lots = await _db.collection('items').doc(d.id).collection('lots').get();
-      if (lots.docs.isNotEmpty) {
-        final list = lots.docs.toList()
-          ..sort((a, b) {
-            final ta = a.data()['expiresAt'];
-            final tb = b.data()['expiresAt'];
-            final ea = (ta is Timestamp) ? ta.toDate() : null;
-            final eb = (tb is Timestamp) ? tb.toDate() : null;
-            if (ea == null && eb == null) return 0;
-            if (ea == null) return 1;
-            if (eb == null) return -1;
-            return ea.compareTo(eb);
-          });
-        
-        // Find first lot with qtyRemaining > 0, or use first lot if none found
-        QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
-        for (final lot in list) {
-          final q = lot.data()['qtyRemaining'];
-          if ((q is num) && q > 0) {
-            withQty = lot;
-            break;
-          }
-        }
-        // If no lot with qty > 0 found, use the first lot
-        withQty ??= list.first;
-        lotId = withQty.id;
-      }
+      final lotId = await _fefoLotIdForItem(d.id);
 
       _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
       if (!ctx.mounted) return;
@@ -298,11 +305,68 @@ class _CartSessionPageState extends State<CartSessionPage> {
     await _handleCode(code);
   }
 
+  Future<bool> _openQuickSearch({String? initialQuery}) async {
+    if (!mounted) return false;
+    final result = await showModalBottomSheet<dynamic>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _QuickItemSearchSheet(initialQuery: initialQuery),
+    );
+
+    if (result == null) return false;
+
+    final List<Map<String, dynamic>> entries;
+    if (result is Map<String, dynamic>) {
+      entries = [result];
+    } else if (result is List) {
+      entries = result.cast<Map<String, dynamic>>();
+    } else {
+      return false;
+    }
+
+    int addedCount = 0;
+    final Set<String> itemNames = {};
+
+    for (final entry in entries) {
+      final itemId = entry['itemId'] as String;
+      final itemName = entry['itemName'] as String;
+      final baseUnit = entry['baseUnit'] as String;
+      final autoAssignLot = entry['autoAssignLot'] == true;
+      String? lotId = entry['lotId'] as String?;
+
+      if (autoAssignLot) {
+        lotId = await _fefoLotIdForItem(itemId);
+        if (!mounted) return addedCount > 0;
+      }
+
+      _addOrBumpLine(itemId: itemId, itemName: itemName, baseUnit: baseUnit, lotId: lotId);
+      addedCount++;
+      itemNames.add(itemName);
+    }
+
+    if (!mounted || addedCount == 0) return addedCount > 0;
+
+    final message = addedCount == 1
+        ? 'Added: ${itemNames.first}'
+        : 'Added $addedCount items';
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    _refocusQuickAdd();
+    return true;
+  }
+
   /// Quick add by typing/pasting a barcode (calls unified handler)
   Future<void> _addByBarcode() async {
     final raw = _barcodeC.text;
     final normalized = raw.replaceAll(RegExp(r'\s+'), '').trim(); // keep non-digits if present
     if (normalized.isEmpty) return;
+    if (_looksLikeItemName(normalized)) {
+      final added = await _openQuickSearch(initialQuery: raw.trim());
+      if (!mounted) return;
+      if (added) {
+        _barcodeC.clear();
+        return;
+      }
+    }
     await _handleCode(normalized);
     if (!mounted) return;
     _barcodeC.clear();
@@ -337,6 +401,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         );
       } else {
         _lines.add(candidate);
+        _overAllocatedLines[id] = false;
       }
     });
   }
@@ -437,11 +502,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
   Future<void> _saveDraft() async {
     setState(() => _busy = true);
     try {
+      _locationText = _locationC.text;
+      _notes = _notesC.text;
+
       final sref = _sessionId == null
           ? _db.collection('cart_sessions').doc()
           : _db.collection('cart_sessions').doc(_sessionId);
 
       final isNew = _sessionId == null;
+      final now = DateTime.now();
+      final sessionDate = _customStartDate ?? DateTime(now.year, now.month, now.day);
       final basePayload = {
         'interventionId': _interventionId,
         'interventionName': _interventionName,
@@ -449,11 +519,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'locationText': _locationText.trim().isEmpty ? null : _locationText.trim(),
         'notes': _notes.trim().isEmpty ? null : _notes.trim(),
         'status': 'open',
-        if (_customStartDate != null) 'startedAt': Timestamp.fromDate(_customStartDate!),
+        'startedAt': Timestamp.fromDate(sessionDate),
       };
       
-  final now = DateTime.now();
-  final user = FirebaseAuth.instance.currentUser;
+      final user = FirebaseAuth.instance.currentUser;
       
       // Manual audit fields to avoid FieldValue.serverTimestamp()
       final payload = isNew 
@@ -501,10 +570,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'createdAt': Timestamp.fromDate(now),
       });
 
-  final ctx = context;
-  if (!ctx.mounted) return;
-  SoundFeedback.ok();
-  ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
+      if (mounted && _customStartDate == null) {
+        setState(() {
+          _customStartDate = sessionDate;
+        });
+      }
+
+      final ctx = context;
+      if (!ctx.mounted) return;
+      SoundFeedback.ok();
+      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
     } catch (e) {
       final ctx = context;
       if (!ctx.mounted) return;
@@ -515,8 +590,147 @@ class _CartSessionPageState extends State<CartSessionPage> {
     }
   }
 
+  Future<void> _openTimeTrackingUrl(String rawUrl) async {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return;
+
+    Uri? uri = Uri.tryParse(trimmed);
+    if (uri != null && uri.scheme.isEmpty) {
+      uri = Uri.tryParse('https://$trimmed');
+    }
+
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open time tracking link. Please check the admin settings.')),
+      );
+      return;
+    }
+
+    try {
+      final launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to open time tracking link.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to open time tracking link: $e')),
+      );
+    }
+  }
+
+  Future<bool> _showCloseSummaryDialog({
+    required List<CartLine> usedLines,
+    required num totalQty,
+    required TimeTrackingConfig config,
+  }) async {
+    if (!mounted) return false;
+
+    final totalItems = usedLines.length;
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogCtx) {
+            final theme = Theme.of(dialogCtx);
+            final summaryText = totalItems > 0
+                ? 'Review what was used before closing this cart.'
+                : 'No usage has been recorded for this cart.';
+
+            return AlertDialog(
+              title: const Text('Close session?'),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(summaryText, style: theme.textTheme.bodyMedium),
+                    if (totalItems > 0) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        'Items used: $totalItems • Total quantity: ${_formatQty(totalQty)}',
+                        style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 12),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 260),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (var i = 0; i < usedLines.length; i++) ...[
+                                if (i > 0) const Divider(height: 16),
+                                Text(
+                                  usedLines[i].itemName,
+                                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                ),
+                                const SizedBox(height: 4),
+                                Builder(
+                                  builder: (_) {
+                                    final line = usedLines[i];
+                                    final lotLabel = line.lotCode ?? line.lotId;
+                                    final lotSuffix = lotLabel != null ? ' • Lot $lotLabel' : '';
+                                    return Text(
+                                      '${_formatQty(line.usedQty)} ${line.baseUnit}$lotSuffix',
+                                      style: theme.textTheme.bodySmall,
+                                    );
+                                  },
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (config.isValid) ...[
+                      const SizedBox(height: 16),
+                      Text('Need to log your time?', style: theme.textTheme.bodyMedium),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.open_in_new),
+                          label: const Text('Open time tracking site'),
+                          onPressed: () async {
+                            await _openTimeTrackingUrl(config.url);
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(false),
+                  child: const Text('Keep editing'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(true),
+                  child: const Text('Close session'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
   Future<void> _closeSession() async {
     debugPrint('CartSessionPage: Starting session close for session $_sessionId');
+    if (_hasOverAllocatedLines) {
+      if (mounted) {
+        SoundFeedback.error();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Resolve over-allocated lots before closing the session.')),
+        );
+      }
+      return;
+    }
     if (_sessionId == null) {
       await _saveDraft();
       if (!mounted) return;
@@ -533,6 +747,22 @@ class _CartSessionPageState extends State<CartSessionPage> {
       return;
     }
     debugPrint('CartSessionPage: Intervention ID is $_interventionId');
+
+    final usedLines = _lines.where((line) => line.usedQty > 0).toList();
+  final summaryTotalQty = usedLines.fold<num>(0, (acc, line) => acc + line.usedQty);
+    final timeTrackingConfig = await TimeTrackingService.getConfig();
+    if (!mounted) return;
+
+    final confirmed = await _showCloseSummaryDialog(
+      usedLines: usedLines,
+      totalQty: summaryTotalQty,
+      config: timeTrackingConfig,
+    );
+    if (!mounted) return;
+    if (!confirmed) {
+      debugPrint('CartSessionPage: Session close cancelled by user');
+      return;
+    }
 
     setState(() => _busy = true);
     try {
@@ -795,6 +1025,46 @@ class _CartSessionPageState extends State<CartSessionPage> {
   // ---------- UI helpers ----------
   String _lineId(CartLine l) => l.lotId == null ? l.itemId : '${l.itemId}__${l.lotId}';
 
+  Future<String?> _fefoLotIdForItem(String itemId) async {
+    final lotsSnap = await _db.collection('items').doc(itemId).collection('lots').get();
+    if (lotsSnap.docs.isEmpty) return null;
+
+    final lots = lotsSnap.docs.toList()
+      ..sort((a, b) {
+        DateTime? ea = (a.data()['expiresAt'] is Timestamp)
+            ? (a.data()['expiresAt'] as Timestamp).toDate()
+            : null;
+        DateTime? eb = (b.data()['expiresAt'] is Timestamp)
+            ? (b.data()['expiresAt'] as Timestamp).toDate()
+            : null;
+        if (ea == null && eb == null) return 0;
+        if (ea == null) return 1;
+        if (eb == null) return -1;
+        return ea.compareTo(eb);
+      });
+
+    QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
+    for (final lot in lots) {
+      final q = lot.data()['qtyRemaining'];
+      if (q is num && q > 0) {
+        withQty = lot;
+        break;
+      }
+    }
+
+    return (withQty ?? lots.first).id;
+  }
+
+  bool _looksLikeItemName(String input) {
+    final cleaned = input.trim();
+    if (cleaned.length < 3) return false;
+    if (cleaned.contains(' ')) return true;
+    final letterCount = RegExp(r'[A-Za-z]').allMatches(cleaned).length;
+    if (letterCount < 2) return false;
+    final digitCount = RegExp(r'\d').allMatches(cleaned).length;
+    return letterCount > digitCount;
+  }
+
   Future<void> _addItems() async {
     final itemsSnap =
         await _db.collection('items').orderBy('updatedAt', descending: true).limit(50).get();
@@ -813,14 +1083,26 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     if (result != null && result.isNotEmpty && mounted) {
       for (final itemData in result) {
+        final itemId = itemData['itemId'] as String;
+        final itemName = itemData['itemName'] as String;
+        final baseUnit = itemData['baseUnit'] as String;
+        final autoAssignLot = itemData['autoAssignLot'] == true;
+        String? lotId = itemData['lotId'] as String?;
+
+        if (autoAssignLot) {
+          lotId = await _fefoLotIdForItem(itemId);
+          if (!mounted) return;
+        }
+
         final line = CartLine(
-          itemId: itemData['itemId'] as String,
-          itemName: itemData['itemName'] as String,
-          baseUnit: itemData['baseUnit'] as String,
-          lotId: itemData['lotId'] as String?,
+          itemId: itemId,
+          itemName: itemName,
+          baseUnit: baseUnit,
+          lotId: lotId,
           initialQty: 1,
         );
 
+        if (!mounted) return;
         setState(() {
           final id = _lineId(line);
           final idx = _lines.indexWhere((x) => _lineId(x) == id);
@@ -836,6 +1118,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
             );
           } else {
             _lines.add(line);
+            _overAllocatedLines[id] = false;
           }
         });
       }
@@ -876,6 +1159,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       if (!mounted) return;
       setState(() {
         _lines.clear();
+        _overAllocatedLines.clear();
         for (final d in lines.docs) {
           final m = d.data();
           final prev = CartLine.fromMap(m);
@@ -893,41 +1177,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
   /// Resolve FEFO lot and add line (used by copy from last)
   void _resolveAndAddLine(String itemId, String itemName, String baseUnit, int qty) {
-    // Get lots for this item, sorted by expiration (FEFO)
-    _db.collection('items').doc(itemId).collection('lots').get().then((lotsSnap) {
+    _fefoLotIdForItem(itemId).then((lotId) {
       if (!mounted) return;
 
-      String? lotId;
-      if (lotsSnap.docs.isNotEmpty) {
-        final list = lotsSnap.docs.toList()
-          ..sort((a, b) {
-            DateTime? ea = (a.data()['expiresAt'] is Timestamp)
-                ? (a.data()['expiresAt'] as Timestamp).toDate()
-                : null;
-            DateTime? eb = (b.data()['expiresAt'] is Timestamp)
-                ? (b.data()['expiresAt'] as Timestamp).toDate()
-                : null;
-            if (ea == null && eb == null) return 0;
-            if (ea == null) return 1; // nulls last
-            if (eb == null) return -1;
-            return ea.compareTo(eb);
-          });
-        
-        // Find first lot with qtyRemaining > 0, or use first lot if none found
-        QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
-        for (final lot in list) {
-          final q = lot.data()['qtyRemaining'];
-          if ((q is num) && q > 0) {
-            withQty = lot;
-            break;
-          }
-        }
-        // If no lot with qty > 0 found, use the first lot
-        withQty ??= list.first;
-        lotId = withQty.id;
-      }
-
-      if (!mounted) return;
       setState(() {
         final line = CartLine(
           itemId: itemId,
@@ -937,6 +1189,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
           initialQty: qty,
         );
         _lines.add(line);
+        _overAllocatedLines[_lineId(line)] = false;
       });
     });
   }
@@ -1033,11 +1286,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
                 const SizedBox(height: 12),
                 TextField(
+                  controller: _locationC,
                   decoration: const InputDecoration(labelText: 'Location/Unit (optional)'),
                   onChanged: (s) => _locationText = s,
                 ),
                 const SizedBox(height: 8),
                 TextField(
+                  controller: _notesC,
                   decoration: const InputDecoration(labelText: 'Notes (optional)'),
                   maxLines: 2,
                   onChanged: (s) => _notes = s,
@@ -1085,9 +1340,29 @@ class _CartSessionPageState extends State<CartSessionPage> {
                         focusNode: _barcodeFocus,
                         autofocus: true,
                         textInputAction: TextInputAction.done,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           hintText: 'Scan or type a barcode',
-                          prefixIcon: Icon(Icons.qr_code_scanner),
+                          prefixIcon: IconButton(
+                            tooltip: 'Scan with camera',
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _busy ? null : () => _scanAndAdd(),
+                          ),
+                          suffixIcon: IconButton(
+                            tooltip: 'Search by name',
+                            icon: const Icon(Icons.search),
+                            onPressed: _busy
+                                ? null
+                                : () async {
+                                    final query = _barcodeC.text.trim();
+                                    final added = await _openQuickSearch(
+                                      initialQuery: query.isEmpty ? null : query,
+                                    );
+                                    if (!mounted) return;
+                                    if (added) {
+                                      _barcodeC.clear();
+                                    }
+                                  },
+                          ),
                         ),
                         onSubmitted: (_) async {
                           if (_busy) return;
@@ -1130,23 +1405,56 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   ],
                 ),
 
+                if (_hasOverAllocatedLines) ...[
+                  const SizedBox(height: 12),
+                  Card(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    child: ListTile(
+                      leading: Icon(Icons.error_outline, color: Theme.of(context).colorScheme.onErrorContainer),
+                      title: Text(
+                        'Adjust quantities or choose another lot before closing. Requested amounts exceed remaining stock in at least one lot.',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+                      ),
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 16),
                 if (_lines.isEmpty) const ListTile(title: Text('No items in this session yet')),
                 for (final line in _lines)
-                  _LineRow(
-                    line: line,
+                                _LineRow(
+                                  lineId: _lineId(line),
+                                  line: line,
                     onChanged: (updated) {
                       setState(() {
-                        final id = _lineId(line);
-                        final idx = _lines.indexWhere((x) => _lineId(x) == id);
-                        if (idx >= 0) _lines[idx] = updated;
+                        final oldId = _lineId(line);
+                        final newId = _lineId(updated);
+                        final idx = _lines.indexWhere((x) => _lineId(x) == oldId);
+                        if (idx >= 0) {
+                          _lines[idx] = updated;
+                        }
+                        if (oldId != newId) {
+                          final previous = _overAllocatedLines.remove(oldId) ?? false;
+                          _overAllocatedLines[newId] = previous;
+                        } else {
+                          _overAllocatedLines.putIfAbsent(newId, () => false);
+                        }
                       });
                     },
                     onRemove: () {
                       setState(() {
-                        _lines.removeWhere((x) => _lineId(x) == _lineId(line));
+                                      final id = _lineId(line);
+                                      _lines.removeWhere((x) => _lineId(x) == id);
+                                      _overAllocatedLines.remove(id);
                       });
                     },
+                                  onOverAllocationChanged: (lineId, isOver) {
+                                    final prev = _overAllocatedLines[lineId];
+                                    if (prev == isOver) return;
+                                    setState(() {
+                                      _overAllocatedLines[lineId] = isOver;
+                                    });
+                                  },
                   ),
 
                 const SizedBox(height: 24),
@@ -1159,7 +1467,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 FilledButton.icon(
                   icon: const Icon(Icons.check_circle),
                   label: const Text('Close session'),
-                  onPressed: _busy ? null : _closeSession,
+                  onPressed: (_busy || _hasOverAllocatedLines) ? null : _closeSession,
                 ),
                 if (_status == 'closed')
                   const Padding(
@@ -1174,10 +1482,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
 }
 
 class _LineRow extends StatefulWidget {
+  final String lineId;
   final CartLine line;
   final void Function(CartLine) onChanged;
   final VoidCallback onRemove;
-  const _LineRow({required this.line, required this.onChanged, required this.onRemove});
+  final void Function(String lineId, bool isOverAllocated)? onOverAllocationChanged;
+  const _LineRow({
+    required this.lineId,
+    required this.line,
+    required this.onChanged,
+    required this.onRemove,
+    this.onOverAllocationChanged,
+  });
 
   @override
   State<_LineRow> createState() => _LineRowState();
@@ -1186,39 +1502,90 @@ class _LineRow extends StatefulWidget {
 class _LineRowState extends State<_LineRow> {
   late final TextEditingController _cInit;
   late final TextEditingController _cEnd;
+  late final FocusNode _initFocus;
+  late final FocusNode _endFocus;
   String? _lotCode;
+  num? _lotRemaining;
+  bool _overAllocated = false;
+  bool? _lastReportedOverAllocation;
+
+  void _notifyOverAllocation() {
+    final cb = widget.onOverAllocationChanged;
+    if (cb != null && _lastReportedOverAllocation != _overAllocated) {
+      _lastReportedOverAllocation = _overAllocated;
+      cb(widget.lineId, _overAllocated);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _cInit = TextEditingController(text: widget.line.initialQty.toString());
     _cEnd = TextEditingController(text: widget.line.endQty?.toString() ?? '');
+    _initFocus = FocusNode();
+    _endFocus = FocusNode();
+    _initFocus.addListener(() {
+      if (!_initFocus.hasFocus) {
+        _commitInitialQty();
+      }
+    });
+    _endFocus.addListener(() {
+      if (!_endFocus.hasFocus) {
+        _commitEndQty();
+      }
+    });
     _loadLotCode();
+    _lastReportedOverAllocation = _overAllocated;
   }
 
   Future<void> _loadLotCode() async {
-    if (widget.line.lotId != null) {
-      try {
-        final lotDoc = await FirebaseFirestore.instance
-            .collection('items')
-            .doc(widget.line.itemId)
-            .collection('lots')
-            .doc(widget.line.lotId)
-            .get();
-        if (lotDoc.exists && mounted) {
-          setState(() {
-            _lotCode = lotDoc.data()?['lotCode'] ?? widget.line.lotId!.substring(0, 6);
-          });
-        }
-      } catch (e) {
-        // If we can't load the lot code, fall back to truncated ID
-        if (mounted) {
-          setState(() {
-            _lotCode = widget.line.lotId!.substring(0, 6);
-          });
-        }
+    final lotId = widget.line.lotId;
+    if (lotId == null) {
+      if (_lotCode != null || _lotRemaining != null || _overAllocated) {
+        setState(() {
+          _lotCode = null;
+          _lotRemaining = null;
+          _overAllocated = false;
+        });
       }
+      _notifyOverAllocation();
+      return;
     }
+
+    try {
+      final lotDoc = await FirebaseFirestore.instance
+          .collection('items')
+          .doc(widget.line.itemId)
+          .collection('lots')
+          .doc(lotId)
+          .get();
+      if (!mounted) return;
+      if (lotDoc.exists) {
+        final data = lotDoc.data();
+        final lotCode = data?['lotCode'] as String?;
+        final qtyRemainingRaw = data?['qtyRemaining'];
+        final qtyRemaining = qtyRemainingRaw is num ? qtyRemainingRaw : null;
+        setState(() {
+          _lotCode = lotCode ?? lotId.substring(0, 6);
+          _lotRemaining = qtyRemaining;
+          _overAllocated = qtyRemaining != null && widget.line.initialQty > qtyRemaining;
+        });
+      } else {
+        setState(() {
+          _lotCode = lotId.substring(0, 6);
+          _lotRemaining = null;
+          _overAllocated = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _lotCode = lotId.substring(0, 6);
+        _lotRemaining = null;
+        _overAllocated = false;
+      });
+    }
+    _notifyOverAllocation();
   }
 
   @override
@@ -1241,63 +1608,189 @@ class _LineRowState extends State<_LineRow> {
     if (oldWidget.line.lotId != widget.line.lotId) {
       _loadLotCode();
     }
+    if (widget.line.lotId != null && _lotRemaining != null) {
+      final newValue = widget.line.initialQty > _lotRemaining!;
+      if (_overAllocated != newValue) {
+        setState(() {
+          _overAllocated = newValue;
+        });
+      }
+      _notifyOverAllocation();
+    }
+    if (widget.line.lotId == null && _overAllocated) {
+      setState(() {
+        _overAllocated = false;
+      });
+      _notifyOverAllocation();
+    }
+    if (widget.lineId != oldWidget.lineId) {
+      _lastReportedOverAllocation = null;
+      _notifyOverAllocation();
+    }
   }
 
   @override
   void dispose() {
     _cInit.dispose();
     _cEnd.dispose();
+    _initFocus.dispose();
+    _endFocus.dispose();
     super.dispose();
+  }
+
+  String _formatQty(num value) {
+    if (value % 1 == 0) {
+      return value.toInt().toString();
+    }
+    final str = value.toStringAsFixed(2);
+    return str.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  }
+
+  void _commitInitialQty() {
+    final raw = _cInit.text.trim();
+    if (raw.isEmpty) {
+      if (widget.line.initialQty != 0) {
+        widget.onChanged(widget.line.copyWith(initialQty: 0));
+      }
+      if (_cInit.text != '0') {
+        _cInit.text = '0';
+        _cInit.selection = TextSelection.collapsed(offset: _cInit.text.length);
+      }
+      return;
+    }
+
+    final parsed = num.tryParse(raw);
+    if (parsed == null) {
+      _resetInitialField();
+      return;
+    }
+
+    if (parsed != widget.line.initialQty) {
+      widget.onChanged(widget.line.copyWith(initialQty: parsed));
+    }
+    final canonical = parsed.toString();
+    if (_cInit.text != canonical) {
+      _cInit.text = canonical;
+      _cInit.selection = TextSelection.collapsed(offset: canonical.length);
+    }
+    if (_lotRemaining != null) {
+      final newValue = parsed > _lotRemaining!;
+      if (_overAllocated != newValue) {
+        setState(() {
+          _overAllocated = newValue;
+        });
+      }
+    } else if (_overAllocated) {
+      setState(() {
+        _overAllocated = false;
+      });
+    }
+    _notifyOverAllocation();
+  }
+
+  void _commitEndQty() {
+    final raw = _cEnd.text.trim();
+    if (raw.isEmpty) {
+      if (widget.line.endQty != null) {
+        widget.onChanged(widget.line.copyWith(endQty: null));
+      }
+      if (_cEnd.text.isNotEmpty) {
+        _cEnd.clear();
+      }
+      return;
+    }
+
+    final parsed = num.tryParse(raw);
+    if (parsed == null) {
+      _resetEndField();
+      return;
+    }
+
+    if (widget.line.endQty != parsed) {
+      widget.onChanged(widget.line.copyWith(endQty: parsed));
+    }
+    final canonical = parsed.toString();
+    if (_cEnd.text != canonical) {
+      _cEnd.text = canonical;
+      _cEnd.selection = TextSelection.collapsed(offset: canonical.length);
+    }
+  }
+
+  void _resetInitialField() {
+    _cInit.text = widget.line.initialQty.toString();
+    _cInit.selection = TextSelection.collapsed(offset: _cInit.text.length);
+  }
+
+  void _resetEndField() {
+    final text = widget.line.endQty?.toString() ?? '';
+    _cEnd.text = text;
+    _cEnd.selection = TextSelection.collapsed(offset: text.length);
   }
 
   @override
   Widget build(BuildContext context) {
+    final unitText = <String>['Unit: ${widget.line.baseUnit}'];
+    if (widget.line.lotId != null) {
+      final lotPieces = <String>[];
+      lotPieces.add('lot ${_lotCode ?? 'Loading...'}');
+      if (_lotRemaining != null) {
+        lotPieces.add('${_formatQty(_lotRemaining!)} ${widget.line.baseUnit} available');
+      }
+      unitText.add(lotPieces.join(' • '));
+    }
+
     return Card(
       child: ListTile(
         title: Text(widget.line.itemName),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Unit: ${widget.line.baseUnit}'
-                '${widget.line.lotId != null ? ' • lot ${_lotCode ?? 'Loading...'}' : ''}'),
+            Text(unitText.join(' • ')),
             const SizedBox(height: 6),
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _cInit,
+                    focusNode: _initFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Loaded'),
-                    onSubmitted: (s) => widget.onChanged(CartLine(
-                      itemId: widget.line.itemId,
-                      itemName: widget.line.itemName,
-                      baseUnit: widget.line.baseUnit,
-                      lotId: widget.line.lotId,
-                      initialQty: num.tryParse(s) ?? widget.line.initialQty,
-                      endQty: widget.line.endQty,
-                    )),
+                    onSubmitted: (_) => _commitInitialQty(),
+                    onTapOutside: (_) => _commitInitialQty(),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
                     controller: _cEnd,
+                    focusNode: _endFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Leftover (at close)'),
-                    onSubmitted: (s) => widget.onChanged(CartLine(
-                      itemId: widget.line.itemId,
-                      itemName: widget.line.itemName,
-                      baseUnit: widget.line.baseUnit,
-                      lotId: widget.line.lotId,
-                      initialQty: widget.line.initialQty,
-                      endQty: s.trim().isEmpty ? null : num.tryParse(s),
-                    )),
+                    onSubmitted: (_) => _commitEndQty(),
+                    onTapOutside: (_) => _commitEndQty(),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 4),
             Text('Used this session: ${widget.line.usedQty} ${widget.line.baseUnit}'),
+            if (_overAllocated)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline, size: 16, color: Theme.of(context).colorScheme.error),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        'Requested ${_formatQty(widget.line.initialQty)} ${widget.line.baseUnit}, ' 
+                        'but only ${_formatQty(_lotRemaining ?? 0)} available in this lot.',
+                        style: TextStyle(color: Theme.of(context).colorScheme.error),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
         trailing: IconButton(
@@ -1320,7 +1813,8 @@ class LotSelectionDialog extends StatefulWidget {
 }
 
 class _LotSelectionDialogState extends State<LotSelectionDialog> {
-  final Map<String, String?> _selectedLotIds = {};
+  final Map<String, Set<String>> _selectedLotIds = {};
+  final Map<String, Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>> _lotFutures = {};
 
   @override
   void initState() {
@@ -1342,8 +1836,30 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
             final itemName = (item.data()['name'] ?? 'Unnamed') as String;
             final baseUnit = (item.data()['baseUnit'] ?? item.data()['unit'] ?? 'each') as String;
 
-            return FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              future: FirebaseFirestore.instance.collection('items').doc(item.id).collection('lots').get(),
+            final lotsFuture = _lotFutures.putIfAbsent(item.id, () async {
+              final snap = await FirebaseFirestore.instance
+                  .collection('items')
+                  .doc(item.id)
+                  .collection('lots')
+                  .get();
+              final docs = snap.docs.toList()
+                ..sort((a, b) {
+                  DateTime? ea = (a.data()['expiresAt'] is Timestamp)
+                      ? (a.data()['expiresAt'] as Timestamp).toDate()
+                      : null;
+                  DateTime? eb = (b.data()['expiresAt'] is Timestamp)
+                      ? (b.data()['expiresAt'] as Timestamp).toDate()
+                      : null;
+                  if (ea == null && eb == null) return 0;
+                  if (ea == null) return 1; // nulls last
+                  if (eb == null) return -1;
+                  return ea.compareTo(eb);
+                });
+              return docs;
+            });
+
+            return FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+              future: lotsFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return ListTile(
@@ -1352,29 +1868,19 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                   );
                 }
 
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
                   return ListTile(
                     title: Text(itemName),
                     subtitle: const Text('No lots available'),
                   );
                 }
 
-                final lots = snapshot.data!.docs.toList()
-                  ..sort((a, b) {
-                    DateTime? ea = (a.data()['expiresAt'] is Timestamp)
-                        ? (a.data()['expiresAt'] as Timestamp).toDate()
-                        : null;
-                    DateTime? eb = (b.data()['expiresAt'] is Timestamp)
-                        ? (b.data()['expiresAt'] as Timestamp).toDate()
-                        : null;
-                    if (ea == null && eb == null) return 0;
-                    if (ea == null) return 1; // nulls last
-                    if (eb == null) return -1;
-                    return ea.compareTo(eb);
-                  });
+                final lots = snapshot.data!;
 
-                // Auto-select FEFO lot if not already selected
-                if (_selectedLotIds[item.id] == null && lots.isNotEmpty) {
+                final selectedLots = _selectedLotIds.putIfAbsent(item.id, () => <String>{});
+
+                // Auto-select FEFO lot if none currently selected
+                if (selectedLots.isEmpty && lots.isNotEmpty) {
                   // Find first lot with qtyRemaining > 0, or use first lot if none found
                   QueryDocumentSnapshot<Map<String, dynamic>>? withQty;
                   for (final lot in lots) {
@@ -1385,7 +1891,7 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                     }
                   }
                   withQty ??= lots.first;
-                  _selectedLotIds[item.id] = withQty.id;
+                  selectedLots.add(withQty.id);
                 }
 
                 return Column(
@@ -1407,21 +1913,26 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                       final lotCode = lotData['lotCode'] ?? lot.id;
 
                       // ignore: deprecated_member_use
-                      return RadioListTile<String>(
+                      final isSelected = selectedLots.contains(lot.id);
+                      return CheckboxListTile(
                         title: Text('$lotCode • $qtyRemaining $baseUnit'),
                         subtitle: expiresAt != null
                             ? Text('Expires: ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}')
                             : null,
-                        value: lot.id,
-                        // ignore: deprecated_member_use
-                        groupValue: _selectedLotIds[item.id],
-                        // ignore: deprecated_member_use
-                        onChanged: qtyRemaining > 0 ? (value) {
-                          setState(() {
-                            _selectedLotIds[item.id] = value;
-                          });
-                        } : null,
+                        value: isSelected,
+                        onChanged: qtyRemaining > 0
+                            ? (checked) {
+                                setState(() {
+                                  if (checked == true) {
+                                    selectedLots.add(lot.id);
+                                  } else {
+                                    selectedLots.remove(lot.id);
+                                  }
+                                });
+                              }
+                            : null,
                         dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
                       );
                     }),
                     const Divider(),
@@ -1439,15 +1950,34 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
         ),
         FilledButton(
           onPressed: () {
-            final itemDetails = widget.selectedItems.map((item) {
-              final baseUnit = (item.data()['baseUnit'] ?? item.data()['unit'] ?? 'each') as String;
-              return {
-                'itemId': item.id,
-                'itemName': (item.data()['name'] ?? 'Unnamed') as String,
-                'baseUnit': baseUnit,
-                'lotId': _selectedLotIds[item.id],
-              };
-            }).toList();
+            final List<Map<String, dynamic>> itemDetails = [];
+
+            for (final item in widget.selectedItems) {
+              final data = item.data();
+              final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+              final selectedLots = _selectedLotIds[item.id] ?? <String>{};
+
+              if (selectedLots.isEmpty) {
+                itemDetails.add({
+                  'itemId': item.id,
+                  'itemName': (data['name'] ?? 'Unnamed') as String,
+                  'baseUnit': baseUnit,
+                  'lotId': null,
+                  'autoAssignLot': false,
+                });
+                continue;
+              }
+
+              for (final lotId in selectedLots) {
+                itemDetails.add({
+                  'itemId': item.id,
+                  'itemName': (data['name'] ?? 'Unnamed') as String,
+                  'baseUnit': baseUnit,
+                  'lotId': lotId,
+                  'autoAssignLot': false,
+                });
+              }
+            }
 
             Navigator.of(context).pop(itemDetails);
           },
@@ -1506,6 +2036,23 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
     });
   }
 
+  Map<String, dynamic> _payloadForItem(
+    QueryDocumentSnapshot<Map<String, dynamic>> item, {
+    String? lotId,
+    bool autoAssignLot = false,
+  }) {
+    final data = item.data();
+    final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+
+    return {
+      'itemId': item.id,
+      'itemName': (data['name'] ?? 'Unnamed') as String,
+      'baseUnit': baseUnit,
+      'lotId': lotId,
+      'autoAssignLot': autoAssignLot,
+    };
+  }
+
   void _addSingleItem(QueryDocumentSnapshot<Map<String, dynamic>> item) async {
     // Show lot selection dialog for single item
     final result = await showDialog<List<Map<String, dynamic>>>(
@@ -1542,6 +2089,18 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
         }
       });
     }
+  }
+
+  void _autoAddSelectedItems() {
+    if (_selectedItemIds.isEmpty || !mounted) return;
+    final selectedItems = widget.items.where((item) => _selectedItemIds.contains(item.id)).toList();
+    final payload = selectedItems.map((item) => _payloadForItem(item, autoAssignLot: true)).toList();
+    Navigator.of(context).pop(payload);
+  }
+
+  void _autoAddSingleItem(QueryDocumentSnapshot<Map<String, dynamic>> item) {
+    if (!mounted) return;
+    Navigator.of(context).pop([_payloadForItem(item, autoAssignLot: true)]);
   }
 
   @override
@@ -1597,6 +2156,11 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
                 ),
                 title: Text((d.data()['name'] ?? 'Unnamed') as String),
                 subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)} • Tap to add individually'),
+                trailing: IconButton(
+                  tooltip: 'Quick add (auto lot)',
+                  icon: const Icon(Icons.flash_auto),
+                  onPressed: () => _autoAddSingleItem(d),
+                ),
                 onTap: () => _addSingleItem(d),
               );
             },
@@ -1626,15 +2190,271 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
                 ),
               ),
               const SizedBox(width: 16),
+              OutlinedButton.icon(
+                onPressed: _selectedItemIds.isNotEmpty ? _autoAddSelectedItems : null,
+                icon: const Icon(Icons.flash_auto),
+                label: const Text('Quick add'),
+              ),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: _selectedItemIds.isNotEmpty ? _addSelectedItems : null,
                 icon: const Icon(Icons.add),
-                label: const Text('Add Selected'),
+                label: const Text('Add & pick lots'),
               ),
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+class _QuickItemSearchSheet extends StatefulWidget {
+  final String? initialQuery;
+
+  const _QuickItemSearchSheet({this.initialQuery});
+
+  @override
+  State<_QuickItemSearchSheet> createState() => _QuickItemSearchSheetState();
+}
+
+class _QuickItemSearchSheetState extends State<_QuickItemSearchSheet> {
+  final TextEditingController _controller = TextEditingController();
+  Timer? _debounce;
+  bool _loading = false;
+  String? _error;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _results = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.text = widget.initialQuery ?? '';
+    _controller.addListener(_onQueryChanged);
+    _performSearch(_controller.text);
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onQueryChanged);
+    _controller.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onQueryChanged() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 250), () {
+      _performSearch(_controller.text);
+    });
+  }
+
+  Future<void> _performSearch(String query) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final results = await _fetchResults(query);
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fetchResults(String query) async {
+    final coll = FirebaseFirestore.instance.collection('items');
+    final trimmed = query.trim();
+
+    if (trimmed.isEmpty) {
+      final snap = await coll.orderBy('updatedAt', descending: true).limit(50).get();
+      return snap.docs;
+    }
+
+    final normalized = trimmed.toLowerCase();
+
+    try {
+      final snap = await coll
+          .orderBy('nameLower')
+          .startAt([normalized])
+          .endAt(['$normalized\uf8ff'])
+          .limit(50)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        return snap.docs;
+      }
+    } catch (_) {
+      // Fallback to other strategies
+    }
+
+    try {
+      final snap = await coll
+          .orderBy('name')
+          .startAt([trimmed])
+          .endAt(['$trimmed\uf8ff'])
+          .limit(50)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        return snap.docs;
+      }
+    } catch (_) {
+      // Continue to fallback
+    }
+
+    final fallback = await coll.orderBy('updatedAt', descending: true).limit(120).get();
+    return fallback.docs.where((doc) {
+      final data = doc.data();
+      final name = (data['name'] ?? '') as String;
+      final barcode = (data['barcode'] ?? '') as String;
+      final altNames = (data['alternateNames'] as List?)?.map((e) => e.toString()) ?? const Iterable<String>.empty();
+      final terms = <String>[name, barcode, ...altNames];
+      return terms.any((term) => term.toLowerCase().contains(normalized));
+    }).take(50).toList();
+  }
+
+  Map<String, dynamic> _payloadForItem(
+    QueryDocumentSnapshot<Map<String, dynamic>> item, {
+    String? lotId,
+    bool autoAssignLot = false,
+  }) {
+    final data = item.data();
+    final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+    return {
+      'itemId': item.id,
+      'itemName': (data['name'] ?? 'Unnamed') as String,
+      'baseUnit': baseUnit,
+      'lotId': lotId,
+      'autoAssignLot': autoAssignLot,
+    };
+  }
+
+  void _quickAdd(QueryDocumentSnapshot<Map<String, dynamic>> item) {
+    if (!mounted) return;
+    Navigator.of(context).pop([
+      _payloadForItem(item, autoAssignLot: true),
+    ]);
+  }
+
+  Future<void> _pickLot(QueryDocumentSnapshot<Map<String, dynamic>> item) async {
+    final result = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (context) => LotSelectionDialog(selectedItems: [item]),
+    );
+    if (!mounted || result == null || result.isEmpty) return;
+    Navigator.of(context).pop(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.75,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: TextField(
+                  controller: _controller,
+                  textInputAction: TextInputAction.search,
+                  decoration: const InputDecoration(
+                    hintText: 'Search items by name or barcode',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                  onSubmitted: _performSearch,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    'Search error: $_error',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                ),
+              if (_loading)
+                const LinearProgressIndicator(minHeight: 2),
+              if (!_loading)
+                const SizedBox(height: 2),
+              Expanded(
+                child: _results.isEmpty
+                    ? Center(
+                        child: Text(
+                          _loading ? 'Searching…' : 'No items found',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: _results.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final item = _results[index];
+                          final data = item.data();
+                          final name = (data['name'] ?? 'Unnamed') as String;
+                          final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+                          final qtyRaw = data['qtyOnHand'];
+                          final barcode = (data['barcode'] ?? '') as String;
+                          final onHand = () {
+                            if (qtyRaw is num) {
+                              return qtyRaw % 1 == 0 ? qtyRaw.toInt().toString() : qtyRaw.toString();
+                            }
+                            return '0';
+                          }();
+                          return ListTile(
+                            title: Text(name),
+                            subtitle: Text(
+                              barcode.isNotEmpty
+                                  ? 'On hand: $onHand $baseUnit • Barcode: $barcode'
+                                  : 'On hand: $onHand $baseUnit',
+                            ),
+                            onTap: () => _quickAdd(item),
+                            trailing: Wrap(
+                              spacing: 4,
+                              alignment: WrapAlignment.center,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Quick add (auto lot)',
+                                  icon: const Icon(Icons.flash_auto),
+                                  onPressed: () => _quickAdd(item),
+                                ),
+                                IconButton(
+                                  tooltip: 'Pick lot',
+                                  icon: const Icon(Icons.tune),
+                                  onPressed: () => _pickLot(item),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

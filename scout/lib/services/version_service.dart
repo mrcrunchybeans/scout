@@ -1,31 +1,41 @@
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class VersionService {
   static String? _cachedVersion;
-  
-  // Hardcoded version that matches pubspec.yaml - update this when version changes
-  static const String _appVersion = '1.0.0+18';
-  
-  // Build date - update this when deploying
-  static const String _buildDate = '2025-10-03';
+
+  static const String _versionOverride = String.fromEnvironment('APP_VERSION', defaultValue: '');
+  static const String _buildDateOverride = String.fromEnvironment('BUILD_DATE', defaultValue: '');
 
   static Future<String> getVersion() async {
-    // In debug mode, don't cache to allow for hot reloads during development
     if (!kDebugMode && _cachedVersion != null) return _cachedVersion!;
 
     try {
-      // Use hardcoded version to avoid asset loading issues
-      _cachedVersion = '$_appVersion ($_buildDate)';
+      final packageInfo = await PackageInfo.fromPlatform();
+      final baseVersion = packageInfo.version.isNotEmpty ? packageInfo.version : '1.0.0';
+      final buildNumber = packageInfo.buildNumber.isNotEmpty ? packageInfo.buildNumber : '1';
+      final computedVersion = '$baseVersion+$buildNumber';
+      final effectiveVersion = _versionOverride.isNotEmpty ? _versionOverride : computedVersion;
+
+      final buildDate = _buildDateOverride.isNotEmpty
+          ? _buildDateOverride
+          : _formatBuildDate(DateTime.now());
+
+      _cachedVersion = '$effectiveVersion ($buildDate)';
       return _cachedVersion!;
     } catch (e) {
-      // Fallback version
-      return '1.0.0+1 ($_buildDate)';
+      final fallbackDate = _formatBuildDate(DateTime.now());
+      return '1.0.0+1 ($fallbackDate)';
     }
   }
 
-  // Method to clear cache (useful for testing or forced reloads)
   static void clearCache() {
     _cachedVersion = null;
+  }
+
+  static String _formatBuildDate(DateTime date) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${date.year}-${two(date.month)}-${two(date.day)}';
   }
 }
 

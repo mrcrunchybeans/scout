@@ -128,6 +128,12 @@
       document.getElementById("splash-branding")?.remove();
       document.body.style.background = "transparent";
     }
+    // Fail-safe: if Flutter doesn't start within 8s, remove splash
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        try { removeSplashFromWeb(); } catch (e) {}
+      }, 8000);
+    });
   </script>
 </head>
 <body>

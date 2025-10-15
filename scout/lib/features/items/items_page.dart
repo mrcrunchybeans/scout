@@ -33,12 +33,8 @@ class _ItemsPageState extends State<ItemsPage> {
   final _searchService = SearchService(
     FirebaseFirestore.instance,
     const SearchConfig(
-      strategy: SearchStrategy.hybrid, // Temporarily use hybrid search to bypass Algolia issues
-      enableAlgolia: true, // Keep Algolia enabled for when index is populated
-      algoliaAppId: 'COMHTF4QM1',
-      algoliaSearchApiKey: '86a6aa6baaa3bbfc8e5e75c0c272fa00',
-      algoliaWriteApiKey: '3ca7664f0aaf7555ab3c43bd179d17d8',
-      algoliaIndexName: 'scout_items',
+      strategy: SearchStrategy.hybrid,
+      enableAlgolia: true,
     ),
   );
   bool _busy = false;

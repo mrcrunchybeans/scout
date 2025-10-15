@@ -105,10 +105,10 @@ Future<bool> confirmAdminPin(BuildContext context) async {
   return ok ?? false;
 }
 
-Future<bool> confirmDeveloperPassword(BuildContext context) async {
+Future<String?> _promptDeveloperPasswordDialog(BuildContext context) async {
   final c = TextEditingController();
 
-  final ok = await showDialog<bool>(
+  final password = await showDialog<String?>(
     context: context,
     builder: (dialogContext) => Theme(
       data: Theme.of(context),
@@ -120,17 +120,17 @@ Future<bool> confirmDeveloperPassword(BuildContext context) async {
           decoration: const InputDecoration(labelText: 'Enter Developer Password'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Cancel')),
           FilledButton(
             onPressed: () async {
               if (c.text == _developerPassword) {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setBool('developer_unlocked', true);
                 if (!dialogContext.mounted) return;
-                Navigator.of(dialogContext).pop(true);
+                Navigator.of(dialogContext).pop(c.text);
               } else {
                 if (!dialogContext.mounted) return;
-                Navigator.of(dialogContext).pop(false);
+                Navigator.of(dialogContext).pop(null);
               }
             },
             child: const Text('Access'),
@@ -139,7 +139,7 @@ Future<bool> confirmDeveloperPassword(BuildContext context) async {
       ),
     ),
   );
-  return ok ?? false;
+  return password;
 }
 
 class AdminPin {
@@ -155,7 +155,14 @@ class AdminPin {
     if (!await ensure(context)) return false;
     // Then require developer password
     if (!context.mounted) return false;
-    return await confirmDeveloperPassword(context);
+    final password = await _promptDeveloperPasswordDialog(context);
+    return password != null;
+  }
+
+  static Future<String?> promptDeveloperPassword(BuildContext context) async {
+    if (!await ensure(context)) return null;
+    if (!context.mounted) return null;
+    return await _promptDeveloperPasswordDialog(context);
   }
 
   static Future<bool> isAuthed() async {

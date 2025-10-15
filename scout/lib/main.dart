@@ -176,12 +176,27 @@ Map<String, String>? _parseLegacyHash() {
 }
 
 void main() {
+  // Ensure Flutter binding is initialized before using WidgetsBinding
+  WidgetsFlutterBinding.ensureInitialized();
   // Use path URL strategy (no hash) for clean URLs on web
   try {
     if (kIsWeb) {
       setUrlStrategy(PathUrlStrategy());
     }
   } catch (_) {}
+
+  // Ensure web splash screen is removed once Flutter paints its first frame
+  if (kIsWeb) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        web.document.getElementById('splash')?.remove();
+        web.document.getElementById('splash-branding')?.remove();
+        if (web.document.body != null) {
+          web.document.body!.style.background = 'transparent';
+        }
+      } catch (_) {}
+    });
+  }
 
   runApp(const ScoutApp());
 }

@@ -7,6 +7,7 @@ import '../../models/option_item.dart';
 
 // Audit helper
 import '../../utils/audit.dart';
+import '../../utils/lot_code.dart';
 
 // Optional: USB wedge capture (keyboard-emulating scanners)
 import '../../widgets/usb_wedge_scanner.dart';
@@ -70,6 +71,8 @@ class _NewItemPageState extends State<NewItemPage> {
   final _lotCode = TextEditingController();
   DateTime? _lotExpirationDate;
   bool _hasExpiration = false;
+  bool _lotCodeEdited = false;
+  bool _initializingLotCode = false;
 
   List<OptionItem>? _locs;
   List<OptionItem>? _grants;
@@ -97,21 +100,14 @@ class _NewItemPageState extends State<NewItemPage> {
     }
   }
 
-  String _generateBatchCode() {
-    final now = DateTime.now();
-    final yy = now.year.toString().substring(2); // Last two digits of year
-    final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-    final monthKey = '$yy$mm';
-    
-    // For new items, just use a simple counter starting from A
-    // In a production app, you might want to track this globally or per month
-    final letter = 'A'; // Simple default for new items
-    return '$monthKey$letter';
-  }
-
   @override
   void initState() {
     super.initState();
+    _initializingLotCode = true;
+    _lotCode.addListener(() {
+      if (_initializingLotCode) return;
+      _lotCodeEdited = true;
+    });
     
     // Initialize with at least one barcode field
     _addBarcodeField();
@@ -175,8 +171,9 @@ class _NewItemPageState extends State<NewItemPage> {
     // Initialize controller
   _categoryController.text = _category;
   
-  // Initialize lot code
-  _lotCode.text = _generateBatchCode();
+  // Initialize lot code preview (actual code generated on save unless user overrides)
+  _lotCode.text = previewLotCode();
+  _initializingLotCode = false;
   }
 
   Future<void> _loadLookups() async {
@@ -403,7 +400,14 @@ class _NewItemPageState extends State<NewItemPage> {
         // Create initial lot if qtyOnHand > 0
         String? batchCode;
         if (qtyOnHand > 0) {
-          batchCode = _lotCode.text.trim().isNotEmpty ? _lotCode.text.trim() : _generateBatchCode();
+          if (_lotCodeEdited && _lotCode.text.trim().isNotEmpty) {
+            batchCode = _lotCode.text.trim();
+          } else {
+            batchCode = await generateNextLotCode(itemId: ref.id);
+          }
+          if (batchCode.trim().isEmpty) {
+            batchCode = await generateNextLotCode(itemId: ref.id);
+          }
           final lotRef = ref.collection('lots').doc();
           await lotRef.set({
             'lotCode': batchCode,

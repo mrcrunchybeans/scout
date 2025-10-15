@@ -8,13 +8,21 @@ import '../../widgets/brand_logo.dart';
 import '../../services/version_service.dart';
 import '../items/new_item_page.dart';
 import '../items/item_detail_page.dart';
-import '../items/add_audit_inventory_page.dart';
 import '../items/bulk_inventory_entry_page.dart';
+import '../items/add_audit_inventory_page.dart';
 import '../session/cart_session_page.dart';
 import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
 import '../reports/usage_report_page.dart';
+
+enum _DashboardMenuAction {
+  theme,
+  reports,
+  admin,
+  recalcStats,
+  clearData,
+}
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -24,11 +32,16 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
+  late final Future<String> _versionFuture;
+  late final Stream<DocumentSnapshot<Map<String, dynamic>>> _dashboardStatsStream;
+
   @override
   void initState() {
     super.initState();
     // Clear version cache on dashboard load to ensure fresh version display
     VersionService.clearCache();
+    _versionFuture = VersionService.getVersion();
+    _dashboardStatsStream = FirebaseFirestore.instance.collection('meta').doc('dashboard_stats').snapshots();
     // Check if operator name is set, prompt if not
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkOperatorName();
@@ -118,51 +131,46 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     final db = FirebaseFirestore.instance;
     final colorScheme = Theme.of(context).colorScheme;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isWideScreen = screenWidth >= 1100;
+    // Slightly reduce the header height to tighten top whitespace on web
+    final appBarHeight = isWideScreen ? 140.0 : 120.0;
+    final logoHeight = isWideScreen ? 100.0 : 90.0;
 
   // --- Server-side flag queries for lists ---
-  final lowQ = db
-    .collection('items')
-    .where('flagLow', isEqualTo: true)
-    .where('archived', isEqualTo: false);
+  final lowQ = db.collection('items').where('flagLow', isEqualTo: true);
 
   final expiringQ = db
     .collection('items')
     .where('flagExpiringSoon', isEqualTo: true)
-    .where('archived', isEqualTo: false)
     .orderBy('earliestExpiresAt');
 
-  final staleQ = db
-    .collection('items')
-    .where('flagStale', isEqualTo: true)
-    .where('archived', isEqualTo: false);
+  final staleQ = db.collection('items').where('flagStale', isEqualTo: true);
 
-  final expiredQ = db
-    .collection('items')
-    .where('flagExpired', isEqualTo: true)
-    .where('archived', isEqualTo: false);
+  // expiredQ no longer needed for duplicate row; Quick Status covers counts
 
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
-        toolbarHeight: 200,
+        toolbarHeight: appBarHeight,
         titleSpacing: 0,
-        title: const Center(child: BrandLogo(height: 120)),
+        title: Center(child: BrandLogo(height: logoHeight)),
         actions: [
     // NEW: operator chip
     const Padding(
       padding: EdgeInsets.symmetric(horizontal: 8),
       child: OperatorChip(),
     ),
-    PopupMenuButton<String>(
+    PopupMenuButton<_DashboardMenuAction>(
       onSelected: (v) async {
         final ctx = context; // capture-context for lint safety
-        if (v == 'reports') {
+        if (v == _DashboardMenuAction.reports) {
           Navigator.push(ctx, MaterialPageRoute(builder: (_) => const UsageReportPage()));
-        } else if (v == 'admin') {
+        } else if (v == _DashboardMenuAction.admin) {
           final ok = await AdminPin.ensure(ctx); // shows PIN dialog if needed
           if (!ctx.mounted || !ok) return;
           Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
-        } else if (v == 'recalc-stats') {
+        } else if (v == _DashboardMenuAction.recalcStats) {
           final ok = await AdminPin.ensure(ctx);
           if (!ctx.mounted || !ok) return;
           final confirm = await showDialog<bool>(
@@ -186,116 +194,217 @@ class _DashboardPageState extends State<DashboardPage> {
               ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
             }
           }
-        } else if (v == 'theme') {
+        } else if (v == _DashboardMenuAction.clearData) {
+          final password = await AdminPin.promptDeveloperPassword(ctx);
+          if (!ctx.mounted || password == null) return;
+          final confirm = await showDialog<bool>(
+            context: ctx,
+            builder: (_) => AlertDialog(
+              title: const Text('Clear inventory data?'),
+              content: const Text('This deletes all items, sessions, and cart sessions. This cannot be undone.'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete Everything')),
+              ],
+            ),
+          );
+          if (confirm == true) {
+            try {
+              await FirebaseFunctions.instance
+                  .httpsCallable('wipeInventoryData')
+                  .call({'password': password});
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Inventory cleared')));
+            } catch (e) {
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
+            }
+          }
+        } else if (v == _DashboardMenuAction.theme) {
           main.ThemeModeNotifier.instance.toggle();
         }
       },
       itemBuilder: (ctx) => [
-        const PopupMenuItem(value: 'theme', child: Text('Toggle Theme')),
-        const PopupMenuItem(value: 'reports', child: Text('Usage Reports')),
-        const PopupMenuItem(value: 'admin', child: Text('Admin / Config')),
+        const PopupMenuItem(value: _DashboardMenuAction.theme, child: Text('Toggle Theme')),
+        const PopupMenuItem(value: _DashboardMenuAction.reports, child: Text('Usage Reports')),
+        const PopupMenuItem(value: _DashboardMenuAction.admin, child: Text('Admin / Config')),
         const PopupMenuDivider(),
-        const PopupMenuItem(value: 'recalc-stats', child: Text('Recalc Dashboard Counts')),
+        const PopupMenuItem(value: _DashboardMenuAction.recalcStats, child: Text('Recalc Dashboard Counts')),
+        const PopupMenuItem(
+          value: _DashboardMenuAction.clearData,
+          child: Text(
+            'Clear Inventory Data',
+            style: TextStyle(color: Colors.redAccent),
+          ),
+        ),
       ],
     ),
-  ],
+        ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        // Trim top padding a bit to bring content closer to the logo header
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         children: [
-          // Primary Action Buttons - Large and prominent (2x3 grid)
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.inventory_2_outlined,
-                  color: colorScheme.primary,
-                  label: 'Bulk Entry',
-                  subtitle: 'Scan multiple items',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const BulkInventoryEntryPage()),
+          // Removed the extra spacer to reduce large top gap
+
+          // Primary Actions + Quick Status (stacked vertically)
+          LayoutBuilder(
+            builder: (context, constraints) {
+              Widget buildActionsGrid() {
+                // Six tiles in a proper grid (2 rows x 3 columns on wide, stacked on narrow)
+                final tiles = <Widget>[
+                  _PrimaryActionButton(
+                    icon: Icons.inventory_2_outlined,
+                    color: colorScheme.primary,
+                    label: 'Bulk Entry',
+                    subtitle: 'Scan multiple items',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const BulkInventoryEntryPage()),
+                      );
+                    },
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.qr_code_scanner,
+                    color: Colors.blue.shade600,
+                    label: 'Add/Audit',
+                    subtitle: 'Single item entry',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const AddAuditInventoryPage()),
+                      );
+                    },
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.playlist_add_check_circle,
+                    color: Colors.teal.shade700,
+                    label: 'Cart Session',
+                    subtitle: 'Start session',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const CartSessionPage()),
+                      );
+                    },
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.inventory_2,
+                    color: colorScheme.primary.withValues(alpha: 0.85),
+                    label: 'View Items',
+                    subtitle: 'Browse inventory',
+                    onTap: () => context.go('/items'),
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.list_alt,
+                    color: Colors.blue.shade600,
+                    label: 'Sessions',
+                    subtitle: 'View session history',
+                    onTap: () => context.go('/sessions'),
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.add_box,
+                    color: Colors.green.shade600,
+                    label: 'New Item',
+                    subtitle: 'Add to inventory',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const NewItemPage()),
+                      );
+                    },
+                  ),
+                ];
+
+                // Build a proper 3-column grid
+                return Column(
+                  children: [
+                    // Row 1: Bulk Entry, Add/Audit, Cart Session
+                    Row(
+                      children: [
+                        Expanded(child: tiles[0]),
+                        const SizedBox(width: 16),
+                        Expanded(child: tiles[1]),
+                        const SizedBox(width: 16),
+                        Expanded(child: tiles[2]),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // Row 2: View Items, Sessions, New Item
+                    Row(
+                      children: [
+                        Expanded(child: tiles[3]),
+                        const SizedBox(width: 16),
+                        Expanded(child: tiles[4]),
+                        const SizedBox(width: 16),
+                        Expanded(child: tiles[5]),
+                      ],
+                    ),
+                  ],
+                );
+              }
+
+              Widget buildQuickStatus() {
+                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                  stream: db.collection('meta').doc('dashboard_stats').snapshots(),
+                  builder: (context, statsSnap) {
+                    final stats = statsSnap.data?.data();
+                    final lowCount = (stats?['low'] as num?)?.toInt() ?? 0;
+                    final expiringCount = (stats?['expiring'] as num?)?.toInt() ?? 0;
+                    final staleCount = (stats?['stale'] as num?)?.toInt() ?? 0;
+                    final expiredCount = (stats?['expired'] as num?)?.toInt() ?? 0;
+                    final updatedAtTs = stats?['updatedAt'];
+                    DateTime? updatedAt;
+                    if (updatedAtTs is Timestamp) updatedAt = updatedAtTs.toDate();
+                    String updatedLabel() {
+                      if (updatedAt == null) return 'Updated: —';
+                      final dt = updatedAt.toLocal();
+                      String two(int n) => n.toString().padLeft(2, '0');
+                      return 'Updated at ${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+                    }
+
+                    final cards = [
+                      _StatusCardStatic(title: 'Low Stock', count: lowCount, icon: Icons.arrow_downward, color: colorScheme.error, filterType: 'low'),
+                      _StatusCardStatic(title: 'Expiring Soon', count: expiringCount, icon: Icons.schedule, color: colorScheme.secondary, filterType: 'expiring'),
+                      _StatusCardStatic(title: 'Stale', count: staleCount, icon: Icons.inbox_outlined, color: colorScheme.tertiary, filterType: 'stale'),
+                      _StatusCardStatic(title: 'Expired', count: expiredCount, icon: Icons.warning, color: Colors.red.shade700, filterType: 'expired'),
+                    ];
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'Quick Status',
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: colorScheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        // Always use 2x2 grid layout since Quick Status is below the tiles
+                        Row(children: [Expanded(child: cards[0]), const SizedBox(width: 8), Expanded(child: cards[1])]),
+                        const SizedBox(height: 8),
+                        Row(children: [Expanded(child: cards[2]), const SizedBox(width: 8), Expanded(child: cards[3])]),
+                        const SizedBox(height: 8),
+                        Text(updatedLabel(), style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
+                      ],
                     );
                   },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.qr_code_scanner,
-                  color: colorScheme.secondary,
-                  label: 'Add/Audit',
-                  subtitle: 'Single item entry',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const AddAuditInventoryPage()),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.playlist_add_check_circle,
-                  color: colorScheme.tertiary,
-                  label: 'Cart Session',
-                  subtitle: 'Start session',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CartSessionPage()),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.inventory_2,
-                  color: colorScheme.primary.withValues(alpha: 0.8), // Darker version of primary
-                  label: 'View Items',
-                  subtitle: 'Browse inventory',
-                  onTap: () {
-                    context.go('/items');
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.list_alt,
-                  color: Colors.blue.shade600,
-                  label: 'Sessions',
-                  subtitle: 'View session history',
-                  onTap: () {
-                    context.go('/sessions');
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _PrimaryActionButton(
-                  icon: Icons.add_box,
-                  color: Colors.green.shade600,
-                  label: 'New Item',
-                  subtitle: 'Add to inventory',
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const NewItemPage()),
-                    );
-                  },
-                ),
-              ),
-            ],
+                );
+              }
+
+              // Always stack: tiles on top, Quick Status below
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  buildActionsGrid(),
+                  const SizedBox(height: 24),
+                  buildQuickStatus(),
+                ],
+              );
+            },
           ),
 
-          const SizedBox(height: 40),
+          const SizedBox(height: 32),
 
-          // Welcome message
+          // Welcome (below the grid, matching the older design)
           Center(
             child: Column(
               children: [
@@ -319,129 +428,7 @@ class _DashboardPageState extends State<DashboardPage> {
               ],
             ),
           ),
-
-          const SizedBox(height: 40),
-
-          // Inventory Status Overview
-          Text(
-            'Quick Status',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 16),
-          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: db.collection('meta').doc('dashboard_stats').snapshots(),
-            builder: (context, statsSnap) {
-              final stats = statsSnap.data?.data();
-              final lowCount = (stats?['low'] as num?)?.toInt() ?? 0;
-              final expiringCount = (stats?['expiring'] as num?)?.toInt() ?? 0;
-              final staleCount = (stats?['stale'] as num?)?.toInt() ?? 0;
-              final expiredCount = (stats?['expired'] as num?)?.toInt() ?? 0;
-              final updatedAtTs = stats?['updatedAt'];
-              DateTime? updatedAt;
-              if (updatedAtTs is Timestamp) {
-                updatedAt = updatedAtTs.toDate();
-              }
-              String updatedLabel() {
-                if (updatedAt == null) return 'Updated: —';
-                final dt = updatedAt.toLocal();
-                String two(int n) => n.toString().padLeft(2, '0');
-                final y = dt.year.toString();
-                final m = two(dt.month);
-                final d = two(dt.day);
-                final hh = two(dt.hour);
-                final mm = two(dt.minute);
-                return 'Updated at $y-$m-$d $hh:$mm';
-              }
-              return Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _StatusCardStatic(
-                          title: 'Low Stock',
-                          count: lowCount,
-                          icon: Icons.arrow_downward,
-                          color: colorScheme.error,
-                          filterType: 'low',
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _StatusCardStatic(
-                          title: 'Expiring Soon',
-                          count: expiringCount,
-                          icon: Icons.schedule,
-                          color: colorScheme.secondary,
-                          filterType: 'expiring',
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _StatusCardStatic(
-                          title: 'Stale',
-                          count: staleCount,
-                          icon: Icons.inbox_outlined,
-                          color: colorScheme.tertiary,
-                          filterType: 'stale',
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _StatusCardStatic(
-                          title: 'Expired',
-                          count: expiredCount,
-                          icon: Icons.warning,
-                          color: Colors.red.shade700,
-                          filterType: 'expired',
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      updatedLabel(),
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _StatusCard(
-                  title: 'Stale',
-                  count: 0,
-                  icon: Icons.inbox_outlined,
-                  color: colorScheme.tertiary,
-                  stream: staleQ.snapshots(),
-                  filterType: 'stale',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _StatusCard(
-                  title: 'Expired',
-                  count: 0,
-                  icon: Icons.warning,
-                  color: Colors.red.shade700,
-                  stream: expiredQ.snapshots(),
-                  filterType: 'expired',
-                ),
-              ),
-            ],
-          ),
+          // Duplicate Stale/Expired row removed; covered by Quick Status above
 
           const SizedBox(height: 32),
 
@@ -485,19 +472,42 @@ class _DashboardPageState extends State<DashboardPage> {
 
           const SizedBox(height: 40),
 
-          // Version Footer
-          FutureBuilder<String>(
-            future: VersionService.getVersion(),
-            builder: (context, snapshot) {
-              final version = snapshot.data ?? 'Loading...';
-              return Center(
-                child: Text(
-                  'SCOUT v$version',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
-                    fontWeight: FontWeight.w300,
-                  ),
-                ),
+          // Version & Data Refresh Footer
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: _dashboardStatsStream,
+            builder: (context, statsSnap) {
+              final stats = statsSnap.data?.data();
+              final updatedAtTs = stats?['updatedAt'];
+              DateTime? updatedAt;
+              if (updatedAtTs is Timestamp) {
+                updatedAt = updatedAtTs.toDate();
+              }
+
+              final refreshLabel = updatedAt != null
+                  ? 'Data refreshed ${MaterialLocalizations.of(context).formatMediumDate(updatedAt.toLocal())}'
+                  : 'Data refresh pending';
+
+              return FutureBuilder<String>(
+                future: _versionFuture,
+                builder: (context, snapshot) {
+                  final version = snapshot.data ?? 'Loading...';
+                  final textTheme = Theme.of(context).textTheme.bodySmall;
+                  final mutedColor = colorScheme.onSurfaceVariant.withValues(alpha: 0.6);
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'SCOUT v$version',
+                        style: textTheme?.copyWith(color: mutedColor, fontWeight: FontWeight.w300),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        refreshLabel,
+                        style: textTheme?.copyWith(color: mutedColor, fontWeight: FontWeight.w300),
+                      ),
+                    ],
+                  );
+                },
               );
             },
           ),
@@ -576,81 +586,7 @@ class _PrimaryActionButton extends StatelessWidget {
   }
 }
 
-// --- Status Card (Shows count with icon) ---
-class _StatusCard extends StatelessWidget {
-  final String title;
-  final int count;
-  final IconData icon;
-  final Color color;
-  final Stream<QuerySnapshot<Map<String, dynamic>>> stream;
-  final String filterType;
-
-  const _StatusCard({
-    required this.title,
-    required this.count,
-    required this.icon,
-    required this.color,
-    required this.stream,
-    required this.filterType,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return StreamBuilder(
-      stream: stream,
-      builder: (context, snap) {
-        final actualCount = snap.data?.docs.length ?? 0;
-
-        return InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () {
-            // Navigate to items page - filters will be handled by the items page itself
-            context.go('/items');
-          },
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              color: colorScheme.surface,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.1),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 32, color: color),
-                const SizedBox(height: 8),
-                Text(
-                  actualCount.toString(),
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  title,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
+// (removed: old _StatusCard that streamed live counts; we use aggregated stats now)
 
 // --- Bucket Section ---
 class _BucketSection extends StatelessWidget {
@@ -701,15 +637,20 @@ class _BucketSection extends StatelessWidget {
             );
           }
           final docs = snap.data?.docs ?? [];
-          final int cap = maxItems ?? docs.length;
-          final visibleDocs = docs.take(cap).toList();
+          final filteredDocs = docs.where((doc) {
+            final archived = doc.data()['archived'];
+            return !(archived is bool && archived);
+          }).toList();
+          final int cap = maxItems ?? filteredDocs.length;
+          final visibleDocs = filteredDocs.take(cap).toList();
+          final totalCount = filteredDocs.length;
 
           return ExpansionTile(
             leading: Icon(icon, color: color),
             title: Text(title),
-            subtitle: Text('${docs.length} item(s)'),
+            subtitle: Text('$totalCount item(s)'),
             children: [
-              if (docs.isEmpty) const ListTile(title: Text('Nothing here — nice!')),
+              if (filteredDocs.isEmpty) const ListTile(title: Text('Nothing here — nice!')),
               for (final d in visibleDocs)
                 _ItemRow(
                   id: d.id,
@@ -717,7 +658,7 @@ class _BucketSection extends StatelessWidget {
                   showEarliestExpiry: showEarliestExpiry,
                   showLastUsed: showLastUsed,
                 ),
-              if (docs.length > (maxItems ?? docs.length))
+              if (totalCount > (maxItems ?? totalCount))
                 ListTile(
                   title: const Text('See all'),
                   trailing: const Icon(Icons.chevron_right),

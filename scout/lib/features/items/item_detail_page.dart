@@ -4,47 +4,13 @@ import 'package:go_router/go_router.dart';
 import '../../utils/audit.dart';
 import '../../utils/operator_store.dart';
 import '../../widgets/scanner_sheet.dart';
+import '../../utils/lot_code.dart';
 import 'quick_use_sheet.dart';
 import 'bulk_inventory_entry_page.dart';
 import 'new_item_page.dart';
 
 String _normalizeBarcode(String s) =>
   s.replaceAll(RegExp(r'[^0-9A-Za-z]'), '').trim();
-
-// Helper to generate lot codes in YYMM-XXX format (e.g., 2509-001)
-Future<String> _generateLotCode(String itemId) async {
-  final now = DateTime.now();
-  final yy = now.year.toString().substring(2); // Last two digits of year
-  final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-  final monthPrefix = '$yy$mm';
-
-  // Query existing lot codes for this month to find the next sequential number
-  final db = FirebaseFirestore.instance;
-  final lotsQuery = await db
-      .collection('items')
-      .doc(itemId)
-      .collection('lots')
-      .where('lotCode', isGreaterThanOrEqualTo: monthPrefix)
-      .where('lotCode', isLessThan: '${monthPrefix}Z')
-      .orderBy('lotCode', descending: true)
-      .limit(1)
-      .get();
-
-  int nextNumber = 1; // Default to 001
-  if (lotsQuery.docs.isNotEmpty) {
-    final lastLotCode = lotsQuery.docs.first.data()['lotCode'] as String?;
-    if (lastLotCode != null && lastLotCode.startsWith(monthPrefix) && lastLotCode.length >= 7) {
-      // Extract the number part (last 3 characters) and increment
-      final numberPart = lastLotCode.substring(lastLotCode.length - 3);
-      final currentNumber = int.tryParse(numberPart) ?? 0;
-      nextNumber = currentNumber + 1;
-    }
-  }
-
-  // Format as 3-digit number with leading zeros
-  final formattedNumber = nextNumber.toString().padLeft(3, '0');
-  return '$monthPrefix-$formattedNumber';
-}
 
 class ItemDetailPage extends StatelessWidget {
   final String itemId;
@@ -1138,7 +1104,7 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
 
   final itemDoc = await db.collection('items').doc(itemId).get();
   if (!itemDoc.exists || !context.mounted) return;
-  final suggestedLotCode = await _generateLotCode(itemId);
+  final suggestedLotCode = await generateNextLotCode(itemId: itemId);
 
   final cQtyInit = TextEditingController();
   final cQtyRemain = TextEditingController();

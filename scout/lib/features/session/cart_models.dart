@@ -17,6 +17,26 @@ class CartLine {
     this.endQty,
   });
 
+  CartLine copyWith({
+    String? itemId,
+    String? itemName,
+    String? baseUnit,
+    String? lotId,
+    String? lotCode,
+    num? initialQty,
+    num? endQty,
+  }) {
+    return CartLine(
+      itemId: itemId ?? this.itemId,
+      itemName: itemName ?? this.itemName,
+      baseUnit: baseUnit ?? this.baseUnit,
+      lotId: lotId ?? this.lotId,
+      lotCode: lotCode ?? this.lotCode,
+      initialQty: initialQty ?? this.initialQty,
+      endQty: endQty ?? this.endQty,
+    );
+  }
+
   num get usedQty => (endQty == null) ? 0 : (initialQty - (endQty ?? 0)).clamp(0, double.infinity);
 
   Map<String, dynamic> toMap() => {

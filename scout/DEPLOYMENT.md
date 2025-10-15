@@ -143,3 +143,17 @@ Steps after updating Functions:
 Notes:
 
 - Incremental updates occur on item writes; the manual recompute is useful after bulk changes or initial deployment.
+
+## Post-clean slate workflow
+
+After deploying the new `wipeInventoryData` Cloud Function and rebuilding the web app:
+
+1. **Set required env vars**: `ALGOLIA_APP_ID`, `ALGOLIA_ADMIN_API_KEY`, `ALGOLIA_INDEX_NAME`, and `DEV_PASSWORD` must be supplied either via `functions/.env` (for local emulation) or your Firebase runtime environment.
+2. **Deploy the function**: From `functions/`, run `npm run build` followed by
+   ```powershell
+   firebase deploy --only functions:wipeInventoryData
+   ```
+3. **Update web hosting**: From the Flutter project root, rebuild and upload the web bundle so the new dashboard menu is available.
+4. **Clear inventory (optional)**: In the dashboard menu choose **Clear Inventory Data**, confirm the destructive prompt, and enter the developer password. This deletes items, sessions, cart sessions, and their subcollections, resets `meta/dashboard_stats`, and clears the Algolia index.
+5. **Rebuild Algolia index**: After a wipe or large import, go to the Admin tools and run **Sync all items to Algolia** to repopulate search.
+6. **Verify**: Use **Recalc Dashboard Counts** to ensure the tiles reflect the refreshed data.
