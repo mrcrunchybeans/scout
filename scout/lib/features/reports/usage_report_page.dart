@@ -45,14 +45,47 @@ class _UsageReportPageState extends State<UsageReportPage> {
   }
 
   Future<void> _loadFilters() async {
-    final interventionsDoc = await FirebaseFirestore.instance.collection('lookups').doc('interventions').get();
-    final grantsDoc = await FirebaseFirestore.instance.collection('lookups').doc('grants').get();
+    final interventionsMap = await _loadLookupMap(collectionName: 'interventions', lookupDocId: 'interventions');
+    final grantsMap = await _loadLookupMap(collectionName: 'grants', lookupDocId: 'grants');
 
     if (mounted) {
       setState(() {
-        _interventions = Map<String, String>.from(interventionsDoc.data() ?? {});
-        _grants = Map<String, String>.from(grantsDoc.data() ?? {});
+        _interventions = interventionsMap;
+        _grants = grantsMap;
       });
+    }
+  }
+
+  /// Load a lookup map in a robust way:
+  /// - Prefer a document at `lookups/<lookupDocId>` that contains a map of id->name.
+  /// - Otherwise fall back to querying the collection `<collectionName>` for documents
+  ///   and using each doc's `name` field (or id if missing).
+  Future<Map<String, String>> _loadLookupMap({required String collectionName, required String lookupDocId}) async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('lookups').doc(lookupDocId).get();
+      if (doc.exists) {
+        final data = doc.data();
+        if (data != null) {
+          // Normalize values to strings
+          final out = <String, String>{};
+          data.forEach((k, v) {
+            if (v != null) out[k] = v.toString();
+          });
+          if (out.isNotEmpty) return out;
+        }
+      }
+
+      // Fallback: read collection documents
+      final snap = await FirebaseFirestore.instance.collection(collectionName).get();
+      final map = <String, String>{};
+      for (final d in snap.docs) {
+        final data = d.data();
+        final name = (data['name'] ?? data['label'] ?? d.id) as String;
+        map[d.id] = name;
+      }
+      return map;
+    } catch (e) {
+      return {};
     }
   }
 
@@ -173,26 +206,29 @@ class _UsageReportPageState extends State<UsageReportPage> {
         trendData.add(FlSpot(i.toDouble(), dailyUsage[sortedDays[i]] ?? 0));
       }
 
-      // Fetch names for display
-      final interventions = await FirebaseFirestore.instance.collection('lookups').doc('interventions').get();
-      final grants = await FirebaseFirestore.instance.collection('lookups').doc('grants').get();
-      final interventionMap = interventions.data() ?? {};
-      final grantMap = grants.data() ?? {};
+      // Use previously-loaded lookup maps (fall back to unknown labels)
+      final interventionMap = _interventions;
+      final grantMap = _grants;
+
+      String labelFor(Map<String, String> map, String id, String fallback) {
+        if (map.containsKey(id) && map[id]!.trim().isNotEmpty) return map[id]!;
+        return fallback;
+      }
 
       // Create usage data with names
       final usageData = [
         ...interventionTotals.entries.map((entry) => {
-          'type': 'intervention',
-          'id': entry.key,
-          'name': interventionMap[entry.key] ?? 'Unknown Intervention',
-          'total': entry.value,
-        }),
+              'type': 'intervention',
+              'id': entry.key,
+              'name': labelFor(interventionMap, entry.key, 'Unknown Intervention'),
+              'total': entry.value,
+            }),
         ...grantTotals.entries.map((entry) => {
-          'type': 'grant',
-          'id': entry.key,
-          'name': grantMap[entry.key] ?? 'Unknown Grant',
-          'total': entry.value,
-        }),
+              'type': 'grant',
+              'id': entry.key,
+              'name': labelFor(grantMap, entry.key, 'Unknown Grant'),
+              'total': entry.value,
+            }),
       ]..sort((a, b) => (b['total'] as double).compareTo(a['total'] as double));
 
       setState(() {

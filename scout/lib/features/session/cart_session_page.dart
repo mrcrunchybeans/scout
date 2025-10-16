@@ -46,7 +46,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   String _locationText = '';
   String _notes = '';
   DateTime? _customStartDate;
-  final String _status = 'open';
+  String _status = 'open';
   String? _sessionId;
   bool _busy = false;
   bool _usbCaptureOn = false;
@@ -82,6 +82,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         _defaultGrantId = data['grantId'] as String?;
         _locationText = data['locationText'] as String? ?? '';
         _notes = data['notes'] as String? ?? '';
+        _status = (data['status'] as String?)?.toLowerCase() ?? 'open';
         // Load custom start date if it exists
         final startedAt = data['startedAt'];
         if (startedAt is Timestamp) {
@@ -570,6 +571,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'createdAt': Timestamp.fromDate(now),
       });
 
+      if (mounted) {
+        setState(() {
+          _status = 'open';
+        });
+      }
+
       if (mounted && _customStartDate == null) {
         setState(() {
           _customStartDate = sessionDate;
@@ -966,6 +973,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
         },
         SetOptions(merge: true),
       );
+
+      if (mounted) {
+        setState(() {
+          _status = 'closed';
+        });
+      }
 
       // High-level audit for the close (simplified)
       try {
