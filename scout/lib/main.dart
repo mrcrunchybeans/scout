@@ -17,6 +17,7 @@ import 'features/items/item_detail_page.dart';
 import 'features/items/items_page.dart';
 import 'features/session/sessions_list_page.dart';
 import 'dev/label_qr_test_page.dart';
+import 'dev/debug_dashboard_stats.dart';
 import 'features/admin/algolia_config_page.dart';
 import 'features/admin/label_config_page.dart';
 import 'services/search_service.dart';
@@ -330,6 +331,11 @@ final GoRouter _router = GoRouter(
       path: '/dev/label-test',
       name: 'labelQrTest',
       builder: (context, state) => const LabelQrTestPage(),
+    ),
+    GoRoute(
+      path: '/dev/dashboard-stats',
+      name: 'debugDashboardStats',
+      builder: (context, state) => const DebugDashboardStatsPage(),
     ),
     GoRoute(
       path: '/admin/algolia',

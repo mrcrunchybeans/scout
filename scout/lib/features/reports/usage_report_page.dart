@@ -34,8 +34,12 @@ class _UsageReportPageState extends State<UsageReportPage> {
   void initState() {
     super.initState();
     _setDefaultDateRange();
-    _loadFilters();
-    _generateReport();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    await _loadFilters();
+    await _generateReport();
   }
 
   void _setDefaultDateRange() {
@@ -402,7 +406,8 @@ class _UsageReportPageState extends State<UsageReportPage> {
   }
 
   Widget _buildSummaryCards() {
-    final totalUsage = _usageData.fold<double>(0, (currentSum, item) => currentSum + (item['total'] as double));
+    // Use intervention totals to avoid double-counting (each usage has both intervention and grant)
+    final totalUsage = _interventionTotals.values.fold<double>(0, (sum, value) => sum + value);
     final interventionCount = _interventionTotals.length;
     final grantCount = _grantTotals.length;
     final avgDaily = totalUsage / (_endDate!.difference(_startDate!).inDays + 1);
@@ -642,6 +647,14 @@ class _UsageReportPageState extends State<UsageReportPage> {
                       final item = _usageData[index];
                       final isIntervention = item['type'] == 'intervention';
 
+                      // Calculate percentage within the same category
+                      final categoryTotal = _usageData
+                          .where((i) => i['type'] == item['type'])
+                          .fold<double>(0, (sum, i) => sum + (i['total'] as double));
+                      final percentage = categoryTotal > 0 
+                          ? ((item['total'] as double) / categoryTotal * 100)
+                          : 0.0;
+
                       return ListTile(
                         leading: CircleAvatar(
                           backgroundColor: isIntervention
@@ -656,7 +669,7 @@ class _UsageReportPageState extends State<UsageReportPage> {
                         title: Text(item['name'] as String),
                         subtitle: Text('${item['type']} • ${item['total'].toStringAsFixed(1)} items used'),
                         trailing: Text(
-                          '${((item['total'] as double) / _usageData.fold<double>(0, (currentSum, i) => currentSum + (i['total'] as double)) * 100).toStringAsFixed(1)}%',
+                          '${percentage.toStringAsFixed(1)}%',
                           style: Theme.of(context).textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.w600,
                             color: Theme.of(context).colorScheme.primary,

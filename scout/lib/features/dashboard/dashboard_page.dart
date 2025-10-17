@@ -7,7 +7,6 @@ import '../../main.dart' as main;
 import '../../widgets/brand_logo.dart';
 import '../../services/version_service.dart';
 import '../items/new_item_page.dart';
-import '../items/item_detail_page.dart';
 import '../items/bulk_inventory_entry_page.dart';
 import '../items/add_audit_inventory_page.dart';
 import '../session/cart_session_page.dart';
@@ -15,12 +14,15 @@ import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
 import '../reports/usage_report_page.dart';
+import '../../dev/manual_dashboard_fix.dart';
 
 enum _DashboardMenuAction {
   theme,
   reports,
   admin,
   recalcStats,
+  recalcItemFlags,
+  manualFixStats,
   clearData,
 }
 
@@ -137,18 +139,6 @@ class _DashboardPageState extends State<DashboardPage> {
     final appBarHeight = isWideScreen ? 140.0 : 120.0;
     final logoHeight = isWideScreen ? 100.0 : 90.0;
 
-  // --- Server-side flag queries for lists ---
-  final lowQ = db.collection('items').where('flagLow', isEqualTo: true);
-
-  final expiringQ = db
-    .collection('items')
-    .where('flagExpiringSoon', isEqualTo: true)
-    .orderBy('earliestExpiresAt');
-
-  final staleQ = db.collection('items').where('flagStale', isEqualTo: true);
-
-  // expiredQ no longer needed for duplicate row; Quick Status covers counts
-
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
@@ -170,6 +160,33 @@ class _DashboardPageState extends State<DashboardPage> {
           final ok = await AdminPin.ensure(ctx); // shows PIN dialog if needed
           if (!ctx.mounted || !ok) return;
           Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
+        } else if (v == _DashboardMenuAction.recalcItemFlags) {
+          final ok = await AdminPin.ensure(ctx);
+          if (!ctx.mounted || !ok) return;
+          final confirm = await showDialog<bool>(
+            context: ctx,
+            builder: (_) => AlertDialog(
+              title: const Text('Recalculate Item Flags?'),
+              content: const Text('This recomputes low/expiring/stale/expired flags for ALL items. This may take a few minutes.'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Recalculate')),
+              ],
+            ),
+          );
+          if (confirm == true) {
+            try {
+              final result = await FirebaseFunctions.instance.httpsCallable('recalculateAllItemAggregates')();
+              if (!ctx.mounted) return;
+              final processed = result.data['processed'] ?? 0;
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                SnackBar(content: Text('Recalculated $processed items successfully')),
+              );
+            } catch (e) {
+              if (!ctx.mounted) return;
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
+            }
+          }
         } else if (v == _DashboardMenuAction.recalcStats) {
           final ok = await AdminPin.ensure(ctx);
           if (!ctx.mounted || !ok) return;
@@ -220,6 +237,17 @@ class _DashboardPageState extends State<DashboardPage> {
               ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
             }
           }
+        } else if (v == _DashboardMenuAction.manualFixStats) {
+          try {
+            final counts = await manuallyFixDashboardStats();
+            if (!ctx.mounted) return;
+            ScaffoldMessenger.of(ctx).showSnackBar(
+              SnackBar(content: Text('Fixed! Low: ${counts['low']}, Expiring: ${counts['expiring']}, Stale: ${counts['stale']}, Expired: ${counts['expired']}')),
+            );
+          } catch (e) {
+            if (!ctx.mounted) return;
+            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
+          }
         } else if (v == _DashboardMenuAction.theme) {
           main.ThemeModeNotifier.instance.toggle();
         }
@@ -229,7 +257,9 @@ class _DashboardPageState extends State<DashboardPage> {
         const PopupMenuItem(value: _DashboardMenuAction.reports, child: Text('Usage Reports')),
         const PopupMenuItem(value: _DashboardMenuAction.admin, child: Text('Admin / Config')),
         const PopupMenuDivider(),
-        const PopupMenuItem(value: _DashboardMenuAction.recalcStats, child: Text('Recalc Dashboard Counts')),
+        const PopupMenuItem(value: _DashboardMenuAction.recalcItemFlags, child: Text('Recalc Item Flags')),
+        const PopupMenuItem(value: _DashboardMenuAction.recalcStats, child: Text('Recalc Dashboard Counts (Cloud)')),
+        const PopupMenuItem(value: _DashboardMenuAction.manualFixStats, child: Text('Manual Fix Counts (Client)')),
         const PopupMenuItem(
           value: _DashboardMenuAction.clearData,
           child: Text(
@@ -371,7 +401,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          'Quick Status',
+                          'Items needing attention',
                           style: Theme.of(context).textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w600,
                             color: colorScheme.onSurface,
@@ -395,79 +425,36 @@ class _DashboardPageState extends State<DashboardPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   buildActionsGrid(),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 32),
+                  // Welcome section
+                  Center(
+                    child: Column(
+                      children: [
+                        Text(
+                          'Welcome to SCOUT',
+                          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: colorScheme.onSurface,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Manage your inventory with ease',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w400,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 32),
                   buildQuickStatus(),
                 ],
               );
             },
-          ),
-
-          const SizedBox(height: 32),
-
-          // Welcome (below the grid, matching the older design)
-          Center(
-            child: Column(
-              children: [
-                Text(
-                  'Welcome to SCOUT',
-                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.onSurface,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Manage your inventory with ease',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w400,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          // Duplicate Stale/Expired row removed; covered by Quick Status above
-
-          const SizedBox(height: 32),
-
-          // Items Needing Attention
-          Text(
-            'Items Needing Attention',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: colorScheme.onSurface,
-            ),
-          ),
-          const SizedBox(height: 16),
-          _BucketSection(
-            title: 'Low stock items',
-            icon: Icons.arrow_downward,
-            color: colorScheme.error,
-            query: lowQ,
-            maxItems: 10,
-            bucketParam: 'low',
-          ),
-          const SizedBox(height: 8),
-          _BucketSection(
-            title: 'Expiring soon',
-            icon: Icons.schedule,
-            color: colorScheme.secondary,
-            query: expiringQ,
-            showEarliestExpiry: true,
-            maxItems: 10,
-            bucketParam: 'expiring',
-          ),
-          const SizedBox(height: 8),
-          _BucketSection(
-            title: 'Stale items',
-            icon: Icons.inbox_outlined,
-            color: colorScheme.tertiary,
-            query: staleQ,
-            showLastUsed: true,
-            maxItems: 10,
-            bucketParam: 'stale',
           ),
 
           const SizedBox(height: 40),
@@ -583,218 +570,6 @@ class _PrimaryActionButton extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-// (removed: old _StatusCard that streamed live counts; we use aggregated stats now)
-
-// --- Bucket Section ---
-class _BucketSection extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final Color color;
-  final Query<Map<String, dynamic>> query;
-  final bool showEarliestExpiry;
-  final bool showLastUsed;
-  final int? maxItems; // limit visible rows for performance
-  final String? bucketParam; // optional quick-filter param to pass to items
-
-  const _BucketSection({
-    required this.title,
-    required this.icon,
-    required this.color,
-    required this.query,
-    this.showEarliestExpiry = false,
-    this.showLastUsed = false,
-    this.maxItems,
-    this.bucketParam,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1,
-      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: query.snapshots(),
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return ListTile(
-              leading: Icon(icon, color: color),
-              title: Text(title),
-              subtitle: Text('Error: ${snap.error}'),
-            );
-          }
-          if (snap.connectionState == ConnectionState.waiting) {
-            return ListTile(
-              leading: Icon(icon, color: color),
-              title: Text(title),
-              subtitle: const Text('Loading...'),
-              trailing: const SizedBox(
-                height: 18,
-                width: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            );
-          }
-          final docs = snap.data?.docs ?? [];
-          final filteredDocs = docs.where((doc) {
-            final archived = doc.data()['archived'];
-            return !(archived is bool && archived);
-          }).toList();
-          final int cap = maxItems ?? filteredDocs.length;
-          final visibleDocs = filteredDocs.take(cap).toList();
-          final totalCount = filteredDocs.length;
-
-          return ExpansionTile(
-            leading: Icon(icon, color: color),
-            title: Text(title),
-            subtitle: Text('$totalCount item(s)'),
-            children: [
-              if (filteredDocs.isEmpty) const ListTile(title: Text('Nothing here — nice!')),
-              for (final d in visibleDocs)
-                _ItemRow(
-                  id: d.id,
-                  data: d.data(),
-                  showEarliestExpiry: showEarliestExpiry,
-                  showLastUsed: showLastUsed,
-                ),
-              if (totalCount > (maxItems ?? totalCount))
-                ListTile(
-                  title: const Text('See all'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context.go(bucketParam == null ? '/items' : '/items?bucket=$bucketParam'),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _ItemRow extends StatelessWidget {
-  final String id;
-  final Map<String, dynamic> data;
-  final bool showEarliestExpiry;
-  final bool showLastUsed;
-
-  const _ItemRow({
-    required this.id,
-    required this.data,
-    required this.showEarliestExpiry,
-    required this.showLastUsed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final name = (data['name'] ?? 'Unnamed') as String;
-    final qty = (data['qtyOnHand'] ?? 0) as num;
-    final minQty = (data['minQty'] ?? 0) as num;
-    final colorScheme = Theme.of(context).colorScheme;
-
-    final tsEarliest = data['earliestExpiresAt'];
-    final earliestExpiresAt = (tsEarliest is Timestamp) ? tsEarliest.toDate() : null;
-
-    final tsLastUsed = data['lastUsedAt'];
-    final lastUsedAt = (tsLastUsed is Timestamp) ? tsLastUsed.toDate() : null;
-
-    String sub = 'On hand: $qty • Min: $minQty';
-    if (showEarliestExpiry && earliestExpiresAt != null) {
-      sub += ' • Exp: ${MaterialLocalizations.of(context).formatFullDate(earliestExpiresAt)}';
-    }
-    if (showLastUsed && lastUsedAt != null) {
-      sub += ' • Last used: ${MaterialLocalizations.of(context).formatFullDate(lastUsedAt)}';
-    }
-
-    return ListTile(
-      title: Text(name),
-      subtitle: Text(sub),
-      trailing: TextButton.icon(
-        icon: Icon(Icons.remove_circle_outline, color: colorScheme.onSurface),
-        label: Text('Quick use', style: TextStyle(color: colorScheme.onSurface)),
-        onPressed: () async {
-          await _showQuickAdjustSheet(context, id, name);
-        },
-      ),
-      onTap: () {
-        GoRouter.of(context).go('/items/$id');
-      },
-    );
-  }
-
-  Future<void> _showQuickAdjustSheet(BuildContext context, String itemId, String itemName) async {
-    try {
-      // Get lots for this item, sorted by FEFO (earliest expiration first)
-      final lotsQuery = await FirebaseFirestore.instance
-          .collection('items')
-          .doc(itemId)
-          .collection('lots')
-          .where('qtyRemaining', isGreaterThan: 0)
-          .get();
-
-      if (lotsQuery.docs.isEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No lots available for this item')),
-          );
-        }
-        return;
-      }
-
-      // Sort lots by effective expiration date (FEFO)
-      final lots = lotsQuery.docs.map((doc) {
-        final data = doc.data();
-        final expiresAt = data['expiresAt'] is Timestamp ? (data['expiresAt'] as Timestamp).toDate() : null;
-        final openAt = data['openAt'] is Timestamp ? (data['openAt'] as Timestamp).toDate() : null;
-        final expiresAfterOpenDays = data['expiresAfterOpenDays'] as int?;
-        
-        DateTime? effectiveExpiry;
-        if (openAt != null && expiresAfterOpenDays != null && expiresAfterOpenDays > 0) {
-          final afterOpen = DateTime(openAt.year, openAt.month, openAt.day).add(Duration(days: expiresAfterOpenDays));
-          if (expiresAt != null) {
-            effectiveExpiry = afterOpen.isBefore(expiresAt) ? afterOpen : expiresAt;
-          } else {
-            effectiveExpiry = afterOpen;
-          }
-        } else {
-          effectiveExpiry = expiresAt;
-        }
-
-        return {
-          'id': doc.id,
-          'data': data,
-          'effectiveExpiry': effectiveExpiry,
-        };
-      }).toList();
-
-      // Sort by effective expiration (nulls last)
-      lots.sort((a, b) {
-        final ea = a['effectiveExpiry'] as DateTime?;
-        final eb = b['effectiveExpiry'] as DateTime?;
-        if (ea == null && eb == null) return 0;
-        if (ea == null) return 1;
-        if (eb == null) return -1;
-        return ea.compareTo(eb);
-      });
-
-      // Use the first lot (FEFO)
-      final firstLot = lots.first;
-      final lotId = firstLot['id'] as String;
-      final lotData = firstLot['data'] as Map<String, dynamic>;
-      final qtyRemaining = (lotData['qtyRemaining'] ?? 0) as num;
-      final alreadyOpened = lotData['openAt'] != null;
-
-      // Show the adjust sheet
-      if (context.mounted) {
-        await showAdjustSheet(context, itemId, lotId, qtyRemaining, alreadyOpened);
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading lots: $e')),
-        );
-      }
-    }
   }
 }
 

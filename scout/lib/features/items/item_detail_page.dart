@@ -966,8 +966,12 @@ class _LotRow extends StatelessWidget {
     final afterOpen = d['expiresAfterOpenDays'] as int?;
     final receivedTs = d['receivedAt']; final received = (receivedTs is Timestamp) ? receivedTs.toDate() : null;
 
+    final remainingText = qtyInitial > 0 
+        ? '$qtyRemaining of $qtyInitial $baseUnit remaining'
+        : '$qtyRemaining $baseUnit remaining';
+
     final sub = <String>[
-      'Remaining: $qtyRemaining / $qtyInitial $baseUnit',
+      remainingText,
       if (exp != null) 'Exp: ${MaterialLocalizations.of(context).formatFullDate(exp)}',
       if (opened) 'Opened',
       if (afterOpen != null && afterOpen > 0) 'Use within $afterOpen days after open',

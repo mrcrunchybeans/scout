@@ -807,31 +807,61 @@ async function recomputeDashboardStats() {
   let last: FirebaseFirestore.QueryDocumentSnapshot | undefined;
 
   const totals = {low: 0, expiring: 0, stale: 0, expired: 0};
+  let processedCount = 0;
+
+  console.log("Starting dashboard stats recomputation...");
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    let q = db.collection("items").where("archived", "==", false).orderBy("updatedAt", "desc").limit(PAGE);
+    // Get all items without archived filter, then filter in code
+    // This avoids issues with missing/null archived fields
+    let q = db.collection("items").limit(PAGE);
     if (last) q = q.startAfter(last);
     const snap = await q.get();
+    console.log(`Fetched ${snap.size} items`);
     if (snap.empty) break;
 
     for (const doc of snap.docs) {
       const d = doc.data();
-      if (d.flagLow) totals.low++;
-      if (d.flagExpiringSoon) totals.expiring++;
-      if (d.flagStale) totals.stale++;
-      if (d.flagExpired) totals.expired++;
+
+      // Skip if archived is explicitly true
+      if (d.archived === true) {
+        console.log(`Skipping archived item ${doc.id}`);
+        continue;
+      }
+
+      processedCount++;
+      if (d.flagLow) {
+        totals.low++;
+        console.log(`Item ${doc.id} has flagLow`);
+      }
+      if (d.flagExpiringSoon) {
+        totals.expiring++;
+        console.log(`Item ${doc.id} has flagExpiringSoon`);
+      }
+      if (d.flagStale) {
+        totals.stale++;
+        console.log(`Item ${doc.id} has flagStale`);
+      }
+      if (d.flagExpired) {
+        totals.expired++;
+        console.log(`Item ${doc.id} has flagExpired`);
+      }
     }
 
     last = snap.docs[snap.docs.length - 1];
     if (snap.size < PAGE) break;
   }
 
+  console.log(`Processed ${processedCount} items. Totals:`, totals);
+
   await db.collection("meta").doc("dashboard_stats").set({
     ...totals,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     lastRecalculatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
+
+  console.log("Dashboard stats updated successfully");
 }
 
 export const nightlyRecalcDashboardStats = onSchedule("every day 02:45", async () => {
