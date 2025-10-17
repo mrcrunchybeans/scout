@@ -54,6 +54,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   final Map<String, bool> _overAllocatedLines = {};
 
   bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
+  bool get _isClosed => _status == 'closed';
 
   @override
   void initState() {
@@ -1035,6 +1036,166 @@ class _CartSessionPageState extends State<CartSessionPage> {
     }
   }
 
+  Future<void> _reopenSession() async {
+    if (_sessionId == null || _status != 'closed') return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Reopen Session?'),
+        content: const Text(
+          'This will reverse all inventory deductions from this session and allow editing again. '
+          'The items will be credited back as if the session was never closed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('Reopen'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    if (!mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      debugPrint('CartSessionPage: Reopening session $_sessionId');
+
+      // Find all usage logs for this session
+      final usageLogsQuery = await _db
+          .collection('usage_logs')
+          .where('sessionId', isEqualTo: _sessionId)
+          .where('isReversal', isEqualTo: false)
+          .get();
+
+      debugPrint('CartSessionPage: Found ${usageLogsQuery.docs.length} usage logs to reverse');
+
+      if (usageLogsQuery.docs.isEmpty) {
+        debugPrint('CartSessionPage: No usage logs found, just updating session status');
+        await _db.collection('cart_sessions').doc(_sessionId).update({
+          'status': 'open',
+          'reopenedAt': DateTime.now(),
+          'reopenedBy': FirebaseAuth.instance.currentUser?.uid,
+          'updatedAt': DateTime.now(),
+        });
+
+        if (mounted) {
+          setState(() => _status = 'open');
+          SoundFeedback.ok();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Session reopened')),
+          );
+        }
+        return;
+      }
+
+      // Build batch to recredit items and delete usage logs
+      final batch = _db.batch();
+      final now = DateTime.now();
+      var operationCount = 0;
+
+      for (final usageDoc in usageLogsQuery.docs) {
+        final usage = usageDoc.data();
+        final itemId = usage['itemId'] as String?;
+        final lotId = usage['lotId'] as String?;
+        final qtyUsed = (usage['qtyUsed'] as num?)?.toDouble() ?? 0.0;
+
+        if (itemId == null || qtyUsed <= 0) continue;
+
+        final itemRef = _db.collection('items').doc(itemId);
+
+        if (lotId != null) {
+          // Recredit lot-based item
+          final lotRef = itemRef.collection('lots').doc(lotId);
+          
+          // Add back to lot
+          batch.update(lotRef, {
+            'qtyRemaining': FieldValue.increment(qtyUsed),
+            'updatedAt': Timestamp.fromDate(now),
+          });
+          operationCount++;
+
+          // Add back to item
+          batch.update(itemRef, {
+            'qtyOnHand': FieldValue.increment(qtyUsed),
+            'updatedAt': Timestamp.fromDate(now),
+          });
+          operationCount++;
+        } else {
+          // Recredit non-lot item
+          batch.update(itemRef, {
+            'qtyOnHand': FieldValue.increment(qtyUsed),
+            'updatedAt': Timestamp.fromDate(now),
+          });
+          operationCount++;
+        }
+
+        // Delete the usage log
+        batch.delete(usageDoc.reference);
+        operationCount++;
+
+        debugPrint('CartSessionPage: Prepared recredit for item $itemId, qty: $qtyUsed');
+      }
+
+      // Update session status
+      batch.update(_db.collection('cart_sessions').doc(_sessionId!), {
+        'status': 'open',
+        'reopenedAt': now,
+        'reopenedBy': FirebaseAuth.instance.currentUser?.uid,
+        'updatedAt': now,
+      });
+      operationCount++;
+
+      // Commit all changes atomically
+      debugPrint('CartSessionPage: Committing $operationCount operations');
+      await batch.commit();
+      debugPrint('CartSessionPage: Session reopened successfully');
+
+      // Add audit log
+      try {
+        await _db.collection('audit_logs').add({
+          'type': 'session.reopen',
+          'data': {
+            'sessionId': _sessionId,
+            'numUsageLogsReversed': usageLogsQuery.docs.length,
+          },
+          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'createdBy': FirebaseAuth.instance.currentUser?.uid,
+          'createdAt': now,
+        });
+      } catch (auditError) {
+        debugPrint('CartSessionPage: Warning - audit log failed: $auditError');
+      }
+
+      if (mounted) {
+        setState(() => _status = 'open');
+        SoundFeedback.ok();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Session reopened - inventory has been recredited')),
+        );
+      }
+    } catch (e, stackTrace) {
+      debugPrint('CartSessionPage: Error reopening session: $e');
+      debugPrint('Stack trace: $stackTrace');
+
+      if (mounted) {
+        SoundFeedback.error();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error reopening session: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   // ---------- UI helpers ----------
   String _lineId(CartLine l) => l.lotId == null ? l.itemId : '${l.itemId}__${l.lotId}';
 
@@ -1236,7 +1397,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 color: _usbCaptureOn
                     ? Theme.of(context).colorScheme.primary
                     : Theme.of(context).colorScheme.onSurfaceVariant),
-            onPressed: () => setState(() => _usbCaptureOn = !_usbCaptureOn),
+            onPressed: _isClosed ? null : () => setState(() => _usbCaptureOn = !_usbCaptureOn),
           ),
           if (_busy)
             const Padding(
@@ -1246,7 +1407,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
           IconButton(
             tooltip: 'Save draft',
             icon: const Icon(Icons.save),
-            onPressed: _busy ? null : _saveDraft,
+            onPressed: (_busy || _isClosed) ? null : _saveDraft,
           ),
         ],
       ),
@@ -1272,7 +1433,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   items: (_interventions ?? [])
                       .map((o) => DropdownMenuItem(value: o, child: Text(o.name)))
                       .toList(),
-                  onChanged: (v) {
+                  onChanged: _isClosed ? null : (v) {
                     setState(() {
                       _selectedIntervention = v;
                       _interventionId = v?.id;
@@ -1301,6 +1462,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 TextField(
                   controller: _locationC,
                   decoration: const InputDecoration(labelText: 'Location/Unit (optional)'),
+                  enabled: !_isClosed,
                   onChanged: (s) => _locationText = s,
                 ),
                 const SizedBox(height: 8),
@@ -1308,11 +1470,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   controller: _notesC,
                   decoration: const InputDecoration(labelText: 'Notes (optional)'),
                   maxLines: 2,
+                  enabled: !_isClosed,
                   onChanged: (s) => _notes = s,
                 ),
                 const SizedBox(height: 12),
                 InkWell(
-                  onTap: () async {
+                  onTap: _isClosed ? null : () async {
                     final picked = await showDatePicker(
                       context: context,
                       initialDate: _customStartDate ?? DateTime.now(),
@@ -1353,17 +1516,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
                         focusNode: _barcodeFocus,
                         autofocus: true,
                         textInputAction: TextInputAction.done,
+                        enabled: !_isClosed,
                         decoration: InputDecoration(
                           hintText: 'Scan or type a barcode',
                           prefixIcon: IconButton(
                             tooltip: 'Scan with camera',
                             icon: const Icon(Icons.qr_code_scanner),
-                            onPressed: _busy ? null : () => _scanAndAdd(),
+                            onPressed: (_busy || _isClosed) ? null : () => _scanAndAdd(),
                           ),
                           suffixIcon: IconButton(
                             tooltip: 'Search by name',
                             icon: const Icon(Icons.search),
-                            onPressed: _busy
+                            onPressed: (_busy || _isClosed)
                                 ? null
                                 : () async {
                                     final query = _barcodeC.text.trim();
@@ -1386,7 +1550,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                     ),
                     const SizedBox(width: 8),
                     FilledButton(
-                      onPressed: _busy ? null : () async {
+                      onPressed: (_busy || _isClosed) ? null : () async {
                         await _addByBarcode();
                         _refocusQuickAdd();
                       },
@@ -1401,24 +1565,24 @@ class _CartSessionPageState extends State<CartSessionPage> {
                     FilledButton.icon(
                       icon: const Icon(Icons.playlist_add),
                       label: const Text('Add items'),
-                      onPressed: _busy ? null : _addItems,
+                      onPressed: (_busy || _isClosed) ? null : _addItems,
                     ),
                     const SizedBox(width: 12),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.history),
                       label: Text(_interventionName != null ? 'Use last for $_interventionName' : 'Copy from last'),
-                      onPressed: _busy ? null : _copyFromLast,
+                      onPressed: (_busy || _isClosed) ? null : _copyFromLast,
                     ),
                     const SizedBox(width: 12),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.qr_code_scanner),
                       label: const Text('Scan'),
-                      onPressed: _busy ? null : _scanAndAdd,
+                      onPressed: (_busy || _isClosed) ? null : _scanAndAdd,
                     ),
                   ],
                 ),
 
-                if (_hasOverAllocatedLines) ...[
+                if (_hasOverAllocatedLines && !_isClosed) ...[
                   const SizedBox(height: 12),
                   Card(
                     color: Theme.of(context).colorScheme.errorContainer,
@@ -1438,6 +1602,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                                 _LineRow(
                                   lineId: _lineId(line),
                                   line: line,
+                    isClosed: _isClosed,
                     onChanged: (updated) {
                       setState(() {
                         final oldId = _lineId(line);
@@ -1471,22 +1636,34 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   ),
 
                 const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.save),
-                  label: const Text('Save draft'),
-                  onPressed: _busy ? null : _saveDraft,
-                ),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  icon: const Icon(Icons.check_circle),
-                  label: const Text('Close session'),
-                  onPressed: (_busy || _hasOverAllocatedLines) ? null : _closeSession,
-                ),
-                if (_status == 'closed')
+                if (!_isClosed) ...[
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.save),
+                    label: const Text('Save draft'),
+                    onPressed: _busy ? null : _saveDraft,
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    icon: const Icon(Icons.check_circle),
+                    label: const Text('Close session'),
+                    onPressed: (_busy || _hasOverAllocatedLines) ? null : _closeSession,
+                  ),
+                ],
+                if (_isClosed) ...[
+                  FilledButton.icon(
+                    icon: const Icon(Icons.lock_open),
+                    label: const Text('Reopen session'),
+                    onPressed: _busy ? null : _reopenSession,
+                  ),
+                  const SizedBox(height: 8),
                   const Padding(
                     padding: EdgeInsets.only(top: 8),
-                    child: Text('This session is closed.', style: TextStyle(color: Colors.grey)),
+                    child: Text(
+                      'This session is closed. Reopen to edit and recredit inventory.',
+                      style: TextStyle(color: Colors.grey),
+                    ),
                   ),
+                ],
               ],
             ),
         ),
@@ -1497,12 +1674,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
 class _LineRow extends StatefulWidget {
   final String lineId;
   final CartLine line;
+  final bool isClosed;
   final void Function(CartLine) onChanged;
   final VoidCallback onRemove;
   final void Function(String lineId, bool isOverAllocated)? onOverAllocationChanged;
   const _LineRow({
     required this.lineId,
     required this.line,
+    required this.isClosed,
     required this.onChanged,
     required this.onRemove,
     this.onOverAllocationChanged,
@@ -1768,6 +1947,7 @@ class _LineRowState extends State<_LineRow> {
                     focusNode: _initFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Loaded'),
+                    enabled: !widget.isClosed,
                     onSubmitted: (_) => _commitInitialQty(),
                     onTapOutside: (_) => _commitInitialQty(),
                   ),
@@ -1779,6 +1959,7 @@ class _LineRowState extends State<_LineRow> {
                     focusNode: _endFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Leftover (at close)'),
+                    enabled: !widget.isClosed,
                     onSubmitted: (_) => _commitEndQty(),
                     onTapOutside: (_) => _commitEndQty(),
                   ),
@@ -1787,7 +1968,7 @@ class _LineRowState extends State<_LineRow> {
             ),
             const SizedBox(height: 4),
             Text('Used this session: ${widget.line.usedQty} ${widget.line.baseUnit}'),
-            if (_overAllocated)
+            if (_overAllocated && !widget.isClosed)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Row(
@@ -1806,7 +1987,7 @@ class _LineRowState extends State<_LineRow> {
               ),
           ],
         ),
-        trailing: IconButton(
+        trailing: widget.isClosed ? null : IconButton(
           tooltip: 'Remove',
           icon: const Icon(Icons.delete_outline),
           onPressed: widget.onRemove,

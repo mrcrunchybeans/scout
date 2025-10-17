@@ -106,11 +106,11 @@ service cloud.firestore {
     }
 
 
-    // ---------- Usage logs (append-only) ----------
+    // ---------- Usage logs (append-only, but allow delete for session reopening) ----------
     match /usage_logs/{usageId} {
       allow create: if isAuthed();
       allow update: if isAuthed() && isOnlyMarkingReversed();
-      allow delete: if false;
+      allow delete: if isAuthed(); // Allow authenticated users to delete (needed for session reopening)
 
       function isOnlyMarkingReversed() {
         // Allow updates only if we're adding reversal fields without changing core data

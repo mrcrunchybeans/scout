@@ -510,18 +510,27 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
 
     try {
       // Search items by name (case-insensitive partial match)
+      // Fetch more items and filter client-side for case-insensitive search
       final query = await _db
           .collection('items')
-          .where('name', isGreaterThanOrEqualTo: name)
-          .where('name', isLessThanOrEqualTo: '$name\uf8ff')
-          .limit(10)
+          .limit(100) // Fetch more items to filter client-side
           .get();
 
-      final results = query.docs.map((doc) {
-        final data = doc.data();
-        data['id'] = doc.id;
-        return data;
-      }).toList();
+      final nameLower = name.toLowerCase();
+      final results = query.docs
+          .where((doc) {
+            final data = doc.data();
+            final itemName = (data['name'] as String?) ?? '';
+            final isArchived = data['archived'] == true;
+            return itemName.toLowerCase().contains(nameLower) && !isArchived;
+          })
+          .take(10) // Limit to 10 results after filtering
+          .map((doc) {
+            final data = doc.data();
+            data['id'] = doc.id;
+            return data;
+          })
+          .toList();
 
       setState(() {
         _nameSearchResults = results;
@@ -557,8 +566,18 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   }
 
   void _selectItemFromSearch(Map<String, dynamic> item) async {
+    debugPrint('BulkInventoryEntry: Selected item ${item['id']} - ${item['name']}');
+    debugPrint('BulkInventoryEntry: Item barcode: ${item['barcode']}');
     final barcode = item['barcode'] ?? '';
-    if (barcode.isEmpty) return;
+    if (barcode.isEmpty) {
+      debugPrint('BulkInventoryEntry: ERROR - Item has no barcode, cannot proceed');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This item has no barcode. Please add a barcode to the item first.')),
+        );
+      }
+      return;
+    }
 
     setState(() {
       _nameSearchResults = [];
@@ -566,6 +585,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
     });
 
     // Process the selected item as if it was scanned
+    debugPrint('BulkInventoryEntry: Processing barcode: $barcode');
     await _handleBarcode(barcode);
   }
 
@@ -2507,8 +2527,11 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('ExistingBatchesDialog: Building for itemId=${widget.product.itemId}, itemName=${widget.product.itemName}');
+    
     // Check if we have a valid itemId
     if (widget.product.itemId.isEmpty) {
+      debugPrint('ExistingBatchesDialog: ERROR - Empty itemId');
       return Theme(
         data: Theme.of(context),
         child: AlertDialog(
@@ -2543,10 +2566,12 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
                     .collection('items')
                     .doc(widget.product.itemId)
                     .collection('lots')
-                    .where('archived', isNotEqualTo: true)
-                    .snapshots(),
+                    .snapshots(), // Remove archived filter to avoid index issues
                 builder: (context, snapshot) {
+                  debugPrint('ExistingBatchesDialog: StreamBuilder update - hasData=${snapshot.hasData}, hasError=${snapshot.hasError}, docsCount=${snapshot.data?.docs.length}');
+                  
                   if (snapshot.hasError) {
+                    debugPrint('ExistingBatchesDialog: Error loading lots: ${snapshot.error}');
                     return Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -2571,8 +2596,17 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
                   }
 
                   final batches = snapshot.data?.docs ?? [];
+                  
+                  // Filter out archived batches client-side
+                  final activeBatches = batches.where((doc) {
+                    final data = doc.data() as Map<String, dynamic>;
+                    return data['archived'] != true;
+                  }).toList();
+                  
+                  debugPrint('ExistingBatchesDialog: Loaded ${batches.length} total batches, ${activeBatches.length} active');
 
-                  if (batches.isEmpty) {
+                  if (activeBatches.isEmpty) {
+                    debugPrint('ExistingBatchesDialog: No active batches found for this item');
                     return const Padding(
                       padding: EdgeInsets.all(32),
                       child: Column(
@@ -2592,9 +2626,9 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
                     height: 300,
                     child: ListView.builder(
                       shrinkWrap: true,
-                      itemCount: batches.length,
+                      itemCount: activeBatches.length,
                       itemBuilder: (context, index) {
-                        final batchDoc = batches[index];
+                        final batchDoc = activeBatches[index];
                         final data = batchDoc.data() as Map<String, dynamic>;
                         final lotCode = data['lotCode'] as String? ?? batchDoc.id.substring(0, 6);
                         final qtyRemaining = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;

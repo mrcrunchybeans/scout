@@ -1,4 +1,6 @@
 // lib/features/items/add_audit_inventory_page.dart
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -32,6 +34,7 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
   bool _isLoading = false;
   bool _searchByName = false; // Toggle between barcode and name search
   List<Map<String, dynamic>> _nameSearchResults = [];
+  Timer? _nameSearchDebounceTimer;
 
   @override
   void dispose() {
@@ -39,6 +42,7 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     _barcodeFocus.dispose();
     _nameController.dispose();
     _nameFocus.dispose();
+    _nameSearchDebounceTimer?.cancel();
     super.dispose();
   }
 
@@ -92,27 +96,46 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
   }
 
   Future<void> _handleNameSearch(String name) async {
+    // Cancel any existing timer
+    _nameSearchDebounceTimer?.cancel();
+    
     if (name.isEmpty) {
       setState(() => _nameSearchResults = []);
       return;
     }
 
+    // Start a new timer with 300ms delay
+    _nameSearchDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      _performNameSearch(name);
+    });
+  }
+
+  Future<void> _performNameSearch(String name) async {
     setState(() => _isLoading = true);
 
     try {
       // Search items by name (case-insensitive partial match)
+      // Fetch all items and filter client-side for case-insensitive search
       final query = await _db
           .collection('items')
-          .where('name', isGreaterThanOrEqualTo: name)
-          .where('name', isLessThanOrEqualTo: '$name\uf8ff')
-          .limit(10)
+          .limit(100) // Fetch more items to filter client-side
           .get();
 
-      final results = query.docs.map((doc) {
-        final data = doc.data();
-        data['id'] = doc.id;
-        return data;
-      }).toList();
+      final nameLower = name.toLowerCase();
+      final results = query.docs
+          .where((doc) {
+            final data = doc.data();
+            final itemName = (data['name'] as String?) ?? '';
+            final isArchived = data['archived'] == true;
+            return itemName.toLowerCase().contains(nameLower) && !isArchived;
+          })
+          .take(10) // Limit to 10 results after filtering
+          .map((doc) {
+            final data = doc.data();
+            data['id'] = doc.id;
+            return data;
+          })
+          .toList();
 
       setState(() {
         _nameSearchResults = results;
@@ -129,6 +152,7 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
   }
 
   void _selectItemFromSearch(Map<String, dynamic> item) {
+    debugPrint('AddAuditInventoryPage: Selected item ${item['id']} - ${item['name']}');
     setState(() {
       _existingItem = item;
       _action = InventoryAction.auditExisting;
@@ -159,18 +183,17 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_scannedBarcode == null) {
-      return _buildInitialScanPrompt();
-    }
-
+    // Show add new item flow
     if (_action == InventoryAction.addNew) {
       return _buildAddNewItem();
     }
 
+    // Show audit existing item flow
     if (_action == InventoryAction.auditExisting && _existingItem != null) {
       return _buildAuditExistingItem();
     }
 
+    // Default: show search/scan prompt
     return _buildInitialScanPrompt();
   }
 
@@ -324,6 +347,9 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     final itemName = item['name'] as String? ?? 'Unknown Item';
     final currentQty = (item['qtyOnHand'] as num?)?.toDouble() ?? 0.0;
 
+    debugPrint('_buildAuditExistingItem: itemId=$itemId, name=$itemName, qtyOnHand=$currentQty');
+    debugPrint('_buildAuditExistingItem: Full item data: $item');
+
     return Column(
       children: [
         Container(
@@ -342,7 +368,9 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
                       style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                     Text(itemName, style: const TextStyle(fontSize: 18)),
-                    Text('Barcode: $_scannedBarcode'),
+                    if (_scannedBarcode != null) Text('Barcode: $_scannedBarcode'),
+                    if (item['barcode'] != null && _scannedBarcode == null) 
+                      Text('Barcode: ${item['barcode']}'),
                     Text('Total quantity: $currentQty ${item['baseUnit'] ?? 'units'}'),
                   ],
                 ),
@@ -414,6 +442,7 @@ class _AuditOptionsState extends State<_AuditOptions> {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('_AuditOptions: Building for itemId=${widget.itemId}');
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -429,11 +458,11 @@ class _AuditOptionsState extends State<_AuditOptions> {
               .collection('items')
               .doc(widget.itemId)
               .collection('lots')
-              .orderBy('expiresAt', descending: false) // FEFO order
-              .limit(50)
-              .snapshots(),
+              .snapshots(), // Remove orderBy to avoid index issues, will sort client-side
           builder: (context, snapshot) {
+            debugPrint('_AuditOptions: StreamBuilder update - hasData=${snapshot.hasData}, hasError=${snapshot.hasError}, docsCount=${snapshot.data?.docs.length}');
             if (snapshot.hasError) {
+              debugPrint('_AuditOptions: Error loading lots: ${snapshot.error}');
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -452,12 +481,15 @@ class _AuditOptionsState extends State<_AuditOptions> {
             }
 
             final lots = snapshot.data!.docs;
+            debugPrint('_AuditOptions: Loaded ${lots.length} lots for item ${widget.itemId}');
             
             // Filter to only active lots (not archived)
             final activeLots = lots.where((doc) {
               final data = doc.data();
               return data['archived'] != true;
             }).toList();
+
+            debugPrint('_AuditOptions: ${activeLots.length} active lots after filtering');
 
             if (activeLots.isEmpty) {
               return Card(
