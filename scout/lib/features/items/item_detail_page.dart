@@ -1856,14 +1856,14 @@ class _UsageHistoryTabState extends State<_UsageHistoryTab> {
                 const SizedBox(height: 16),
                 Text(
                   _showReversals ? 'No usage history found' : 'No active usage history found',
-                  style: const TextStyle(color: Colors.grey, fontSize: 16),
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6), fontSize: 16),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   _showReversals 
                     ? 'This item hasn\'t been used in any cart sessions yet.'
                     : 'This item hasn\'t been used in any active cart sessions.',
-                  style: const TextStyle(color: Colors.grey, fontSize: 14),
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6), fontSize: 14),
                 ),
                 if (reversalsCount > 0 && !_showReversals) ...[
                   const SizedBox(height: 16),

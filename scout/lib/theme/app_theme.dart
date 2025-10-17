@@ -111,8 +111,41 @@ class BrandTheme {
 
   late final _darkTheme = _baseTheme(darkColorScheme).copyWith(
     textTheme: _textTheme.copyWith(
+      bodyLarge: _textTheme.bodyLarge?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
       bodyMedium: _textTheme.bodyMedium?.copyWith(
         color: darkColorScheme.onSurface.withValues(alpha:0.7),
+      ),
+      bodySmall: _textTheme.bodySmall?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      titleLarge: _textTheme.titleLarge?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      titleMedium: _textTheme.titleMedium?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      titleSmall: _textTheme.titleSmall?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      headlineLarge: _textTheme.headlineLarge?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      headlineMedium: _textTheme.headlineMedium?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      headlineSmall: _textTheme.headlineSmall?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      labelLarge: _textTheme.labelLarge?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      labelMedium: _textTheme.labelMedium?.copyWith(
+        color: darkColorScheme.onSurface,
+      ),
+      labelSmall: _textTheme.labelSmall?.copyWith(
+        color: darkColorScheme.onSurface,
       ),
     ),
     scaffoldBackgroundColor: darkColorScheme.background,

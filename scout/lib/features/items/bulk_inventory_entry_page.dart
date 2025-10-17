@@ -2,11 +2,13 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../utils/audit.dart';
+import '../../utils/lot_code.dart';
 import '../../data/product_enrichment_service.dart';
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -34,7 +36,6 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   final Map<String, BulkProductEntry> _pendingProducts = {};
   bool _isProcessing = false;
   final List<String> _createdBatchCodes = [];
-  int _batchCounter = 0;
   bool _searchByName = false; // Toggle between barcode and name search
   List<Map<String, dynamic>> _nameSearchResults = [];
   Timer? _nameSearchDebounceTimer;
@@ -42,54 +43,9 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   // Remember last entered values for quick entry
   Map<String, dynamic>? _lastEnteredValues;
 
-  String _generateBatchCode() {
-    final now = DateTime.now();
-    final yy = now.year.toString().substring(2); // Last two digits of year
-    final mm = now.month.toString().padLeft(2, '0'); // Month with leading zero
-    final monthKey = '$yy$mm';
-    
-    // Increment counter for this month
-    _batchCounter++;
-    final letter = String.fromCharCode(64 + _batchCounter); // 65 = 'A', 66 = 'B', etc.
-    return '$monthKey$letter';
-  }
-
   @override
   void initState() {
     super.initState();
-    _initializeBatchCounter();
-  }
-
-  Future<void> _initializeBatchCounter() async {
-    try {
-      final now = DateTime.now();
-      final yy = now.year.toString().substring(2);
-      final mm = now.month.toString().padLeft(2, '0');
-      final monthPrefix = '$yy$mm';
-      
-      // Query all lots with batch codes starting with current month
-      final lotsQuery = await _db
-          .collectionGroup('lots')
-          .where('lotCode', isGreaterThanOrEqualTo: monthPrefix)
-          .where('lotCode', isLessThan: '${monthPrefix}Z')
-          .orderBy('lotCode', descending: true)
-          .limit(1)
-          .get();
-      
-      if (lotsQuery.docs.isNotEmpty) {
-        final lastBatchCode = lotsQuery.docs.first.data()['lotCode'] as String?;
-        if (lastBatchCode != null && lastBatchCode.startsWith(monthPrefix) && lastBatchCode.length > 4) {
-          // Extract the letter and convert back to counter
-          final letter = lastBatchCode.substring(4);
-          if (letter.isNotEmpty) {
-            _batchCounter = letter.codeUnitAt(0) - 64; // 'A' = 65, so 'A' - 64 = 1
-          }
-        }
-      }
-    } catch (e) {
-      // If query fails, start from 0
-      // Error initializing batch counter: $e
-    }
   }
 
   @override
@@ -163,7 +119,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
                   TextField(
                     controller: _nameController,
                     focusNode: _nameFocus,
-                    textDirection: TextDirection.ltr,
+
                     style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
                     decoration: const InputDecoration(
                       labelText: 'Search by item name',
@@ -229,7 +185,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
                   TextField(
                     controller: _barcodeController,
                     focusNode: _barcodeFocus,
-                    textDirection: TextDirection.ltr,
+
                     style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
                     decoration: InputDecoration(
                       labelText: 'Scan or enter barcode',
@@ -614,7 +570,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
       context: context,
       builder: (context) => BulkLotAdditionDialog(
         product: product,
-        generateBatchCode: _generateBatchCode,
+        generateBatchCode: (itemId) => generateNextLotCode(itemId: itemId),
       ),
     );
 
@@ -632,7 +588,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
       context: context,
       builder: (context) => ExistingBatchesDialog(
         product: product,
-        generateBatchCode: _generateBatchCode,
+        generateBatchCode: (itemId) => generateNextLotCode(itemId: itemId),
       ),
     );
 
@@ -692,7 +648,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
       // Add initial lot
       final initialLot = BulkLotEntry(
         quantity: result['quantity'],
-        batchCode: _generateBatchCode(),
+        batchCode: previewLotCode(),
         expiresAt: result['expiresAt'],
       );
       product.addLot(initialLot);
@@ -739,7 +695,14 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           });
 
           // Create lots for the new item
+          // Regenerate lot codes using the actual item ID
+          final lotsWithCodes = <BulkLotEntry>[];
           for (final lot in product.lots) {
+            final lotCode = await generateNextLotCode(itemId: itemRef.id);
+            lotsWithCodes.add(lot.copyWith(batchCode: lotCode));
+          }
+
+          for (final lot in lotsWithCodes) {
             if (lot.batchCode == null) continue;
 
             final lotRef = itemRef.collection('lots').doc();
@@ -963,10 +926,10 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           children: [
             const Text('Which label number would you like to start from?'),
             const SizedBox(height: 16),
-            const Text(
+            Text(
               'Avery 5160 sheets have 30 labels (3 columns × 10 rows).\n'
               'If reusing a partial sheet, start from the next available label.',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6)),
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<int>(
@@ -1484,7 +1447,7 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
             const SizedBox(height: 16),
             TextField(
               controller: _quantityController,
-              textDirection: TextDirection.ltr,
+
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: 'Quantity to Add',
@@ -1568,7 +1531,7 @@ class _EditQuantityDialogState extends State<EditQuantityDialog> {
           Expanded(
             child: TextField(
               controller: _controller,
-              textDirection: TextDirection.ltr,
+
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
                 labelText: 'Quantity',
@@ -1638,7 +1601,7 @@ class _EditBatchCodeDialogState extends State<EditBatchCodeDialog> {
         title: Text('Edit Batch Code - ${widget.itemName}'),
       content: TextField(
         controller: _controller,
-        textDirection: TextDirection.ltr,
+
         decoration: const InputDecoration(
           labelText: 'Batch Code',
           border: OutlineInputBorder(),
@@ -1668,7 +1631,7 @@ class _EditBatchCodeDialogState extends State<EditBatchCodeDialog> {
 }
 class BulkLotAdditionDialog extends StatefulWidget {
   final BulkProductEntry product;
-  final String Function() generateBatchCode;
+  final Future<String> Function(String itemId) generateBatchCode;
 
   const BulkLotAdditionDialog({
     super.key,
@@ -1705,9 +1668,9 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
     super.dispose();
   }
 
-  void _addLot() {
+  Future<void> _addLot() async {
+    final batchCode = await widget.generateBatchCode(widget.product.itemId);
     setState(() {
-      final batchCode = widget.generateBatchCode();
       _lots.add(BulkLotEntry(quantity: 1.0, batchCode: batchCode));
       _quantityControllers.add(TextEditingController(text: '1.0'));
       _batchCodeControllers.add(TextEditingController(text: batchCode));
@@ -1831,7 +1794,7 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                           child: TextField(
                             controller: _quantityControllers[index],
                             keyboardType: TextInputType.number,
-                            textDirection: TextDirection.ltr,
+
                             decoration: InputDecoration(
                               labelText: 'Quantity',
                               suffixText: widget.product.baseUnit,
@@ -1852,7 +1815,7 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                           flex: 3,
                           child: TextField(
                             controller: _batchCodeControllers[index],
-                            textDirection: TextDirection.ltr,
+
                             decoration: InputDecoration(
                               labelText: 'Batch Code',
                               border: const OutlineInputBorder(),
@@ -1895,7 +1858,7 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
     );
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (_lots.isEmpty) return;
 
     // Validate quantities
@@ -1907,12 +1870,15 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
     }
 
     // Generate batch codes for new lots if not provided
-    final lotsToAdd = _lots.map((lot) {
+    final lotsToAdd = <BulkLotEntry>[];
+    for (final lot in _lots) {
       if (_createNewLot && lot.batchCode == null) {
-        return lot.copyWith(batchCode: widget.generateBatchCode());
+        final batchCode = await widget.generateBatchCode(widget.product.itemId);
+        lotsToAdd.add(lot.copyWith(batchCode: batchCode));
+      } else {
+        lotsToAdd.add(lot);
       }
-      return lot;
-    }).toList();
+    }
 
     // If adding to existing lot, set the lotId
     if (!_createNewLot && _selectedLotId != null) {
@@ -1923,6 +1889,7 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
       ));
     }
 
+    if (!mounted) return;
     Navigator.of(context).pop(lotsToAdd);
   }
 }
@@ -2103,7 +2070,7 @@ class _QuickAddNewProductDialogState extends State<QuickAddNewProductDialog> {
                   children: [
                     TextField(
                       controller: _nameController,
-                      textDirection: TextDirection.ltr,
+
                       decoration: const InputDecoration(
                         labelText: 'Product Name *',
                         border: OutlineInputBorder(),
@@ -2168,7 +2135,7 @@ class _QuickAddNewProductDialogState extends State<QuickAddNewProductDialog> {
                         Expanded(
                           child: TextField(
                             controller: _quantityController,
-                            textDirection: TextDirection.ltr,
+
                             keyboardType: TextInputType.number,
                             decoration: InputDecoration(
                               labelText: 'Initial Quantity *',
@@ -2416,7 +2383,7 @@ class _EditLotDialogState extends State<EditLotDialog> {
         children: [
           TextField(
             controller: _quantityController,
-            textDirection: TextDirection.ltr,
+
             decoration: InputDecoration(
               labelText: 'Quantity (${widget.baseUnit})',
               border: const OutlineInputBorder(),
@@ -2426,7 +2393,7 @@ class _EditLotDialogState extends State<EditLotDialog> {
           const SizedBox(height: 16),
           TextField(
             controller: _batchCodeController,
-            textDirection: TextDirection.ltr,
+
             decoration: const InputDecoration(
               labelText: 'Batch Code',
               border: OutlineInputBorder(),
@@ -2510,7 +2477,7 @@ class _EditLotDialogState extends State<EditLotDialog> {
 
 class ExistingBatchesDialog extends StatefulWidget {
   final BulkProductEntry product;
-  final String Function() generateBatchCode;
+  final Future<String> Function(String itemId) generateBatchCode;
 
   const ExistingBatchesDialog({
     super.key,
@@ -2740,12 +2707,77 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
   }
 
   void _editBatch(String lotId, Map<String, dynamic> batchData) async {
-    // For now, just show a message that editing is not implemented
-    // In a full implementation, this would open an edit dialog
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Batch editing will be implemented in a future update')),
-      );
+    final lotCode = batchData['lotCode'] as String? ?? 'Unknown';
+    final currentQty = (batchData['qtyRemaining'] ?? 0) as num;
+    final expiresAtRaw = batchData['expiresAt'];
+    DateTime? expiresAt;
+    if (expiresAtRaw is Timestamp) {
+      expiresAt = expiresAtRaw.toDate();
+    }
+    final baseUnit = batchData['baseUnit'] as String? ?? 'each';
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => EditBatchDialog(
+        lotCode: lotCode,
+        currentQty: currentQty.toDouble(),
+        currentExpiresAt: expiresAt,
+        baseUnit: baseUnit,
+      ),
+    );
+
+    if (result != null && mounted) {
+      try {
+        final newQty = result['quantity'] as double;
+        final newExpiresAt = result['expiresAt'] as DateTime?;
+        
+        // Calculate quantity difference for item update
+        final qtyDiff = newQty - currentQty.toDouble();
+
+        // Get references
+        final lotRef = FirebaseFirestore.instance
+            .collection('items')
+            .doc(widget.product.itemId)
+            .collection('lots')
+            .doc(lotId);
+
+        // Update lot
+        final updateData = <String, dynamic>{
+          'qtyRemaining': newQty,
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+        
+        // Only update expiresAt if it changed
+        if (newExpiresAt != expiresAt) {
+          updateData['expiresAt'] = newExpiresAt;
+        }
+        
+        await lotRef.update(updateData);
+
+        // Update item's total quantity if it changed
+        if (qtyDiff != 0) {
+          await FirebaseFirestore.instance
+              .collection('items')
+              .doc(widget.product.itemId)
+              .update({
+            'qtyOnHand': FieldValue.increment(qtyDiff),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Batch $lotCode updated successfully')),
+          );
+          Navigator.of(context).pop(); // Close the dialog
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error updating batch: $e')),
+          );
+        }
+      }
     }
   }
 
@@ -2797,7 +2829,7 @@ class _AddToBatchDialogState extends State<AddToBatchDialog> {
           TextField(
             controller: _quantityController,
             keyboardType: TextInputType.number,
-            textDirection: TextDirection.ltr,
+
             decoration: InputDecoration(
               labelText: 'Quantity to Add',
               suffixText: widget.baseUnit,
@@ -2824,6 +2856,131 @@ class _AddToBatchDialogState extends State<AddToBatchDialog> {
     final quantity = double.tryParse(_quantityController.text.trim());
     if (quantity != null && quantity > 0) {
       Navigator.of(context).pop(quantity);
+    }
+  }
+}
+
+class EditBatchDialog extends StatefulWidget {
+  final String lotCode;
+  final double currentQty;
+  final DateTime? currentExpiresAt;
+  final String baseUnit;
+
+  const EditBatchDialog({
+    super.key,
+    required this.lotCode,
+    required this.currentQty,
+    this.currentExpiresAt,
+    required this.baseUnit,
+  });
+
+  @override
+  State<EditBatchDialog> createState() => _EditBatchDialogState();
+}
+
+class _EditBatchDialogState extends State<EditBatchDialog> {
+  late final TextEditingController _quantityController;
+  DateTime? _expiresAt;
+
+  @override
+  void initState() {
+    super.initState();
+    _quantityController = TextEditingController(
+      text: widget.currentQty.toStringAsFixed(1),
+    );
+    _expiresAt = widget.currentExpiresAt;
+  }
+
+  @override
+  void dispose() {
+    _quantityController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Edit Batch ${widget.lotCode}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _quantityController,
+            keyboardType: TextInputType.number,
+
+            decoration: InputDecoration(
+              labelText: 'Quantity Remaining',
+              suffixText: widget.baseUnit,
+              border: const OutlineInputBorder(),
+            ),
+            autofocus: true,
+          ),
+          const SizedBox(height: 16),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Expiration Date'),
+            subtitle: Text(
+              _expiresAt != null
+                  ? DateFormat.yMd().format(_expiresAt!)
+                  : 'No expiration date set',
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_expiresAt != null)
+                  IconButton(
+                    icon: const Icon(Icons.clear),
+                    tooltip: 'Clear expiration date',
+                    onPressed: () {
+                      setState(() {
+                        _expiresAt = null;
+                      });
+                    },
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.calendar_today),
+                  tooltip: 'Set expiration date',
+                  onPressed: _pickExpirationDate,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Save Changes'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _pickExpirationDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _expiresAt ?? DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 3650)), // 10 years
+    );
+    if (picked != null) {
+      setState(() {
+        _expiresAt = picked;
+      });
+    }
+  }
+
+  void _submit() {
+    final quantity = double.tryParse(_quantityController.text.trim());
+    if (quantity != null && quantity > 0) {
+      Navigator.of(context).pop({
+        'quantity': quantity,
+        'expiresAt': _expiresAt,
+      });
     }
   }
 }

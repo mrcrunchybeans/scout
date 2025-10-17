@@ -3,11 +3,14 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:go_router/go_router.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../utils/audit.dart';
+import '../../utils/lot_code.dart';
+import '../../utils/deep_link_parser.dart';
 import '../../data/product_enrichment_service.dart';
 import 'new_item_page.dart';
 
@@ -48,6 +51,37 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
 
   Future<void> _handleBarcode(String barcode) async {
     if (barcode.isEmpty) return;
+
+    // Check if this is a lot deep link (QR code with URL)
+    // This catches both old hash-based URLs and new path-based URLs
+    final lotLink = DeepLinkParser.parseLotDeepLink(barcode);
+    if (lotLink != null) {
+      // Navigate to the lot detail page
+      final itemId = lotLink['itemId']!;
+      final lotId = lotLink['lotId']!;
+      
+      if (kDebugMode) {
+        debugPrint('AddAuditInventory: Detected lot QR code, navigating to /lot/$itemId/$lotId');
+      }
+      
+      if (mounted) {
+        context.go('/lot/$itemId/$lotId');
+      }
+      return;
+    }
+
+    // If it contains slashes or looks like a URL, it's not a valid barcode
+    if (barcode.contains('/') || barcode.contains('#') || barcode.startsWith('http')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invalid barcode format. QR codes should automatically navigate to lot details.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
 
     setState(() {
       _scannedBarcode = barcode;
@@ -1185,9 +1219,182 @@ class _AuditOptionsState extends State<_AuditOptions> {
     }
   }
 
-  void _addNewLot() {
-    // Navigate to item detail page with lots tab selected
-    GoRouter.of(context).push('/items/${widget.itemId}').then((_) => widget.onAction());
+  Future<void> _addNewLot() async {
+    final suggestedLotCode = await generateNextLotCode(itemId: widget.itemId);
+    final cQtyInit = TextEditingController();
+    final cQtyRemain = TextEditingController();
+    final cLotCode = TextEditingController(text: suggestedLotCode);
+    DateTime? receivedAt = DateTime.now();
+    DateTime? expiresAt;
+    int? expiresAfterOpenDays;
+    String baseUnit = widget.baseUnit;
+
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (bottomSheetContext, bottomSheetSetState) {
+            Future<DateTime?> pickDate(DateTime? initial) => showDatePicker(
+              context: bottomSheetContext,
+              initialDate: initial ?? DateTime.now(),
+              firstDate: DateTime(DateTime.now().year - 1),
+              lastDate: DateTime(DateTime.now().year + 3),
+            );
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: 16 + MediaQuery.of(bottomSheetContext).viewInsets.bottom,
+              ),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  Text('Add lot', style: Theme.of(bottomSheetContext).textTheme.titleLarge),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: baseUnit,
+                    items: const ['each', 'quart', 'ml', 'g', 'serving', 'scoop']
+                        .map((u) => DropdownMenuItem(value: u, child: Text(u)))
+                        .toList(),
+                    onChanged: (v) => bottomSheetSetState(() => baseUnit = v ?? 'each'),
+                    decoration: const InputDecoration(labelText: 'Base unit'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: cQtyInit,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Initial quantity'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: cQtyRemain,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                      labelText: 'Starting remaining (optional)',
+                      helperText: 'Leave empty to use initial quantity',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: cLotCode,
+                    decoration: InputDecoration(
+                      labelText: 'Lot code',
+                      hintText: suggestedLotCode,
+                      helperText: 'Auto-generated in YYMM-XXX format (e.g., 2509-001)',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Received date'),
+                    subtitle: Text(receivedAt == null
+                        ? 'None'
+                        : MaterialLocalizations.of(bottomSheetContext)
+                            .formatFullDate(receivedAt!)),
+                    trailing: TextButton.icon(
+                      icon: const Icon(Icons.edit_calendar),
+                      label: const Text('Pick'),
+                      onPressed: () async {
+                        final picked = await pickDate(receivedAt);
+                        if (picked != null) {
+                          bottomSheetSetState(() => receivedAt = picked);
+                        }
+                      },
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Expiration (optional)'),
+                    subtitle: Text(expiresAt == null
+                        ? 'Optional - select if applicable'
+                        : MaterialLocalizations.of(bottomSheetContext)
+                            .formatFullDate(expiresAt!)),
+                    trailing: TextButton.icon(
+                      icon: const Icon(Icons.event),
+                      label: const Text('Pick'),
+                      onPressed: () async {
+                        final picked = await pickDate(expiresAt);
+                        if (picked != null) {
+                          bottomSheetSetState(() => expiresAt = picked);
+                        }
+                      },
+                    ),
+                  ),
+                  TextField(
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Days after open (optional)',
+                      helperText: 'Use within N days after opening',
+                    ),
+                    onChanged: (s) => expiresAfterOpenDays = int.tryParse(s),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    icon: const Icon(Icons.save),
+                    label: const Text('Save lot'),
+                    onPressed: () async {
+                      final qi = num.tryParse(cQtyInit.text) ?? 0;
+                      if (qi <= 0) {
+                        ScaffoldMessenger.of(bottomSheetContext).showSnackBar(
+                          const SnackBar(content: Text('Please enter a valid initial quantity')),
+                        );
+                        return;
+                      }
+                      
+                      final qr = (cQtyRemain.text.trim().isEmpty)
+                          ? qi
+                          : (num.tryParse(cQtyRemain.text) ?? qi);
+                      
+                      final ref = _db
+                          .collection('items')
+                          .doc(widget.itemId)
+                          .collection('lots')
+                          .doc();
+                      
+                      await ref.set(
+                        Audit.attach({
+                          'lotCode': cLotCode.text.trim().isEmpty ? null : cLotCode.text.trim(),
+                          'baseUnit': baseUnit,
+                          'qtyInitial': qi,
+                          'qtyRemaining': qr,
+                          'receivedAt': receivedAt != null ? Timestamp.fromDate(receivedAt!) : null,
+                          'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
+                          'openAt': null,
+                          'expiresAfterOpenDays': expiresAfterOpenDays,
+                        }),
+                      );
+                      
+                      await Audit.log('lot.create', {
+                        'itemId': widget.itemId,
+                        'itemName': widget.itemName,
+                        'lotId': ref.id,
+                        'qtyInitial': qi,
+                        'qtyRemaining': qr,
+                      });
+                      
+                      // Update total item quantity
+                      await _updateTotalQuantity();
+                      
+                      if (bottomSheetContext.mounted) {
+                        Navigator.pop(bottomSheetContext);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Lot ${cLotCode.text.trim()} added successfully')),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   void _viewItemDetails() {

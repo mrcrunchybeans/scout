@@ -12,6 +12,8 @@ import 'package:scout/features/admin/operator_mode_page.dart';
 import 'package:scout/features/admin/restore_dialog.dart';
 import 'package:scout/features/admin/label_config_page.dart';
 import 'package:scout/features/admin/label_designer_page.dart';
+import 'package:scout/features/admin/recalculate_lot_codes_page.dart';
+import 'package:scout/features/admin/diagnose_lot_codes_page.dart';
 import 'package:scout/services/search_service.dart';
 import 'package:scout/utils/admin_pin.dart';
 
@@ -547,6 +549,33 @@ class _AdminPageState extends State<AdminPage> {
                         );
                       },
                     ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.calculate, color: Theme.of(context).colorScheme.primary),
+                      title: Text('Recalculate Lot Codes', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Standardize lot codes to YYMM-XXX format', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          if (!context.mounted) return;
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const RecalculateLotCodesPage()),
+                          );
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.search, color: Theme.of(context).colorScheme.secondary),
+                      title: Text('Diagnose Lot Codes', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Check for duplicate lot codes within items', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const DiagnoseLotCodesPage()),
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -557,14 +586,13 @@ class _AdminPageState extends State<AdminPage> {
               _buildSectionHeader('Search & Indexing', Icons.search, isDeveloper: true),
               Card(
                 elevation: 1,
-                color: Colors.blue.shade50,
                 child: Column(
                   children: [
                     ListTile(
-                      leading: Icon(Icons.tune, color: Colors.blue.shade700),
-                      title: Text('Configure Algolia Index', style: TextStyle(color: Colors.blue.shade900)),
-                      subtitle: Text('Set up search facets and indexing', style: TextStyle(color: Colors.blue.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.blue.shade700),
+                      leading: Icon(Icons.tune, color: Theme.of(context).colorScheme.primary),
+                      title: Text('Configure Algolia Index', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Set up search facets and indexing', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _configureAlgoliaIndex();
@@ -573,10 +601,10 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.sync, color: Colors.blue.shade700),
-                      title: Text('Sync Items to Algolia', style: TextStyle(color: Colors.blue.shade900)),
-                      subtitle: Text('Populate search index with current items', style: TextStyle(color: Colors.blue.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.blue.shade700),
+                      leading: Icon(Icons.sync, color: Theme.of(context).colorScheme.primary),
+                      title: Text('Sync Items to Algolia', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Populate search index with current items', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _syncItemsToAlgolia();
@@ -585,10 +613,10 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.calculate, color: Colors.green.shade700),
-                      title: Text('Recalculate Item Flags', style: TextStyle(color: Colors.green.shade900)),
-                      subtitle: Text('Update expired/low stock flags for all items', style: TextStyle(color: Colors.green.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.green.shade700),
+                      leading: Icon(Icons.calculate, color: Colors.green),
+                      title: Text('Recalculate Item Flags', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Update expired/low stock flags for all items', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _recalculateItemAggregates();
@@ -605,14 +633,13 @@ class _AdminPageState extends State<AdminPage> {
               _buildSectionHeader('Database Operations', Icons.storage, isDeveloper: true),
               Card(
                 elevation: 1,
-                color: Colors.orange.shade50,
                 child: Column(
                   children: [
                     ListTile(
-                      leading: Icon(Icons.history, color: Colors.orange.shade700),
-                      title: Text('Backup History', style: TextStyle(color: Colors.orange.shade900)),
-                      subtitle: Text('View and manage backup snapshots', style: TextStyle(color: Colors.orange.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.orange.shade700),
+                      leading: Icon(Icons.history, color: Colors.orange),
+                      title: Text('Backup History', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('View and manage backup snapshots', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const BackupHistoryPage()),
@@ -621,10 +648,10 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.settings, color: Colors.orange.shade700),
-                      title: Text('Backup Settings', style: TextStyle(color: Colors.orange.shade900)),
-                      subtitle: Text('Configure backup retention and policies', style: TextStyle(color: Colors.orange.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.orange.shade700),
+                      leading: Icon(Icons.settings, color: Colors.orange),
+                      title: Text('Backup Settings', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Configure backup retention and policies', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const BackupSettingsPage()),
@@ -633,10 +660,10 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.restore, color: Colors.orange.shade700),
-                      title: Text('Database Restore', style: TextStyle(color: Colors.orange.shade900)),
-                      subtitle: Text('Restore from backup snapshots', style: TextStyle(color: Colors.orange.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.orange.shade700),
+                      leading: Icon(Icons.restore, color: Colors.orange),
+                      title: Text('Database Restore', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Restore from backup snapshots', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _showRestoreDialog();
@@ -645,10 +672,10 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.backup, color: Colors.orange.shade700),
-                      title: Text('Create Backup', style: TextStyle(color: Colors.orange.shade900)),
-                      subtitle: Text('Create a new database backup', style: TextStyle(color: Colors.orange.shade700)),
-                      trailing: Icon(Icons.chevron_right, color: Colors.orange.shade700),
+                      leading: Icon(Icons.backup, color: Colors.orange),
+                      title: Text('Create Backup', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Create a new database backup', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                       onTap: () async {
                         if (await AdminPin.ensureDeveloper(context)) {
                           _createBackup();
@@ -665,12 +692,11 @@ class _AdminPageState extends State<AdminPage> {
               _buildSectionHeader('Development Tools', Icons.developer_mode, isDeveloper: true),
               Card(
                 elevation: 1,
-                color: Colors.red.shade50,
                 child: ListTile(
-                  leading: Icon(Icons.bug_report, color: Colors.red.shade700),
-                  title: Text('Seed Config', style: TextStyle(color: Colors.red.shade900)),
-                  subtitle: Text('Initialize app configuration (debug only)', style: TextStyle(color: Colors.red.shade700)),
-                  trailing: Icon(Icons.chevron_right, color: Colors.red.shade700),
+                  leading: Icon(Icons.bug_report, color: Colors.red),
+                  title: Text('Seed Config', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                  subtitle: Text('Initialize app configuration (debug only)', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                  trailing: Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
                   onTap: () async {
                     if (await AdminPin.ensureDeveloper(context)) {
                       _seedConfig();

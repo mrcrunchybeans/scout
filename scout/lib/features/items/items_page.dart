@@ -518,10 +518,10 @@ class _ItemsPageState extends State<ItemsPage> {
                 ),
                 const SizedBox(height: 8),
                 Row(
-                  children: const [
-                    Icon(Icons.keyboard, size: 14, color: Colors.grey),
-                    SizedBox(width: 6),
-                    Text("Tip: Press '/' to focus search", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  children: [
+                    Icon(Icons.keyboard, size: 14, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6)),
+                    const SizedBox(width: 6),
+                    Text("Tip: Press '/' to focus search", style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6))),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -1129,9 +1129,9 @@ class _ItemsPageState extends State<ItemsPage> {
                   onChanged: (value) => setState(() => selectedLabel = value ?? 1),
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Avery 5160 sheets have 30 labels (3 columns × 10 rows).',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                  style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6)),
                 ),
               ],
             ),
@@ -1299,7 +1299,7 @@ class _ItemsPageState extends State<ItemsPage> {
                     children: [
                       const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                       const SizedBox(height: 8),
-                      const Text('No categories found for the current page.', style: TextStyle(color: Colors.grey)),
+                      Text('No categories found for the current page.', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6))),
                       Row(
                         children: [
                           TextButton.icon(

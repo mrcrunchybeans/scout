@@ -20,6 +20,7 @@ import 'dev/label_qr_test_page.dart';
 import 'dev/debug_dashboard_stats.dart';
 import 'features/admin/algolia_config_page.dart';
 import 'features/admin/label_config_page.dart';
+import 'features/admin/recalculate_lot_codes_page.dart';
 import 'services/search_service.dart';
 
 /// Navigation observer for debugging navigation issues
@@ -183,6 +184,30 @@ void main() {
   try {
     if (kIsWeb) {
       setUrlStrategy(PathUrlStrategy());
+      
+      // Handle legacy hash-based URLs (e.g., from old QR codes)
+      // The browser doesn't send the hash to the server, so we need to
+      // read it from window.location.hash and redirect to the path version
+      final hash = web.window.location.hash;
+      if (hash.isNotEmpty) {
+        // Remove the leading # and convert to path-based URL
+        final path = hash.substring(1); // Remove #
+        if (path.isNotEmpty && path != '/') {
+          // Schedule the redirect after the app initializes
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            try {
+              // Use the global router to navigate
+              _router.go(path);
+              // Clear the hash from the URL bar
+              web.window.history.replaceState(null, '', path);
+            } catch (e) {
+              if (kDebugMode) {
+                debugPrint('Error redirecting from hash URL: $e');
+              }
+            }
+          });
+        }
+      }
     }
   } catch (_) {}
 
@@ -347,6 +372,11 @@ final GoRouter _router = GoRouter(
       name: 'labelConfig',
       builder: (context, state) => const LabelConfigPage(),
     ),
+    GoRoute(
+      path: '/admin/recalculate-lot-codes',
+      name: 'recalculateLotCodes',
+      builder: (context, state) => const RecalculateLotCodesPage(),
+    ),
   ],
 );
 
@@ -378,7 +408,7 @@ class _ErrorPage extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'The page you\'re looking for doesn\'t exist.',
-              style: TextStyle(color: Colors.grey[600]),
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7)),
             ),
             const SizedBox(height: 24),
             ElevatedButton(
@@ -389,7 +419,7 @@ class _ErrorPage extends StatelessWidget {
               const SizedBox(height: 16),
               Text(
                 'Error: ${error.toString()}',
-                style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6), fontSize: 12),
               ),
             ],
           ],

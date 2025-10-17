@@ -2,7 +2,7 @@ import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'dart:convert';
 import 'web_anchor_stub.dart' if (dart.library.html) 'web_anchor_impl.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -519,11 +519,17 @@ class LabelExportService {
   final maxQrHeight = (innerH - 2.0).clamp(16.0, innerH);
   final legacyQrSize = t.qrCodeSize.clamp(20.0, qrRegionWidth).clamp(16.0, maxQrHeight);
 
-    // deeplink (unchanged)
+    // Generate deep link for QR code
+    // Use path-based URLs (no hash) to match PathUrlStrategy
     const host = 'scout.littleempathy.com';
     final qrData = (itemId.isNotEmpty && lotDocId.isNotEmpty)
-        ? 'https://$host/#/lot/$itemId/$lotDocId'
-        : lotId;
+        ? 'https://$host/lot/$itemId/$lotDocId'
+        : (lotId.isNotEmpty ? lotId : 'INVALID_LOT');
+
+    // Log warning if QR data is invalid
+    if (itemId.isEmpty || lotDocId.isEmpty) {
+      debugPrint('WARNING: Label generated with incomplete data - itemId: "$itemId", lotDocId: "$lotDocId", lotCode: "$lotId"');
+    }
 
     if (!hasDesign) {
       // Legacy layout kept for backward compatibility

@@ -1656,11 +1656,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
                     onPressed: _busy ? null : _reopenSession,
                   ),
                   const SizedBox(height: 8),
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
                     child: Text(
                       'This session is closed. Reopen to edit and recredit inventory.',
-                      style: TextStyle(color: Colors.grey),
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6)),
                     ),
                   ),
                 ],
