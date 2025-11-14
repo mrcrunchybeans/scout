@@ -1,0 +1,50 @@
+{
+  "name": "Scout Flutter Development",
+  "image": "ghcr.io/cirruslabs/flutter:stable",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  "postCreateCommand": "npm install -g firebase-tools && flutter pub get",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dart-code.dart-code",
+        "dart-code.flutter",
+        "github.copilot",
+        "github.copilot-chat",
+        "eamodio.gitlens",
+        "usernamehw.errorlens"
+      ],
+      "settings": {
+        "dart.flutterSdkPath": "/sdks/flutter",
+        "dart.lineLength": 120,
+        "editor.formatOnSave": true,
+        "files.trimTrailingWhitespace": true
+      }
+    }
+  },
+
+  "forwardPorts": [5000, 8080, 9099],
+  "portsAttributes": {
+    "5000": {
+      "label": "Firebase Hosting",
+      "onAutoForward": "notify"
+    },
+    "8080": {
+      "label": "Flutter Web Dev",
+      "onAutoForward": "notify"
+    },
+    "9099": {
+      "label": "Firebase Emulator",
+      "onAutoForward": "notify"
+    }
+  },
+
+  "remoteUser": "root"
+}
