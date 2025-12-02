@@ -4,16 +4,40 @@ service firebase.storage {
     // Allow authenticated users to read and write to items folder
     match /items/{itemId}/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null
+      // Allow delete for authenticated users
+      allow delete: if request.auth != null;
+      // Allow create/update with size and type restrictions
+      allow create, update: if request.auth != null
         && request.resource.size < 10 * 1024 * 1024 // Max 10MB
         && request.resource.contentType.matches('image/.*');
     }
     
-    // Allow authenticated users to read and write to library_items folder
-    match /library_items/{itemId}/{allPaths=**} {
+    // Allow authenticated users to read and write images to library_items folder
+    match /library_items/{itemId}/images/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null
+      allow delete: if request.auth != null;
+      allow create, update: if request.auth != null
         && request.resource.size < 10 * 1024 * 1024 // Max 10MB
+        && request.resource.contentType.matches('image/.*');
+    }
+    
+    // Allow authenticated users to read and write documents to library_items folder
+    match /library_items/{itemId}/documents/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow delete: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.size < 25 * 1024 * 1024 // Max 25MB for documents
+        && (request.resource.contentType.matches('application/pdf')
+            || request.resource.contentType.matches('application/msword')
+            || request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
+    }
+    
+    // Legacy path for library_items (for backwards compatibility)
+    match /library_items/{itemId}/{fileName} {
+      allow read: if request.auth != null;
+      allow delete: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
     }
   }

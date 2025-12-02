@@ -693,6 +693,8 @@ class _ItemsPageState extends State<ItemsPage> {
               final minQty = (data['minQty'] ?? 0);
               final hasLots = (data['lots'] != null && (data['lots'] as List?)?.isNotEmpty == true);
               final expirationDate = data['earliestExpiresAt'] != null ? (data['earliestExpiresAt'] as Timestamp).toDate() : null;
+              final imageUrls = (data['imageUrls'] as List<dynamic>?)?.cast<String>() ?? [];
+              final hasImage = imageUrls.isNotEmpty;
 
               Color? tileColor;
               if (expirationDate != null) {
@@ -720,7 +722,36 @@ class _ItemsPageState extends State<ItemsPage> {
                           });
                         },
                       )
-                    : null,
+                    : hasImage
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: Image.network(
+                              imageUrls.first,
+                              width: 40,
+                              height: 40,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const SizedBox(
+                                width: 40,
+                                height: 40,
+                                child: Icon(Icons.image_not_supported, size: 20, color: Colors.grey),
+                              ),
+                              loadingBuilder: (context, child, loadingProgress) {
+                                if (loadingProgress == null) return child;
+                                return const SizedBox(
+                                  width: 40,
+                                  height: 40,
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          )
+                        : null,
                 title: Text(name),
                 subtitle: Text(
                     '${category.isNotEmpty ? '$category • ' : ''}Qty: $qty • Min: $minQty${hasLots ? ' • Has lots' : ''}'),

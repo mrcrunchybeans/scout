@@ -66,6 +66,7 @@ class LibraryItem {
   final String? notes;
   final String? grantId; // Associated grant/budget
   final List<String> imageUrls; // Photos of the item
+  final List<Map<String, String>> documentUrls; // Documents (name, url, type)
 
   LibraryItem({
     required this.id,
@@ -87,6 +88,7 @@ class LibraryItem {
     this.notes,
     this.grantId,
     this.imageUrls = const [],
+    this.documentUrls = const [],
   });
 
   /// Create from Firestore document
@@ -112,6 +114,9 @@ class LibraryItem {
       notes: data['notes'],
       grantId: data['grantId'],
       imageUrls: (data['imageUrls'] as List<dynamic>?)?.cast<String>() ?? [],
+      documentUrls: (data['documentUrls'] as List<dynamic>?)
+          ?.map((e) => Map<String, String>.from(e as Map))
+          .toList() ?? [],
     );
   }
 
@@ -138,6 +143,7 @@ class LibraryItem {
     if (notes != null) data['notes'] = notes;
     if (grantId != null) data['grantId'] = grantId;
     if (imageUrls.isNotEmpty) data['imageUrls'] = imageUrls;
+    if (documentUrls.isNotEmpty) data['documentUrls'] = documentUrls;
 
     return data;
   }
@@ -174,6 +180,7 @@ class LibraryItem {
     String? notes,
     String? grantId,
     List<String>? imageUrls,
+    List<Map<String, String>>? documentUrls,
   }) {
     return LibraryItem(
       id: id,
@@ -195,6 +202,7 @@ class LibraryItem {
       notes: notes ?? this.notes,
       grantId: grantId ?? this.grantId,
       imageUrls: imageUrls ?? this.imageUrls,
+      documentUrls: documentUrls ?? this.documentUrls,
     );
   }
 }

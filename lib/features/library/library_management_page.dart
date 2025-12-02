@@ -6,6 +6,7 @@ import 'package:scout/utils/operator_store.dart';
 import 'package:scout/data/lookups_service.dart';
 import 'package:scout/models/option_item.dart';
 import 'package:scout/widgets/image_picker_widget.dart';
+import 'package:scout/widgets/document_picker_widget.dart';
 import 'package:uuid/uuid.dart';
 
 enum UseType { staff, patient, both }
@@ -969,181 +970,342 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
   Future<void> _showItemActionsSheet(LibraryItem item) async {
     final canCheckOut = item.status == LibraryItemStatus.available;
     final canCheckIn = item.status == LibraryItemStatus.checkedOut;
+    final needsRestock = item.needsRestocking;
+    final hasImages = item.imageUrls.isNotEmpty;
+    final hasDocs = item.documentUrls.isNotEmpty;
     
     await showModalBottomSheet(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: item.status.color.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      item.status.displayName,
-                      style: TextStyle(
-                        color: item.status.color,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      item.name,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (item.checkedOutBy != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: Row(
-                  children: [
-                    const Icon(Icons.person, size: 16, color: Colors.grey),
-                    const SizedBox(width: 8),
-                    Text('With: ${item.checkedOutBy}', style: TextStyle(color: Colors.grey[700])),
-                  ],
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.65,
+        minChildSize: 0.4,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              // Drag handle
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-            if (item.maxUses != null)
+              // Header with image/icon
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(
-                      item.needsRestocking ? Icons.warning : Icons.inventory_2,
-                      size: 16,
-                      color: item.needsRestocking ? Colors.orange : Colors.grey,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Uses: ${item.usageCount}/${item.maxUses}${item.needsRestocking ? " - NEEDS RESTOCKING" : ""}',
-                      style: TextStyle(
-                        color: item.needsRestocking ? Colors.orange[700] : Colors.grey[700],
-                        fontWeight: item.needsRestocking ? FontWeight.bold : FontWeight.normal,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            // Display images if available
-            if (item.imageUrls.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                child: SizedBox(
-                  height: 80,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: item.imageUrls.length,
-                    itemBuilder: (context, index) {
-                      return Padding(
-                        padding: EdgeInsets.only(right: index < item.imageUrls.length - 1 ? 8 : 0),
-                        child: GestureDetector(
-                          onTap: () {
-                            Navigator.pop(context);
-                            _showImageViewer(item.imageUrls, index);
-                          },
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              item.imageUrls[index],
-                              width: 80,
-                              height: 80,
-                              fit: BoxFit.cover,
-                              errorBuilder: (ctx, err, stack) => Container(
-                                width: 80,
-                                height: 80,
-                                color: Colors.grey[300],
-                                child: const Icon(Icons.broken_image),
-                              ),
-                            ),
-                          ),
+                    // Image or placeholder icon
+                    GestureDetector(
+                      onTap: hasImages ? () {
+                        Navigator.pop(context);
+                        _showImageViewer(item.imageUrls, 0);
+                      } : null,
+                      child: Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: hasImages ? null : item.status.color.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: hasImages ? null : Border.all(color: item.status.color.withOpacity(0.3)),
                         ),
-                      );
-                    },
+                        child: hasImages
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Image.network(
+                                      item.imageUrls.first,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Icon(
+                                        Icons.inventory_2,
+                                        size: 36,
+                                        color: item.status.color,
+                                      ),
+                                    ),
+                                    if (item.imageUrls.length > 1)
+                                      Positioned(
+                                        right: 4,
+                                        bottom: 4,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black54,
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          child: Text(
+                                            '+${item.imageUrls.length - 1}',
+                                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              )
+                            : Icon(
+                                Icons.inventory_2,
+                                size: 36,
+                                color: item.status.color,
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    // Name and status
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.name,
+                            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: item.status.color.withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: item.status.color.withOpacity(0.5)),
+                                ),
+                                child: Text(
+                                  item.status.displayName,
+                                  style: TextStyle(
+                                    color: item.status.color,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                              if (needsRestock) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange.withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.warning_amber, size: 14, color: Colors.orange[700]),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Restock',
+                                        style: TextStyle(color: Colors.orange[700], fontSize: 12, fontWeight: FontWeight.w600),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          if (item.description != null && item.description!.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              item.description!,
+                              style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Info row
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    children: [
+                      if (item.checkedOutBy != null)
+                        _buildInfoRow(Icons.person, 'Checked out by', item.checkedOutBy!),
+                      if (item.checkedOutAt != null)
+                        _buildInfoRow(Icons.schedule, 'Since', _formatDate(item.checkedOutAt!.toDate())),
+                      if (item.usedAtLocation != null)
+                        _buildInfoRow(Icons.location_on, 'Location', item.usedAtLocation!),
+                      if (item.maxUses != null)
+                        _buildInfoRow(
+                          needsRestock ? Icons.warning_amber : Icons.repeat,
+                          'Usage',
+                          '${item.usageCount} of ${item.maxUses} uses (${item.remainingUses} left)',
+                          color: needsRestock ? Colors.orange[700] : null,
+                        ),
+                      if (item.category != null)
+                        _buildInfoRow(Icons.category, 'Category', item.category!),
+                      if (item.location != null)
+                        _buildInfoRow(Icons.home, 'Stored at', item.location!),
+                      if (item.barcode != null)
+                        _buildInfoRow(Icons.qr_code, 'Barcode', item.barcode!),
+                    ],
                   ),
                 ),
               ),
-            const SizedBox(height: 16),
-            const Divider(height: 1),
-            if (canCheckOut)
-              ListTile(
-                leading: const Icon(Icons.logout, color: Colors.blue),
-                title: const Text('Check Out'),
-                subtitle: const Text('Take this kit for use'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showCheckOutDialog(item);
-                },
+              const SizedBox(height: 12),
+              // Scrollable actions list
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  children: [
+                    // Primary actions
+                    if (canCheckOut)
+                      _buildActionTile(
+                        icon: Icons.logout,
+                        iconColor: Colors.blue,
+                        title: 'Check Out',
+                        subtitle: 'Take this kit for use',
+                        onTap: () {
+                          Navigator.pop(context);
+                          _showCheckOutDialog(item);
+                        },
+                      ),
+                    if (canCheckIn)
+                      _buildActionTile(
+                        icon: Icons.login,
+                        iconColor: Colors.green,
+                        title: 'Check In',
+                        subtitle: 'Return this kit',
+                        onTap: () {
+                          Navigator.pop(context);
+                          _showCheckInDialog(item);
+                        },
+                      ),
+                    _buildActionTile(
+                      icon: Icons.build,
+                      iconColor: Colors.orange,
+                      title: 'Restock / Maintenance',
+                      subtitle: 'Reset usage count or mark for maintenance',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showRestockDialog(item);
+                      },
+                    ),
+                    const Divider(height: 24),
+                    // Management actions
+                    _buildActionTile(
+                      icon: Icons.edit,
+                      iconColor: Colors.grey[700]!,
+                      title: 'Edit Details',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showEditDialog(item);
+                      },
+                    ),
+                    _buildActionTile(
+                      icon: Icons.photo_library,
+                      iconColor: Colors.purple,
+                      title: 'Manage Images',
+                      subtitle: hasImages ? '${item.imageUrls.length} photo${item.imageUrls.length == 1 ? '' : 's'}' : 'Add photos',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showImagesDialog(item);
+                      },
+                    ),
+                    _buildActionTile(
+                      icon: Icons.description,
+                      iconColor: Colors.indigo,
+                      title: 'Manage Documents',
+                      subtitle: hasDocs ? '${item.documentUrls.length} file${item.documentUrls.length == 1 ? '' : 's'}' : 'Add PDF, DOC, DOCX',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showDocumentsDialog(item);
+                      },
+                    ),
+                    const Divider(height: 24),
+                    _buildActionTile(
+                      icon: Icons.delete_outline,
+                      iconColor: Colors.red,
+                      title: 'Delete',
+                      titleColor: Colors.red,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _deleteItem(item);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
-            if (canCheckIn)
-              ListTile(
-                leading: const Icon(Icons.login, color: Colors.green),
-                title: const Text('Check In'),
-                subtitle: const Text('Return this kit'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showCheckInDialog(item);
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.build, color: Colors.orange),
-              title: const Text('Restock / Maintenance'),
-              subtitle: const Text('Reset usage count or mark for maintenance'),
-              onTap: () {
-                Navigator.pop(context);
-                _showRestockDialog(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('Edit Details'),
-              onTap: () {
-                Navigator.pop(context);
-                _showEditDialog(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: Text('Manage Images (${item.imageUrls.length})'),
-              subtitle: const Text('Add or remove photos'),
-              onTap: () {
-                Navigator.pop(context);
-                _showImagesDialog(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('Delete', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteItem(item);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value, {Color? color}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color ?? Colors.grey[600]),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.grey[600], fontSize: 13),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                fontWeight: FontWeight.w500,
+                fontSize: 13,
+                color: color,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionTile({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    String? subtitle,
+    Color? titleColor,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: iconColor.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: iconColor, size: 22),
+      ),
+      title: Text(title, style: TextStyle(fontWeight: FontWeight.w500, color: titleColor)),
+      subtitle: subtitle != null ? Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[600])) : null,
+      trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
+      onTap: onTap,
     );
   }
 
@@ -1202,6 +1364,41 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
     );
   }
 
+  Future<void> _showDocumentsDialog(LibraryItem item) async {
+    await showDialog(
+      context: context,
+      builder: (context) => _LibraryItemDocumentsDialog(
+        item: item,
+        onDocumentsUpdated: () {
+          setState(() {}); // Trigger rebuild to reflect document changes
+        },
+      ),
+    );
+  }
+
+  void _openFirstDocument(LibraryItem item) {
+    if (item.documentUrls.isEmpty) return;
+    
+    final doc = item.documentUrls.first;
+    final url = doc['url'];
+    final name = doc['name'] ?? 'Document';
+    final type = doc['type']?.toLowerCase();
+    
+    if (url == null) return;
+    
+    // For PDFs, navigate to viewer
+    if (type == 'pdf') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => PdfViewerPage(url: url, title: name),
+        ),
+      );
+    } else {
+      // For DOC/DOCX, show the documents dialog
+      _showDocumentsDialog(item);
+    }
+  }
+
   Future<void> _deleteItem(LibraryItem item) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1256,6 +1453,7 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
     final bool canCheckOut = item.status == LibraryItemStatus.available;
     final bool canCheckIn = item.status == LibraryItemStatus.checkedOut;
     final bool needsRestock = item.needsRestocking;
+    final bool hasImage = item.imageUrls.isNotEmpty;
     
     if (compact) {
       return Card(
@@ -1267,15 +1465,53 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
-                // Status indicator
-                Container(
-                  width: 8,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: item.status.color,
+                // Thumbnail or status indicator
+                if (hasImage)
+                  ClipRRect(
                     borderRadius: BorderRadius.circular(4),
+                    child: Image.network(
+                      item.imageUrls.first,
+                      width: 40,
+                      height: 40,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: item.status.color.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Icon(Icons.inventory_2, size: 20, color: item.status.color),
+                      ),
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.grey[200],
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Center(
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  )
+                else
+                  Container(
+                    width: 8,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: item.status.color,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
                   ),
-                ),
                 const SizedBox(width: 12),
                 // Name and info
                 Expanded(
@@ -1283,10 +1519,16 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        item.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.name,
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 2),
                       Row(
@@ -1320,6 +1562,19 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
                               ),
                             ),
                           ],
+                          // Document indicator at end of row - clickable to open documents
+                          if (item.documentUrls.isNotEmpty)
+                            GestureDetector(
+                              onTap: () => _openFirstDocument(item),
+                              child: Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: Icon(
+                                  Icons.description,
+                                  size: 14,
+                                  color: Colors.indigo[400],
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ],
@@ -1378,26 +1633,80 @@ class _LibraryManagementPageState extends State<LibraryManagementPage> {
             children: [
               Row(
                 children: [
-                  // Status indicator bar
-                  Container(
-                    width: 4,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      color: item.status.color,
-                      borderRadius: BorderRadius.circular(2),
+                  // Thumbnail or status indicator bar
+                  if (hasImage)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Image.network(
+                        item.imageUrls.first,
+                        width: 56,
+                        height: 56,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: item.status.color.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Icon(Icons.inventory_2, size: 28, color: item.status.color),
+                        ),
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return Container(
+                            width: 56,
+                            height: 56,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[200],
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Center(
+                              child: SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    )
+                  else
+                    Container(
+                      width: 4,
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: item.status.color,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
-                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          item.name,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                item.name,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            // Document indicator
+                            if (item.documentUrls.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: Icon(
+                                  Icons.description,
+                                  size: 18,
+                                  color: Colors.indigo[400],
+                                ),
+                              ),
+                          ],
                         ),
                         if (item.description != null)
                           Text(
@@ -1850,6 +2159,75 @@ class _LibraryItemImagesDialogState extends State<_LibraryItemImagesDialog> {
             });
 
             widget.onImagesUpdated();
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Done'),
+        ),
+      ],
+    );
+  }
+}
+
+class _LibraryItemDocumentsDialog extends StatefulWidget {
+  final LibraryItem item;
+  final VoidCallback onDocumentsUpdated;
+
+  const _LibraryItemDocumentsDialog({
+    required this.item,
+    required this.onDocumentsUpdated,
+  });
+
+  @override
+  State<_LibraryItemDocumentsDialog> createState() => _LibraryItemDocumentsDialogState();
+}
+
+class _LibraryItemDocumentsDialogState extends State<_LibraryItemDocumentsDialog> {
+  late List<Map<String, String>> _documents;
+
+  @override
+  void initState() {
+    super.initState();
+    _documents = List.from(widget.item.documentUrls);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.folder_open),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Documents - ${widget.item.name}',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: DocumentPickerWidget(
+          documents: _documents,
+          itemId: widget.item.id,
+          onDocumentsChanged: (newDocs) async {
+            setState(() {
+              _documents = List.from(newDocs);
+            });
+
+            // Update Firestore
+            await FirebaseFirestore.instance
+                .collection('library_items')
+                .doc(widget.item.id)
+                .update({
+              'documentUrls': newDocs,
+            });
+
+            widget.onDocumentsUpdated();
           },
         ),
       ),
