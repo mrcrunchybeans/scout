@@ -3,7 +3,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
-import 'package:web/web.dart' as web;
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as web;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -22,6 +23,8 @@ import 'features/admin/algolia_config_page.dart';
 import 'features/admin/label_config_page.dart';
 import 'features/admin/recalculate_lot_codes_page.dart';
 import 'services/search_service.dart';
+import 'features/budget/budget_page.dart';
+import 'features/items/mobile_barcode_scanner_page.dart';
 
 /// Navigation observer for debugging navigation issues
 class ScoutNavigationObserver extends NavigatorObserver {
@@ -177,39 +180,37 @@ Map<String, String>? _parseLegacyHash() {
   return null;
 }
 
-void main() {
+void main() async {
   // Ensure Flutter binding is initialized before using WidgetsBinding
   WidgetsFlutterBinding.ensureInitialized();
+  
   // Use path URL strategy (no hash) for clean URLs on web
-  try {
-    if (kIsWeb) {
-      setUrlStrategy(PathUrlStrategy());
-      
-      // Handle legacy hash-based URLs (e.g., from old QR codes)
-      // The browser doesn't send the hash to the server, so we need to
-      // read it from window.location.hash and redirect to the path version
-      final hash = web.window.location.hash;
-      if (hash.isNotEmpty) {
-        // Remove the leading # and convert to path-based URL
-        final path = hash.substring(1); // Remove #
-        if (path.isNotEmpty && path != '/') {
-          // Schedule the redirect after the app initializes
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            try {
-              // Use the global router to navigate
-              _router.go(path);
-              // Clear the hash from the URL bar
-              web.window.history.replaceState(null, '', path);
-            } catch (e) {
-              if (kDebugMode) {
-                debugPrint('Error redirecting from hash URL: $e');
-              }
+  if (kIsWeb) {
+    usePathUrlStrategy();
+  }
+  
+  // Initialize router AFTER path strategy is set
+  _initRouter();
+  
+  // Handle legacy hash-based URLs (e.g., from old QR codes)
+  if (kIsWeb) {
+    final hash = web.window.location.hash;
+    if (hash.isNotEmpty) {
+      final path = hash.substring(1); // Remove #
+      if (path.isNotEmpty && path != '/') {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          try {
+            _router.go(path);
+            web.window.history.replaceState(null, '', path);
+          } catch (e) {
+            if (kDebugMode) {
+              debugPrint('Error redirecting from hash URL: $e');
             }
-          });
-        }
+          }
+        });
       }
     }
-  } catch (_) {}
+  }
 
   // Ensure web splash screen is removed once Flutter paints its first frame
   if (kIsWeb) {
@@ -224,20 +225,22 @@ void main() {
     });
   }
 
-  runApp(const ScoutApp());
+  runApp(ScoutApp());
 }
 
-// Create a global GoRouter instance so programmatic navigation still works
-final GoRouter _router = GoRouter(
-  initialLocation: '/',
-  navigatorKey: navigatorKey,
-  debugLogDiagnostics: kDebugMode, // Only log in debug to reduce overhead in release
-  errorBuilder: (context, state) => _ErrorPage(error: state.error),
-  redirect: (context, state) {
-    // Handle any route redirects or authentication checks here
-    return null; // Allow navigation to proceed normally
-  },
-  routes: [
+// Create GoRouter instance - will be initialized after URL strategy is set
+late final GoRouter _router;
+
+void _initRouter() {
+  _router = GoRouter(
+    navigatorKey: navigatorKey,
+    debugLogDiagnostics: kDebugMode,
+    errorBuilder: (context, state) => _ErrorPage(error: state.error),
+    redirect: (context, state) {
+      // Handle any route redirects or authentication checks here
+      return null; // Allow navigation to proceed normally
+    },
+    routes: [
     GoRoute(
       path: '/',
       name: 'dashboard',
@@ -377,8 +380,22 @@ final GoRouter _router = GoRouter(
       name: 'recalculateLotCodes',
       builder: (context, state) => const RecalculateLotCodesPage(),
     ),
+    GoRoute(
+      path: '/budget',
+      name: 'budget',
+      builder: (context, state) => BudgetPage(),
+    ),
+    GoRoute(
+      path: '/mobile-scanner/:sessionId',
+      name: 'mobileScanner',
+      builder: (context, state) {
+        final sessionId = state.params['sessionId']!;
+        return MobileBarcodeScannerPage(sessionId: sessionId);
+      },
+    ),
   ],
-);
+  );
+}
 
 /// Error page for invalid routes
 class _ErrorPage extends StatelessWidget {
@@ -387,6 +404,9 @@ class _ErrorPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Get the current location from the browser
+    final currentUrl = kIsWeb ? web.window.location.href : 'N/A';
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('Page Not Found'),
@@ -410,6 +430,21 @@ class _ErrorPage extends StatelessWidget {
               'The page you\'re looking for doesn\'t exist.',
               style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7)),
             ),
+            if (kIsWeb) ...[
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: SelectableText(
+                  'URL: $currentUrl',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: () => context.go('/'),
@@ -430,7 +465,7 @@ class _ErrorPage extends StatelessWidget {
 }
 
 class ScoutApp extends StatelessWidget {
-  const ScoutApp({super.key});
+  ScoutApp({super.key});
 
   @override
   Widget build(BuildContext context) {

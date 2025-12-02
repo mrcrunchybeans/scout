@@ -14,7 +14,9 @@ import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
 import '../reports/usage_report_page.dart';
+import '../library/library_management_page.dart';
 import '../../dev/manual_dashboard_fix.dart';
+import '../budget/budget_page.dart';
 
 enum _DashboardMenuAction {
   theme,
@@ -281,7 +283,7 @@ class _DashboardPageState extends State<DashboardPage> {
           LayoutBuilder(
             builder: (context, constraints) {
               Widget buildActionsGrid() {
-                // Six tiles in a proper grid (2 rows x 3 columns on wide, stacked on narrow)
+                // Seven tiles in a 3-column grid
                 final tiles = <Widget>[
                   _PrimaryActionButton(
                     icon: Icons.inventory_2_outlined,
@@ -318,6 +320,17 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                   _PrimaryActionButton(
                     icon: Icons.inventory_2,
+                    color: Colors.purple.shade600,
+                    label: 'Intervention Kits',
+                    subtitle: 'Track kit usage',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const LibraryManagementPage()),
+                      );
+                    },
+                  ),
+                  _PrimaryActionButton(
+                    icon: Icons.inventory_2,
                     color: colorScheme.primary.withValues(alpha: 0.85),
                     label: 'View Items',
                     subtitle: 'Browse inventory',
@@ -341,9 +354,20 @@ class _DashboardPageState extends State<DashboardPage> {
                       );
                     },
                   ),
+                  _PrimaryActionButton(
+                    icon: Icons.account_balance_wallet,
+                    color: Colors.amber.shade700,
+                    label: 'Team Budget',
+                    subtitle: 'Collaborative budget management\nPassword: spiritualcare',
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => BudgetPage()),
+                      );
+                    },
+                  ),
                 ];
 
-                // Build a proper 3-column grid
+                // Build a 3-column grid with 3 rows
                 return Column(
                   children: [
                     // Row 1: Bulk Entry, Add/Audit, Cart Session
@@ -357,7 +381,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    // Row 2: View Items, Sessions, New Item
+                    // Row 2: Library, View Items, Sessions
                     Row(
                       children: [
                         Expanded(child: tiles[3]),
@@ -365,6 +389,17 @@ class _DashboardPageState extends State<DashboardPage> {
                         Expanded(child: tiles[4]),
                         const SizedBox(width: 16),
                         Expanded(child: tiles[5]),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // Row 3: New Item (centered or left-aligned)
+                    Row(
+                      children: [
+                        Expanded(child: tiles[6]),
+                        const SizedBox(width: 16),
+                        Expanded(child: tiles[7]),
+                        const SizedBox(width: 16),
+                        const Expanded(child: SizedBox()), // Empty space
                       ],
                     ),
                   ],

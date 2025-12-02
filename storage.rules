@@ -1,0 +1,20 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Allow authenticated users to read and write to items folder
+    match /items/{itemId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024 // Max 10MB
+        && request.resource.contentType.matches('image/.*');
+    }
+    
+    // Allow authenticated users to read and write to library_items folder
+    match /library_items/{itemId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024 // Max 10MB
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

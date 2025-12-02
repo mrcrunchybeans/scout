@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:scout/widgets/scanner_sheet.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:uuid/uuid.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 
 import '../../models/option_item.dart';
@@ -52,6 +54,17 @@ class _CartSessionPageState extends State<CartSessionPage> {
   bool _usbCaptureOn = false;
   final List<CartLine> _lines = [];
   final Map<String, bool> _overAllocatedLines = {};
+  
+  // Track line IDs that exist in Firestore (for deletion sync)
+  final Set<String> _savedLineIds = {};
+  
+  // Mobile scanner session
+  late final String _mobileScannerSessionId;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scannerSubscription;
+  
+  // Auto-save timer
+  Timer? _autoSaveTimer;
+  bool _autoSavePending = false;
 
   bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
   bool get _isClosed => _status == 'closed';
@@ -60,6 +73,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
   void initState() {
     super.initState();
     _sessionId = widget.sessionId;
+    _mobileScannerSessionId = const Uuid().v4();
+    _listenForMobileScans();
     _syncFormControllers();
     _loadInterventions();
     if (_sessionId != null) {
@@ -104,11 +119,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
       setState(() {
         _lines.clear();
         _overAllocatedLines.clear();
+        _savedLineIds.clear();
         for (final doc in linesQuery.docs) {
           final lineData = doc.data();
           final line = CartLine.fromMap(lineData);
           _lines.add(line);
-          _overAllocatedLines[_lineId(line)] = false;
+          final lineId = _lineId(line);
+          _overAllocatedLines[lineId] = false;
+          _savedLineIds.add(lineId); // Track what's in Firestore
         }
       });
     } catch (e) {
@@ -195,7 +213,27 @@ class _CartSessionPageState extends State<CartSessionPage> {
     _barcodeFocus.dispose();
     _locationC.dispose();
     _notesC.dispose();
+    _scannerSubscription?.cancel();
+    _autoSaveTimer?.cancel();
+    // Perform final save if there are pending changes
+    if (_autoSavePending && _lines.isNotEmpty) {
+      _saveDraft(); // Fire and forget on dispose
+    }
+    // Clean up scanner session
+    _db.collection('scanner_sessions').doc(_mobileScannerSessionId).delete().catchError((_) {});
     super.dispose();
+  }
+  
+  /// Triggers a debounced auto-save after changes to the cart
+  void _triggerAutoSave() {
+    if (_isClosed) return; // Don't auto-save closed sessions
+    _autoSavePending = true;
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(seconds: 3), () async {
+      if (!mounted || _isClosed) return;
+      _autoSavePending = false;
+      await _saveDraft();
+    });
   }
 
   Future<void> _handleCode(String rawCode) async {
@@ -307,6 +345,80 @@ class _CartSessionPageState extends State<CartSessionPage> {
     await _handleCode(code);
   }
 
+  void _listenForMobileScans() {
+    _scannerSubscription = _db
+        .collection('scanner_sessions')
+        .doc(_mobileScannerSessionId)
+        .collection('scans')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.docs.isNotEmpty) {
+        final scan = snapshot.docs.first;
+        final barcode = scan.data()['barcode'] as String?;
+        final processed = scan.data()['processed'] as bool? ?? false;
+        
+        if (barcode != null && !processed && mounted) {
+          _handleCode(barcode);
+          // Mark as processed
+          scan.reference.update({'processed': true});
+        }
+      }
+    });
+  }
+
+  void _showMobileScannerQR() {
+    final url = 'https://scout.littleempathy.com/mobile-scanner/$_mobileScannerSessionId';
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Scan with Phone'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Scan this QR code with your phone to use it as a barcode scanner:',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.white,
+                child: QrImageView(
+                  data: url,
+                  version: QrVersions.auto,
+                  size: 200.0,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Session: ${_mobileScannerSessionId.substring(0, 8)}...',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Scanned barcodes will appear and be added automatically.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<bool> _openQuickSearch({String? initialQuery}) async {
     if (!mounted) return false;
     final result = await showModalBottomSheet<dynamic>(
@@ -406,6 +518,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         _overAllocatedLines[id] = false;
       }
     });
+    _triggerAutoSave();
   }
 
   Future<void> _offerAttachBarcode(String code) async {
@@ -544,9 +657,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
 
+      // Collect current line IDs
+      final currentLineIds = <String>{};
+      
       final batch = _db.batch();
       for (final line in _lines) {
         final lid = _lineId(line);
+        currentLineIds.add(lid);
         final lref = sref.collection('lines').doc(lid);
         // Manual audit fields for line data
         final linePayload = {
@@ -558,7 +675,20 @@ class _CartSessionPageState extends State<CartSessionPage> {
         };
         batch.set(lref, linePayload, SetOptions(merge: true));
       }
+      
+      // Delete lines that were removed (exist in _savedLineIds but not in currentLineIds)
+      final deletedLineIds = _savedLineIds.difference(currentLineIds);
+      for (final deletedId in deletedLineIds) {
+        final lref = sref.collection('lines').doc(deletedId);
+        batch.delete(lref);
+      }
+      
       await batch.commit();
+      
+      // Update saved line IDs to match current state
+      _savedLineIds
+        ..clear()
+        ..addAll(currentLineIds);
 
       // Manual audit log to avoid FieldValue.serverTimestamp()
       await _db.collection('audit_logs').add({
@@ -566,6 +696,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         'data': {
           'sessionId': _sessionId,
           'numLines': _lines.length,
+          if (deletedLineIds.isNotEmpty) 'deletedLines': deletedLineIds.length,
         },
         'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
         'createdBy': user?.uid,
@@ -1405,8 +1536,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
               child: SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
             ),
           IconButton(
-            tooltip: 'Save draft',
-            icon: const Icon(Icons.save),
+            icon: const Icon(Icons.phone_android),
+            tooltip: 'Scan with Phone',
+            onPressed: (_busy || _isClosed) ? null : _showMobileScannerQR,
+          ),
+          IconButton(
+            tooltip: _autoSavePending ? 'Auto-saving soon...' : 'Save draft',
+            icon: Icon(
+              _autoSavePending ? Icons.sync : Icons.save,
+              color: _autoSavePending ? Theme.of(context).colorScheme.tertiary : null,
+            ),
             onPressed: (_busy || _isClosed) ? null : _saveDraft,
           ),
         ],
@@ -1600,6 +1739,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 if (_lines.isEmpty) const ListTile(title: Text('No items in this session yet')),
                 for (final line in _lines)
                                 _LineRow(
+                                  key: ValueKey(_lineId(line)),
                                   lineId: _lineId(line),
                                   line: line,
                     isClosed: _isClosed,
@@ -1607,17 +1747,38 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       setState(() {
                         final oldId = _lineId(line);
                         final newId = _lineId(updated);
-                        final idx = _lines.indexWhere((x) => _lineId(x) == oldId);
-                        if (idx >= 0) {
-                          _lines[idx] = updated;
-                        }
-                        if (oldId != newId) {
-                          final previous = _overAllocatedLines.remove(oldId) ?? false;
-                          _overAllocatedLines[newId] = previous;
-                        } else {
-                          _overAllocatedLines.putIfAbsent(newId, () => false);
+                        
+                        // Check if changing to a lot that already exists in another line
+                        final existingIdx = _lines.indexWhere((x) => _lineId(x) == newId);
+                        final oldIdx = _lines.indexWhere((x) => _lineId(x) == oldId);
+                        
+                        if (oldId != newId && existingIdx >= 0 && existingIdx != oldIdx) {
+                          // Merge: add quantities to existing line, then remove the old line
+                          final existing = _lines[existingIdx];
+                          _lines[existingIdx] = CartLine(
+                            itemId: existing.itemId,
+                            itemName: existing.itemName,
+                            baseUnit: existing.baseUnit,
+                            lotId: existing.lotId,
+                            lotCode: existing.lotCode,
+                            initialQty: existing.initialQty + updated.initialQty,
+                            endQty: existing.endQty,
+                          );
+                          // Remove the old line
+                          _lines.removeAt(oldIdx > existingIdx ? oldIdx : oldIdx);
+                          _overAllocatedLines.remove(oldId);
+                        } else if (oldIdx >= 0) {
+                          // Normal update
+                          _lines[oldIdx] = updated;
+                          if (oldId != newId) {
+                            final previous = _overAllocatedLines.remove(oldId) ?? false;
+                            _overAllocatedLines[newId] = previous;
+                          } else {
+                            _overAllocatedLines.putIfAbsent(newId, () => false);
+                          }
                         }
                       });
+                      _triggerAutoSave();
                     },
                     onRemove: () {
                       setState(() {
@@ -1625,6 +1786,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                                       _lines.removeWhere((x) => _lineId(x) == id);
                                       _overAllocatedLines.remove(id);
                       });
+                      _triggerAutoSave();
                     },
                                   onOverAllocationChanged: (lineId, isOver) {
                                     final prev = _overAllocatedLines[lineId];
@@ -1679,6 +1841,7 @@ class _LineRow extends StatefulWidget {
   final VoidCallback onRemove;
   final void Function(String lineId, bool isOverAllocated)? onOverAllocationChanged;
   const _LineRow({
+    super.key,
     required this.lineId,
     required this.line,
     required this.isClosed,

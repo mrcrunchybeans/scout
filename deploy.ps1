@@ -26,7 +26,7 @@ if (-not $SkipBuild) {
     try {
         Write-Host "📦 Building Flutter web app..." -ForegroundColor Yellow
         Push-Location $ProjectRoot
-        & flutter build web --release --wasm
+        & flutter build web --release
         if ($LASTEXITCODE -ne 0) { throw "Flutter build failed with exit code $LASTEXITCODE" }
         Write-Host "✅ Build completed successfully" -ForegroundColor Green
     } catch {

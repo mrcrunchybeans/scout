@@ -24,7 +24,10 @@ class _UsageReportPageState extends State<UsageReportPage> {
   Map<String, double> _grantTotals = {};
   Map<String, String> _interventions = {};
   Map<String, String> _grants = {};
+  Map<String, double> _kitUsageTotals = {};
   List<FlSpot> _trendData = [];
+  int _usageLogCount = 0;
+  int _libraryUsageLogCount = 0;
 
   // Time period presets
   final List<String> _timePresets = ['7 days', '30 days', '90 days', 'Custom'];
@@ -49,8 +52,14 @@ class _UsageReportPageState extends State<UsageReportPage> {
   }
 
   Future<void> _loadFilters() async {
-    final interventionsMap = await _loadLookupMap(collectionName: 'interventions', lookupDocId: 'interventions');
-    final grantsMap = await _loadLookupMap(collectionName: 'grants', lookupDocId: 'grants');
+    final interventionsMap = await _loadLookupMap(
+      collectionName: 'interventions',
+      lookupDocId: 'interventions',
+    );
+    final grantsMap = await _loadLookupMap(
+      collectionName: 'grants',
+      lookupDocId: 'grants',
+    );
 
     if (mounted) {
       setState(() {
@@ -64,9 +73,15 @@ class _UsageReportPageState extends State<UsageReportPage> {
   /// - Prefer a document at `lookups/<lookupDocId>` that contains a map of id->name.
   /// - Otherwise fall back to querying the collection `<collectionName>` for documents
   ///   and using each doc's `name` field (or id if missing).
-  Future<Map<String, String>> _loadLookupMap({required String collectionName, required String lookupDocId}) async {
+  Future<Map<String, String>> _loadLookupMap({
+    required String collectionName,
+    required String lookupDocId,
+  }) async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('lookups').doc(lookupDocId).get();
+      final doc = await FirebaseFirestore.instance
+          .collection('lookups')
+          .doc(lookupDocId)
+          .get();
       if (doc.exists) {
         final data = doc.data();
         if (data != null) {
@@ -80,7 +95,8 @@ class _UsageReportPageState extends State<UsageReportPage> {
       }
 
       // Fallback: read collection documents
-      final snap = await FirebaseFirestore.instance.collection(collectionName).get();
+      final snap =
+          await FirebaseFirestore.instance.collection(collectionName).get();
       final map = <String, String>{};
       for (final d in snap.docs) {
         final data = d.data();
@@ -165,18 +181,70 @@ class _UsageReportPageState extends State<UsageReportPage> {
           .where('usedAt', isLessThan: end);
 
       // Apply optional filters
-      if (_selectedInterventionId != null && _selectedInterventionId!.isNotEmpty) {
-        query = query.where('interventionId', isEqualTo: _selectedInterventionId);
+      if (_selectedInterventionId != null &&
+          _selectedInterventionId!.isNotEmpty) {
+        query = query.where(
+          'interventionId',
+          isEqualTo: _selectedInterventionId,
+        );
       }
       if (_selectedGrantId != null && _selectedGrantId!.isNotEmpty) {
-        query = query.where('grantId', isEqualTo: _selectedGrantId);
+        query = query.where(
+          'grantId',
+          isEqualTo: _selectedGrantId,
+        );
       }
 
       final usages = await query.get();
 
+    // Query library/intervention kit usage from audit logs
+    // Audit entries are stored in `audit_logs` with fields: type, data, createdAt
+    final libraryQuery = FirebaseFirestore.instance
+      .collection('audit_logs')
+      .where('type', isEqualTo: 'library.checkin')
+      .where('createdAt', isGreaterThanOrEqualTo: start)
+      .where('createdAt', isLessThan: end);
+
+    final libraryUsages = await libraryQuery.get();
+
+      // Debugging: Log raw data fetched from Firestore
+      print('Raw usage_logs data:');
+      for (final doc in usages.docs) {
+        print(doc.data());
+      }
+
+      print('Raw audit_logs data:');
+      for (final doc in libraryUsages.docs) {
+        print(doc.data());
+      }
+
+      // Enhanced debugging: Log query parameters and document counts
+      print('Querying usage_logs with start: $start, end: $end');
+      print('Selected interventionId: $_selectedInterventionId, grantId: $_selectedGrantId');
+      print('Number of documents in usage_logs: ${usages.docs.length}');
+
+      print('Querying audit_logs with start: $start, end: $end');
+      print('Number of documents in audit_logs: ${libraryUsages.docs.length}');
+
+      // Log unexpected null or empty values
+      for (final doc in usages.docs) {
+        final data = doc.data() as Map<String, dynamic>? ?? {};
+        if (data['interventionId'] == null || data['grantId'] == null || data['qtyUsed'] == null) {
+          print('Unexpected null value in usage_logs document: $data');
+        }
+      }
+
+      for (final doc in libraryUsages.docs) {
+        final data = doc.data() as Map<String, dynamic>? ?? {};
+        if (data['data'] == null || data['createdAt'] == null) {
+          print('Unexpected null value in audit_logs document: $data');
+        }
+      }
+
       // Process data for analytics
       final interventionTotals = <String, double>{};
       final grantTotals = <String, double>{};
+      final kitUsageTotals = <String, double>{};
       final dailyUsage = <DateTime, double>{};
 
       for (final doc in usages.docs) {
@@ -188,7 +256,8 @@ class _UsageReportPageState extends State<UsageReportPage> {
 
         // Aggregate by intervention
         if (interventionId != null) {
-          interventionTotals[interventionId] = (interventionTotals[interventionId] ?? 0) + qty;
+          interventionTotals[interventionId] =
+              (interventionTotals[interventionId] ?? 0) + qty;
         }
 
         // Aggregate by grant
@@ -203,11 +272,32 @@ class _UsageReportPageState extends State<UsageReportPage> {
         }
       }
 
+      // Process library/intervention kit usage
+      for (final doc in libraryUsages.docs) {
+        final docData = doc.data();
+        // Audit.log stores the payload in `data` and the timestamp in `createdAt`.
+        final inner = (docData['data'] as Map<String, dynamic>?) ?? {};
+        final itemName = inner['itemName'] as String? ?? inner['name'] as String? ?? 'Unknown Kit';
+        final usedAt = (docData['createdAt'] as Timestamp?)?.toDate();
+        const qty = 1.0; // Each check-in counts as 1 use
+
+        // Aggregate by kit name
+        kitUsageTotals[itemName] = (kitUsageTotals[itemName] ?? 0) + qty;
+
+        // Daily usage for trend chart
+        if (usedAt != null) {
+          final day = DateTime(usedAt.year, usedAt.month, usedAt.day);
+          dailyUsage[day] = (dailyUsage[day] ?? 0) + qty;
+        }
+      }
+
       // Create trend data points
       final sortedDays = dailyUsage.keys.toList()..sort();
       final trendData = <FlSpot>[];
       for (int i = 0; i < sortedDays.length; i++) {
-        trendData.add(FlSpot(i.toDouble(), dailyUsage[sortedDays[i]] ?? 0));
+        trendData.add(
+          FlSpot(i.toDouble(), dailyUsage[sortedDays[i]] ?? 0),
+        );
       }
 
       // Use previously-loaded lookup maps (fall back to unknown labels)
@@ -221,25 +311,47 @@ class _UsageReportPageState extends State<UsageReportPage> {
 
       // Create usage data with names
       final usageData = [
-        ...interventionTotals.entries.map((entry) => {
-              'type': 'intervention',
-              'id': entry.key,
-              'name': labelFor(interventionMap, entry.key, 'Unknown Intervention'),
-              'total': entry.value,
-            }),
-        ...grantTotals.entries.map((entry) => {
-              'type': 'grant',
-              'id': entry.key,
-              'name': labelFor(grantMap, entry.key, 'Unknown Grant'),
-              'total': entry.value,
-            }),
-      ]..sort((a, b) => (b['total'] as double).compareTo(a['total'] as double));
+        ...interventionTotals.entries.map(
+          (entry) => {
+            'type': 'intervention',
+            'id': entry.key,
+            'name': labelFor(
+              interventionMap,
+              entry.key,
+              'Unknown Intervention',
+            ),
+            'total': entry.value,
+          },
+        ),
+        ...grantTotals.entries.map(
+          (entry) => {
+            'type': 'grant',
+            'id': entry.key,
+            'name': labelFor(grantMap, entry.key, 'Unknown Grant'),
+            'total': entry.value,
+          },
+        ),
+        ...kitUsageTotals.entries.map(
+          (entry) => {
+            'type': 'kit',
+            'id': entry.key,
+            'name': entry.key,
+            'total': entry.value,
+          },
+        ),
+      ]..sort(
+          (a, b) =>
+              (b['total'] as double).compareTo(a['total'] as double),
+        );
 
       setState(() {
         _usageData = usageData;
         _interventionTotals = interventionTotals;
         _grantTotals = grantTotals;
+        _kitUsageTotals = kitUsageTotals;
         _trendData = trendData;
+        _usageLogCount = usages.docs.length;
+        _libraryUsageLogCount = libraryUsages.docs.length;
       });
     } finally {
       setState(() => _loading = false);
@@ -263,30 +375,35 @@ class _UsageReportPageState extends State<UsageReportPage> {
           : SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Column(
+                mainAxisSize: MainAxisSize.min, // Adjusted to prevent unbounded height issues
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Time Period Selector
+                  // Time Period Selector (optional – uncomment when ready)
                   _buildTimeSelector(),
-
                   const SizedBox(height: 24),
 
-                  // Summary Cards
-                  _buildSummaryCards(),
+                  // Wrap Summary Cards in a Flexible widget
+                  Flexible(child: _buildSummaryCards()),
+                  const SizedBox(height: 32),
+
+                  // Wrap Usage Trend Chart in a Flexible widget
+                  Flexible(child: _buildTrendChart()),
+                  const SizedBox(height: 32),
+
+                  // Wrap Breakdown Charts in a Flexible widget
+                  Flexible(child: _buildBreakdownCharts()),
 
                   const SizedBox(height: 32),
 
-                  // Usage Trend Chart
-                  _buildTrendChart(),
+                  // Wrap Detailed Data Table in a Flexible widget
+                  Flexible(child: _buildDataTable()),
 
-                  const SizedBox(height: 32),
-
-                  // Breakdown Charts
-                  _buildBreakdownCharts(),
-
-                  const SizedBox(height: 32),
-
-                  // Detailed Data Table
-                  _buildDataTable(),
+                  // Debugging Counters
+                  Text('Usage Logs Count: $_usageLogCount',
+                      style: Theme.of(context).textTheme.bodyLarge),
+                  Text('Library Usage Logs Count: $_libraryUsageLogCount',
+                      style: Theme.of(context).textTheme.bodyLarge),
+                  const SizedBox(height: 24),
                 ],
               ),
             ),
@@ -303,24 +420,35 @@ class _UsageReportPageState extends State<UsageReportPage> {
             Text(
               'Time Period',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+                    fontWeight: FontWeight.w600,
+                  ),
             ),
             const SizedBox(height: 16),
             Row(
               children: [
+                ElevatedButton(
+                  onPressed: _generateReport,
+                  child: const Text('Refresh'),
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    initialValue: _selectedPreset,
+                    value: _selectedPreset,
                     decoration: const InputDecoration(
                       labelText: 'Quick Select',
                       border: OutlineInputBorder(),
                     ),
-                    items: _timePresets.map((preset) => DropdownMenuItem(
-                      value: preset,
-                      child: Text(preset),
-                    )).toList(),
-                    onChanged: (value) => value != null ? _onPresetChanged(value) : null,
+                    items: _timePresets
+                        .map(
+                          (preset) => DropdownMenuItem<String>(
+                            value: preset,
+                            child: Text(preset),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) _onPresetChanged(value);
+                    },
                   ),
                 ),
                 if (_selectedPreset == 'Custom') ...[
@@ -329,9 +457,11 @@ class _UsageReportPageState extends State<UsageReportPage> {
                     child: TextButton.icon(
                       onPressed: _pickStartDate,
                       icon: const Icon(Icons.calendar_today),
-                      label: Text(_startDate != null
-                          ? DateFormat('MMM dd').format(_startDate!)
-                          : 'Start Date'),
+                      label: Text(
+                        _startDate != null
+                            ? DateFormat('MMM dd').format(_startDate!)
+                            : 'Start Date',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 16),
@@ -339,9 +469,11 @@ class _UsageReportPageState extends State<UsageReportPage> {
                     child: TextButton.icon(
                       onPressed: _pickEndDate,
                       icon: const Icon(Icons.calendar_today),
-                      label: Text(_endDate != null
-                          ? DateFormat('MMM dd').format(_endDate!)
-                          : 'End Date'),
+                      label: Text(
+                        _endDate != null
+                            ? DateFormat('MMM dd').format(_endDate!)
+                            : 'End Date',
+                      ),
                     ),
                   ),
                 ],
@@ -351,21 +483,23 @@ class _UsageReportPageState extends State<UsageReportPage> {
             Row(
               children: [
                 Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _selectedInterventionId,
+                  child: DropdownButtonFormField<String?>(
+                    value: _selectedInterventionId,
                     decoration: const InputDecoration(
                       labelText: 'Filter by Intervention',
                       border: OutlineInputBorder(),
                     ),
                     items: [
-                      const DropdownMenuItem<String>(
+                      const DropdownMenuItem<String?>(
                         value: null,
                         child: Text('All Interventions'),
                       ),
-                      ..._interventions.entries.map((entry) => DropdownMenuItem<String>(
-                        value: entry.key,
-                        child: Text(entry.value),
-                      )),
+                      ..._interventions.entries.map(
+                        (entry) => DropdownMenuItem<String?>(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      ),
                     ],
                     onChanged: (value) {
                       setState(() => _selectedInterventionId = value);
@@ -373,23 +507,33 @@ class _UsageReportPageState extends State<UsageReportPage> {
                     },
                   ),
                 ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text('usage logs: $_usageLogCount'),
+                    Text('kit logs: $_libraryUsageLogCount'),
+                  ],
+                ),
                 const SizedBox(width: 16),
                 Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _selectedGrantId,
+                  child: DropdownButtonFormField<String?>(
+                    value: _selectedGrantId,
                     decoration: const InputDecoration(
                       labelText: 'Filter by Grant',
                       border: OutlineInputBorder(),
                     ),
                     items: [
-                      const DropdownMenuItem<String>(
+                      const DropdownMenuItem<String?>(
                         value: null,
                         child: Text('All Grants'),
                       ),
-                      ..._grants.entries.map((entry) => DropdownMenuItem<String>(
-                        value: entry.key,
-                        child: Text(entry.value),
-                      )),
+                      ..._grants.entries.map(
+                        (entry) => DropdownMenuItem<String?>(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      ),
                     ],
                     onChanged: (value) {
                       setState(() => _selectedGrantId = value);
@@ -407,10 +551,12 @@ class _UsageReportPageState extends State<UsageReportPage> {
 
   Widget _buildSummaryCards() {
     // Use intervention totals to avoid double-counting (each usage has both intervention and grant)
-    final totalUsage = _interventionTotals.values.fold<double>(0, (sum, value) => sum + value);
+    final totalUsage = _interventionTotals.values
+        .fold<double>(0, (sum, value) => sum + value);
     final interventionCount = _interventionTotals.length;
     final grantCount = _grantTotals.length;
-    final avgDaily = totalUsage / (_endDate!.difference(_startDate!).inDays + 1);
+    final avgDaily =
+        totalUsage / (_endDate!.difference(_startDate!).inDays + 1);
 
     return Row(
       children: [
@@ -462,7 +608,9 @@ class _UsageReportPageState extends State<UsageReportPage> {
       return const Card(
         child: Padding(
           padding: EdgeInsets.all(32),
-          child: Center(child: Text('No usage data for selected period')),
+          child: Center(
+            child: Text('No usage data for selected period'),
+          ),
         ),
       );
     }
@@ -476,8 +624,8 @@ class _UsageReportPageState extends State<UsageReportPage> {
             Text(
               'Usage Trend',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+                    fontWeight: FontWeight.w600,
+                  ),
             ),
             const SizedBox(height: 16),
             SizedBox(
@@ -496,14 +644,20 @@ class _UsageReportPageState extends State<UsageReportPage> {
                       sideTitles: SideTitles(
                         showTitles: true,
                         getTitlesWidget: (value, meta) {
-                          if (value.toInt() >= _trendData.length) return const Text('');
-                          // This is simplified - in a real app you'd map to actual dates
+                          if (value.toInt() >= _trendData.length) {
+                            return const Text('');
+                          }
+                          // Simple index-based label (1, 2, 3, ...)
                           return Text('${value.toInt() + 1}');
                         },
                       ),
                     ),
-                    topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                   ),
                   borderData: FlBorderData(show: true),
                   lineBarsData: [
@@ -514,9 +668,12 @@ class _UsageReportPageState extends State<UsageReportPage> {
                       barWidth: 3,
                       belowBarData: BarAreaData(
                         show: true,
-                        color: Theme.of(context).colorScheme.primary.withValues(alpha:0.1),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withOpacity(0.1),
                       ),
-                      dotData: FlDotData(show: false),
+                      dotData: const FlDotData(show: false),
                     ),
                   ],
                 ),
@@ -529,93 +686,55 @@ class _UsageReportPageState extends State<UsageReportPage> {
   }
 
   Widget _buildBreakdownCharts() {
+    Widget chartCard(String title, Map<String, double> data, Map<String, String> labels) {
+      return Expanded(
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  height: 200,
+                  child: data.isEmpty
+                      ? const Center(child: Text('No data'))
+                      : PieChart(
+                          PieChartData(
+                            sections: data.entries
+                                .map<PieChartSectionData>((entry) {
+                              final name = labels[entry.key] ?? entry.key;
+                              final idx = data.keys.toList().indexOf(entry.key);
+                              final lbl = name.length <= 10 ? name : '${name.substring(0, min(10, name.length))}...';
+                              return PieChartSectionData(
+                                value: entry.value,
+                                title: '${entry.value.toStringAsFixed(1)}\n$lbl',
+                                color: _getColorForIndex(idx),
+                                radius: 60,
+                                titleStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Row(
       children: [
-        Expanded(
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'By Intervention',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    height: 200,
-                    child: _interventionTotals.isEmpty
-                        ? const Center(child: Text('No data'))
-                        : PieChart(
-                            PieChartData(
-                              sections: _interventionTotals.entries.map((entry) {
-                                final interventionName = _interventions[entry.key] ?? 'Unknown';
-                                return PieChartSectionData(
-                                  value: entry.value,
-                                  title: '${entry.value.toStringAsFixed(1)}\n${interventionName.substring(0, min(10, interventionName.length))}',
-                                  color: _getColorForIndex(_interventionTotals.keys.toList().indexOf(entry.key)),
-                                  radius: 60,
-                                  titleStyle: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                );
-                              }).toList(),
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+        chartCard('By Intervention', _interventionTotals, _interventions),
         const SizedBox(width: 16),
-        Expanded(
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'By Grant',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    height: 200,
-                    child: _grantTotals.isEmpty
-                        ? const Center(child: Text('No data'))
-                        : PieChart(
-                            PieChartData(
-                              sections: _grantTotals.entries.map((entry) {
-                                final grantName = _grants[entry.key] ?? 'Unknown';
-                                return PieChartSectionData(
-                                  value: entry.value,
-                                  title: '${entry.value.toStringAsFixed(1)}\n${grantName.substring(0, min(10, grantName.length))}',
-                                  color: _getColorForIndex(_grantTotals.keys.toList().indexOf(entry.key)),
-                                  radius: 60,
-                                  titleStyle: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                );
-                              }).toList(),
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+        chartCard('By Grant', _grantTotals, _grants),
+        const SizedBox(width: 16),
+        chartCard('By Kit', _kitUsageTotals, {}),
       ],
     );
   }
@@ -630,30 +749,39 @@ class _UsageReportPageState extends State<UsageReportPage> {
             Text(
               'Detailed Breakdown',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+                    fontWeight: FontWeight.w600,
+                  ),
             ),
             const SizedBox(height: 16),
             _usageData.isEmpty
-                ? const Center(child: Padding(
-                    padding: EdgeInsets.all(32),
-                    child: Text('No usage data for selected period'),
-                  ))
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Text('No usage data for selected period'),
+                    ),
+                  )
                 : ListView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: _usageData.length,
                     itemBuilder: (context, index) {
                       final item = _usageData[index];
-                      final isIntervention = item['type'] == 'intervention';
+                      final isIntervention =
+                          item['type'] == 'intervention';
 
                       // Calculate percentage within the same category
                       final categoryTotal = _usageData
                           .where((i) => i['type'] == item['type'])
-                          .fold<double>(0, (sum, i) => sum + (i['total'] as double));
-                      final percentage = categoryTotal > 0 
-                          ? ((item['total'] as double) / categoryTotal * 100)
-                          : 0.0;
+                          .fold<double>(
+                            0,
+                            (sum, i) => sum + (i['total'] as double),
+                          );
+                      final percentage = categoryTotal > 0
+                          ? ((item['total'] as double) /
+                                  categoryTotal *
+                                  100)
+                              .toStringAsFixed(1)
+                          : '0.0';
 
                       return ListTile(
                         leading: CircleAvatar(
@@ -661,19 +789,28 @@ class _UsageReportPageState extends State<UsageReportPage> {
                               ? Theme.of(context).colorScheme.primary
                               : Theme.of(context).colorScheme.secondary,
                           child: Icon(
-                            isIntervention ? Icons.healing : Icons.account_balance_wallet,
+                            isIntervention
+                                ? Icons.healing
+                                : Icons.account_balance_wallet,
                             color: Colors.white,
                             size: 20,
                           ),
                         ),
                         title: Text(item['name'] as String),
-                        subtitle: Text('${item['type']} • ${item['total'].toStringAsFixed(1)} items used'),
+                        subtitle: Text(
+                          '${item['type']} • ${(item['total'] as double).toStringAsFixed(1)} items used',
+                        ),
                         trailing: Text(
-                          '${percentage.toStringAsFixed(1)}%',
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
+                          '$percentage%',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleSmall
+                              ?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .primary,
+                              ),
                         ),
                       );
                     },
@@ -704,13 +841,18 @@ class _UsageReportPageState extends State<UsageReportPage> {
     final buffer = StringBuffer();
     buffer.writeln('Type,Name,Total Usage,Percentage');
 
-    final totalUsage = _usageData.fold<double>(0, (currentSum, item) => currentSum + (item['total'] as double));
+    final totalUsage = _usageData.fold<double>(
+      0,
+      (currentSum, item) => currentSum + (item['total'] as double),
+    );
 
     for (final item in _usageData) {
       final type = item['type'];
       final name = item['name'];
-      final total = item['total'];
-      final percentage = (total / totalUsage * 100).toStringAsFixed(1);
+      final total = item['total'] as double;
+      final percentage =
+          (totalUsage > 0 ? (total / totalUsage * 100) : 0)
+              .toStringAsFixed(1);
 
       buffer.writeln('$type,"$name",$total,$percentage%');
     }
@@ -727,7 +869,10 @@ class _UsageReportPageState extends State<UsageReportPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Copy the CSV data below:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text(
+                  'Copy the CSV data below:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.all(8),
@@ -737,7 +882,10 @@ class _UsageReportPageState extends State<UsageReportPage> {
                   ),
                   child: SelectableText(
                     csvData,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
                   ),
                 ),
               ],
@@ -785,25 +933,36 @@ class _SummaryCard extends StatelessWidget {
                 const Spacer(),
                 Text(
                   value,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: color,
-                  ),
+                  style: Theme.of(context)
+                      .textTheme
+                      .headlineSmall
+                      ?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: color,
+                      ),
                 ),
               ],
             ),
             const SizedBox(height: 8),
             Text(
               title,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w500,
-              ),
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(
+                    fontWeight: FontWeight.w500,
+                  ),
             ),
             Text(
               subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant,
+                  ),
             ),
           ],
         ),

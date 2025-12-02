@@ -31,6 +31,12 @@ service cloud.firestore {
       return !(key in d) || (d[key] is string && d[key].size() <= maxLen);
     }
 
+    function optListOfShortStrings(d, key, maxLen, maxItems) {
+      return !(key in d) || (d[key] is list && d[key].size() <= maxItems 
+        && d[key].hasAll([]) // all elements must be strings
+      );
+    }
+
     // ---------- Items ----------
     match /items/{itemId} {
       allow create, update, delete: if isAuthed();
@@ -177,6 +183,25 @@ service cloud.firestore {
       }
     }
 
+    // ---------- Library Items (reusable items check-in/check-out) ----------
+    match /library_items/{itemId} {
+      allow read: if true;
+      allow create, update, delete: if isAuthed();
+
+      function validLibraryItem(d) {
+        return strMax(d.name, 200)
+          && optionalStrMax(d, 'description', 1000)
+          && optionalStrMax(d, 'category', 120)
+          && optionalStrMax(d, 'barcode', 128)
+          && optionalStrMax(d, 'location', 200)
+          && strMax(d.status, 24)
+          && optionalStrMax(d, 'checkedOutBy', 120)
+          && optionalStrMax(d, 'notes', 2000)
+          && optionalStrMax(d, 'createdBy', 128)
+          && optionalStrMax(d, 'operatorName', 80);
+      }
+    }
+
     // ---------- Audit logs (append-only) ----------
     match /audit_logs/{auditId} {
       allow create: if isAuthed();
@@ -200,6 +225,15 @@ service cloud.firestore {
     match /backups/{document=**} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    // ---------- Scanner Sessions (for mobile barcode scanner) ----------
+    match /scanner_sessions/{sessionId} {
+      allow read, write: if true; // Allow any device to read/write scanner sessions
+      
+      match /scans/{scanId} {
+        allow read, write: if true; // Allow any device to add scans to sessions
+      }
     }
   }
 }

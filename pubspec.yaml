@@ -2,7 +2,7 @@ name: scout
 description: "Spiritual Care Operations & Usage Tracker"
 publish_to: 'none'
 
-version: 1.0.0+18
+version: 1.0.0+22
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -13,6 +13,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   firebase_core: ^4.1.0
   cloud_firestore: ^6.0.1
+  firebase_storage: ^13.0.1
   google_fonts: ^6.2.1
   mobile_scanner: ^7.0.1
   web: ^1.1.1
@@ -27,6 +28,7 @@ dependencies:
   fl_chart: ^1.1.1
   syncfusion_flutter_charts: ^31.1.20
   file_picker: ^10.3.3
+  image_picker: ^1.1.2
   uuid: ^4.4.0
   pdf: ^3.10.7
   qr_flutter: ^4.1.0
@@ -41,6 +43,7 @@ dependencies:
   # url_strategy removed (package discontinued); using flutter_web_plugins for path URL strategy
   flutter_web_plugins:
     sdk: flutter
+  dart_firebase_admin: ^0.4.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0
@@ -65,6 +68,10 @@ flutter_native_splash:
   color_dark: "#000000"
   image: assets/images/scout dash logo light mode.png
   image_dark: assets/images/scout dash logo dark mode.png
+
+
+
+
 
 
 

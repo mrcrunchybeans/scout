@@ -878,3 +878,151 @@ export const recalcDashboardStatsManual = onCallHttps(async (req) => {
   await recomputeDashboardStats();
   return {success: true};
 });
+
+// Budget proxy handler for same-origin embedding of Actual Budget
+import {onRequest} from "firebase-functions/v2/https";
+import * as https from "https";
+import * as http from "http";
+import {URL} from "url";
+
+const BUDGET_API_URL = "https://scout-budget.littleempathy.com";
+
+export const budgetProxy = onRequest((req, res) => {
+  try {
+    // Remove /budget prefix from path
+    let path = req.path.replace(/^\/budget\/?/, "");
+    // Ensure path starts with / for URL construction
+    if (!path.startsWith("/")) {
+      path = "/" + path;
+    }
+    const targetUrl = new URL(path, BUDGET_API_URL).toString();
+
+    console.log(`Proxying ${req.method} ${path} -> ${targetUrl}`);
+
+    // Forward request with preserved headers
+    const forwardedHeaders: any = {};
+    const headersToForward = [
+      "cookie",
+      "user-agent",
+      "referer",
+      "accept",
+      "accept-encoding",
+      "content-type",
+      "content-length",
+      "authorization",
+    ];
+
+    headersToForward.forEach((header) => {
+      const value = req.headers[header];
+      if (value) {
+        forwardedHeaders[header] = value;
+      }
+    });
+
+    // Add forwarded headers
+    forwardedHeaders["x-forwarded-for"] = req.ip;
+    forwardedHeaders["x-forwarded-proto"] = req.protocol;
+
+    // Parse target URL
+    const targetUrlObj = new URL(targetUrl);
+    const protocol = targetUrlObj.protocol === "https:" ? https : http;
+
+    // Make request to budget API
+    const proxyReq = protocol.request(
+      {
+        hostname: targetUrlObj.hostname,
+        port: targetUrlObj.port,
+        path: targetUrlObj.pathname + targetUrlObj.search,
+        method: req.method,
+        headers: forwardedHeaders,
+        rejectUnauthorized: false,
+      },
+      (proxyRes) => {
+        // Set response status
+        res.status(proxyRes.statusCode || 200);
+
+        // Copy response headers
+        const headersToCopy = [
+          "content-type",
+          "cache-control",
+          "set-cookie",
+          "content-encoding",
+          "content-disposition",
+          "access-control-allow-origin",
+          "content-language",
+        ];
+
+        headersToCopy.forEach((header) => {
+          const value = proxyRes.headers[header];
+          if (value) {
+            res.setHeader(header, value);
+          }
+        });
+
+        // Override headers for iframe safety
+        res.setHeader("X-Frame-Options", "ALLOWALL");
+        res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+
+        // For HTML responses on GET requests, inject base tag
+        const contentType = proxyRes.headers["content-type"] as string || "";
+        if (contentType.includes("text/html") && req.method === "GET") {
+          let body = "";
+          proxyRes.setEncoding("utf8");
+
+          proxyRes.on("data", (chunk: string) => {
+            body += chunk;
+          });
+
+          proxyRes.on("end", () => {
+            try {
+              // Inject <base href="/budget/"> right after <head> tag
+              const modifiedBody = body.replace(
+                /(<head[^>]*>)/i,
+                "$1\n    <base href=\"/budget/\">"
+              );
+
+              res.removeHeader("Content-Length");
+              res.write(modifiedBody);
+              res.end();
+            } catch (err) {
+              console.error("Error modifying HTML:", err);
+              res.write(body);
+              res.end();
+            }
+          });
+
+          proxyRes.on("error", (error) => {
+            console.error("Proxy response error:", error);
+            res.status(502).end("Bad Gateway");
+          });
+        } else {
+          // Pipe response body directly for non-HTML
+          proxyRes.pipe(res);
+        }
+      }
+    );
+
+    proxyReq.on("error", (error) => {
+      console.error("Proxy request error:", error);
+      res.status(502).end("Bad Gateway");
+    });
+
+    // Handle request body for POST/PUT/PATCH
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      if (req.body) {
+        if (typeof req.body === "string") {
+          proxyReq.write(req.body);
+        } else {
+          proxyReq.write(JSON.stringify(req.body));
+        }
+      }
+    }
+
+    proxyReq.end();
+  } catch (error) {
+    console.error("Budget proxy error:", error);
+    res.status(502).end("Bad Gateway");
+  }
+});

@@ -11,6 +11,8 @@ import '../lookups_management_page.dart';
 import '../../services/search_service.dart';
 import '../../utils/audit.dart';
 import '../../services/label_export_service.dart';
+import '../../data/lookups_service.dart';
+import '../../models/option_item.dart';
 
 import '../../dev/seed_lookups.dart';
 
@@ -104,6 +106,7 @@ class _ItemsPageState extends State<ItemsPage> {
   bool _selectionMode = false;
   bool _showAdvancedFilters = false;
   Future<List<String>>? _categoriesFuture;
+  Future<List<OptionItem>>? _grantsFuture;
   final Set<String> _selectedIds = {};
   List<String> _visibleIds = [];
 
@@ -115,6 +118,7 @@ class _ItemsPageState extends State<ItemsPage> {
     if (widget.initialArchived == true) _viewMode = ViewMode.archived;
     _searchController.text = _filters.query;
     _categoriesFuture = _loadCategories();
+    _grantsFuture = LookupsService().grants();
     _loadFirstPage();
     _scrollController.addListener(_onScroll);
   }
@@ -365,6 +369,11 @@ class _ItemsPageState extends State<ItemsPage> {
             IconButton(
               icon: Icon(_viewMode == ViewMode.active ? Icons.archive : Icons.unarchive),
               onPressed: _selectedIds.isEmpty ? null : _bulkArchive,
+            ),
+            IconButton(
+              icon: const Icon(Icons.merge_type),
+              tooltip: 'Merge Items',
+              onPressed: _selectedIds.length < 2 ? null : _mergeItems,
             ),
             IconButton(
               icon: const Icon(Icons.label),
@@ -1090,6 +1099,173 @@ class _ItemsPageState extends State<ItemsPage> {
     }
   }
 
+  Future<void> _mergeItems() async {
+    if (_selectedIds.length < 2) return;
+    
+    final ctx = context;
+    
+    // Fetch all selected items
+    final items = <String, Map<String, dynamic>>{};
+    for (final id in _selectedIds) {
+      final doc = await _db.collection('items').doc(id).get();
+      if (doc.exists) {
+        items[id] = {'id': id, ...doc.data()!};
+      }
+    }
+    
+    if (items.length < 2) {
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(content: Text('Need at least 2 items to merge')),
+      );
+      return;
+    }
+    
+    // Show merge dialog
+    final primaryId = await showDialog<String>(
+      context: ctx,
+      builder: (context) => _MergeItemsDialog(items: items),
+    );
+    
+    if (primaryId == null || !ctx.mounted) return;
+    
+    // Confirm the merge
+    final confirmed = await showDialog<bool>(
+      context: ctx,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Merge'),
+        content: Text(
+          'This will merge ${items.length - 1} item(s) into "${items[primaryId]?['name'] ?? 'Unknown'}".\n\n'
+          '• All lots will be transferred\n'
+          '• All barcodes will be combined\n'
+          '• Quantities will be summed\n'
+          '• Source items will be deleted\n\n'
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Merge'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true || !ctx.mounted) return;
+    
+    setState(() => _busy = true);
+    try {
+      final primaryDoc = await _db.collection('items').doc(primaryId).get();
+      if (!primaryDoc.exists) throw Exception('Primary item not found');
+      
+      final primaryData = primaryDoc.data()!;
+      final sourceIds = items.keys.where((id) => id != primaryId).toList();
+      
+      // Collect all barcodes
+      final allBarcodes = <String>{};
+      if (primaryData['barcodes'] is List) {
+        allBarcodes.addAll((primaryData['barcodes'] as List).cast<String>());
+      } else if (primaryData['barcode'] != null) {
+        allBarcodes.add(primaryData['barcode'].toString());
+      }
+      
+      // Sum up quantities and collect barcodes from source items
+      num totalQty = (primaryData['qtyOnHand'] as num?) ?? 0;
+      
+      for (final sourceId in sourceIds) {
+        final sourceData = items[sourceId]!;
+        totalQty += (sourceData['qtyOnHand'] as num?) ?? 0;
+        
+        if (sourceData['barcodes'] is List) {
+          allBarcodes.addAll((sourceData['barcodes'] as List).cast<String>());
+        } else if (sourceData['barcode'] != null) {
+          allBarcodes.add(sourceData['barcode'].toString());
+        }
+        
+        // Transfer lots from source to primary
+        final lotsSnapshot = await _db
+            .collection('items')
+            .doc(sourceId)
+            .collection('lots')
+            .get();
+        
+        for (final lotDoc in lotsSnapshot.docs) {
+          final lotData = lotDoc.data();
+          // Create new lot in primary item
+          await _db
+              .collection('items')
+              .doc(primaryId)
+              .collection('lots')
+              .add({
+            ...lotData,
+            'mergedFrom': sourceId,
+            'mergedAt': FieldValue.serverTimestamp(),
+          });
+          // Delete the source lot
+          await lotDoc.reference.delete();
+        }
+      }
+      
+      // Update primary item
+      final barcodesList = allBarcodes.toList();
+      await _db.collection('items').doc(primaryId).update(Audit.attach({
+        'qtyOnHand': totalQty,
+        'barcodes': barcodesList,
+        if (barcodesList.isNotEmpty) 'barcode': barcodesList.first,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }));
+      
+      // Delete source items
+      final batch = _db.batch();
+      for (final sourceId in sourceIds) {
+        batch.delete(_db.collection('items').doc(sourceId));
+      }
+      await batch.commit();
+      
+      // Log the merge
+      await Audit.log('item.merge', {
+        'primaryId': primaryId,
+        'primaryName': primaryData['name'],
+        'sourceIds': sourceIds,
+        'sourceNames': sourceIds.map((id) => items[id]?['name']).toList(),
+        'totalQty': totalQty,
+        'barcodesCount': barcodesList.length,
+      });
+      
+      // Sync to Algolia
+      try {
+        await _searchService.syncItemToAlgolia(primaryId);
+        for (final sourceId in sourceIds) {
+          await _searchService.syncItemToAlgolia(sourceId);
+        }
+      } catch (e) {
+        debugPrint('Failed to sync merge to Algolia: $e');
+      }
+      
+      setState(() {
+        _selectionMode = false;
+        _selectedIds.clear();
+      });
+      _loadFirstPage();
+      
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(content: Text('Merged ${sourceIds.length + 1} items into "${primaryData['name']}"')),
+      );
+    } catch (e) {
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(content: Text('Merge failed: $e')),
+      );
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
   Future<void> _exportLabels() async {
     final ctx = context;
 
@@ -1368,6 +1544,52 @@ class _ItemsPageState extends State<ItemsPage> {
               },
             ),
 
+            // Grants filter
+            FutureBuilder<List<OptionItem>>(
+              future: _grantsFuture,
+              builder: (context, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return const SizedBox.shrink();
+                }
+
+                final grants = snap.data ?? <OptionItem>[];
+                if (grants.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Grants / Budgets', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: grants
+                          .map((grant) => FilterChip(
+                                label: Text(grant.name),
+                                selected: _filters.grantIds.contains(grant.id),
+                                onSelected: (selected) {
+                                  setState(() {
+                                    final newGrantIds = Set<String>.from(_filters.grantIds);
+                                    if (selected) {
+                                      newGrantIds.add(grant.id);
+                                    } else {
+                                      newGrantIds.remove(grant.id);
+                                    }
+                                    _filters = _filters.copyWith(grantIds: newGrantIds);
+                                    _loadFirstPage();
+                                  });
+                                },
+                              ))
+                          .toList(),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                );
+              },
+            ),
+
             // Locations (if any are selected, show them)
             if (_filters.locationIds.isNotEmpty) ...[
               const Text('Locations', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
@@ -1396,6 +1618,99 @@ class _ItemsPageState extends State<ItemsPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Dialog for selecting the primary item when merging multiple items
+class _MergeItemsDialog extends StatefulWidget {
+  final Map<String, Map<String, dynamic>> items;
+  
+  const _MergeItemsDialog({required this.items});
+  
+  @override
+  State<_MergeItemsDialog> createState() => _MergeItemsDialogState();
+}
+
+class _MergeItemsDialogState extends State<_MergeItemsDialog> {
+  String? _selectedId;
+  
+  @override
+  void initState() {
+    super.initState();
+    // Default to the first item
+    _selectedId = widget.items.keys.first;
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    final sortedItems = widget.items.entries.toList()
+      ..sort((a, b) => (a.value['name'] as String? ?? '').compareTo(b.value['name'] as String? ?? ''));
+    
+    return AlertDialog(
+      title: const Text('Merge Items'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Select the item to keep (others will be merged into it):',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: sortedItems.length,
+                itemBuilder: (context, index) {
+                  final entry = sortedItems[index];
+                  final id = entry.key;
+                  final item = entry.value;
+                  final name = item['name'] as String? ?? 'Unknown';
+                  final category = item['category'] as String?;
+                  final qty = item['qtyOnHand'] ?? 0;
+                  final unit = item['baseUnit'] ?? item['unit'] ?? 'each';
+                  final barcodes = item['barcodes'] is List 
+                      ? (item['barcodes'] as List).length 
+                      : (item['barcode'] != null ? 1 : 0);
+                  
+                  return RadioListTile<String>(
+                    value: id,
+                    groupValue: _selectedId,
+                    onChanged: (value) => setState(() => _selectedId = value),
+                    title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (category != null && category.isNotEmpty)
+                          Text('Category: $category'),
+                        Text('Qty: $qty $unit'),
+                        if (barcodes > 0)
+                          Text('Barcodes: $barcodes'),
+                      ],
+                    ),
+                    isThreeLine: true,
+                    selected: _selectedId == id,
+                    contentPadding: EdgeInsets.zero,
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _selectedId != null ? () => Navigator.pop(context, _selectedId) : null,
+          child: const Text('Continue'),
+        ),
+      ],
     );
   }
 }

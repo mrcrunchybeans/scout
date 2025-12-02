@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
@@ -43,9 +44,15 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   // Remember last entered values for quick entry
   Map<String, dynamic>? _lastEnteredValues;
 
+  // Mobile scanner session
+  late final String _sessionId;
+  StreamSubscription? _scannerSubscription;
+
   @override
   void initState() {
     super.initState();
+    _sessionId = _uuid.v4();
+    _listenForMobileScans();
   }
 
   @override
@@ -67,6 +74,11 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           },
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.phone_android),
+            tooltip: 'Scan with Phone',
+            onPressed: _showMobileScannerQR,
+          ),
           if (_pendingProducts.isNotEmpty)
             TextButton(
               onPressed: _isProcessing ? null : _processAllEntries,
@@ -695,11 +707,15 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           });
 
           // Create lots for the new item
-          // Regenerate lot codes using the actual item ID
+          // Only generate lot codes for lots that don't have one yet
           final lotsWithCodes = <BulkLotEntry>[];
           for (final lot in product.lots) {
-            final lotCode = await generateNextLotCode(itemId: itemRef.id);
-            lotsWithCodes.add(lot.copyWith(batchCode: lotCode));
+            if (lot.batchCode == null) {
+              final lotCode = await generateNextLotCode(itemId: itemRef.id);
+              lotsWithCodes.add(lot.copyWith(batchCode: lotCode));
+            } else {
+              lotsWithCodes.add(lot);
+            }
           }
 
           for (final lot in lotsWithCodes) {
@@ -1024,13 +1040,91 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
     }
   }
 
+  void _listenForMobileScans() {
+    _scannerSubscription = _db
+        .collection('scanner_sessions')
+        .doc(_sessionId)
+        .collection('scans')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.docs.isNotEmpty) {
+        final scan = snapshot.docs.first;
+        final barcode = scan.data()['barcode'] as String?;
+        final processed = scan.data()['processed'] as bool? ?? false;
+        
+        if (barcode != null && !processed && mounted) {
+          _handleBarcode(barcode);
+          // Mark as processed
+          scan.reference.update({'processed': true});
+        }
+      }
+    });
+  }
+
+  void _showMobileScannerQR() {
+    // Use custom domain for cleaner URLs
+    final url = 'https://scout.littleempathy.com/mobile-scanner/$_sessionId';
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Scan with Phone'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Scan this QR code with your phone to use it as a barcode scanner:',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.white,
+                child: QrImageView(
+                  data: url,
+                  version: QrVersions.auto,
+                  size: 200.0,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Session: ${_sessionId.substring(0, 8)}...',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Scanned barcodes will appear on this page automatically.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
+    _scannerSubscription?.cancel();
     _nameSearchDebounceTimer?.cancel();
     _barcodeController.dispose();
     _barcodeFocus.dispose();
     _nameController.dispose();
     _nameFocus.dispose();
+    // Clean up session
+    _db.collection('scanner_sessions').doc(_sessionId).delete();
     super.dispose();
   }
 }
@@ -1048,11 +1142,17 @@ class BulkLotEntry {
     this.lotId,
   });
 
-  BulkLotEntry copyWith({double? quantity, String? batchCode, DateTime? expiresAt, String? lotId}) {
+  BulkLotEntry copyWith({
+    double? quantity,
+    String? batchCode,
+    DateTime? expiresAt,
+    String? lotId,
+    bool clearExpiresAt = false,
+  }) {
     return BulkLotEntry(
       quantity: quantity ?? this.quantity,
       batchCode: batchCode ?? this.batchCode,
-      expiresAt: expiresAt ?? this.expiresAt,
+      expiresAt: clearExpiresAt ? null : (expiresAt ?? this.expiresAt),
       lotId: lotId ?? this.lotId,
     );
   }
@@ -1647,14 +1747,14 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
   final List<BulkLotEntry> _lots = [];
   final List<TextEditingController> _quantityControllers = [];
   final List<TextEditingController> _batchCodeControllers = [];
-  bool _createNewLot = true;
+  bool _createNewLot = false; // Start with "Add to Existing Lot" selected
   String? _selectedLotId;
+  final _addToExistingQuantityController = TextEditingController(text: '1.0');
 
   @override
   void initState() {
     super.initState();
-    // Add one empty lot by default
-    _addLot();
+    // Don't add any lots initially - user will choose existing or create new
   }
 
   @override
@@ -1665,11 +1765,55 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
     for (final controller in _batchCodeControllers) {
       controller.dispose();
     }
+    _addToExistingQuantityController.dispose();
     super.dispose();
   }
 
   Future<void> _addLot() async {
-    final batchCode = await widget.generateBatchCode(widget.product.itemId);
+    String batchCode;
+    
+    if (widget.product.isNew || widget.product.itemId.isEmpty) {
+      // For new products, generate a unique temporary batch code
+      final now = DateTime.now();
+      final yearMonth = '${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}';
+      
+      // Find the highest existing lot number to avoid duplicates
+      // Check both the dialog's lots AND the product's existing lots
+      int maxLotNumber = 0;
+      
+      // Check lots in this dialog
+      for (final lot in _lots) {
+        if (lot.batchCode != null && lot.batchCode!.contains('-')) {
+          final parts = lot.batchCode!.split('-');
+          if (parts.length == 2) {
+            final num = int.tryParse(parts[1]);
+            if (num != null && num > maxLotNumber) {
+              maxLotNumber = num;
+            }
+          }
+        }
+      }
+      
+      // Check lots already on the product
+      for (final lot in widget.product.lots) {
+        if (lot.batchCode != null && lot.batchCode!.contains('-')) {
+          final parts = lot.batchCode!.split('-');
+          if (parts.length == 2) {
+            final num = int.tryParse(parts[1]);
+            if (num != null && num > maxLotNumber) {
+              maxLotNumber = num;
+            }
+          }
+        }
+      }
+      
+      final lotNumber = (maxLotNumber + 1).toString().padLeft(3, '0');
+      batchCode = '$yearMonth-$lotNumber';
+    } else {
+      // For existing products, generate from Firestore
+      batchCode = await widget.generateBatchCode(widget.product.itemId);
+    }
+    
     setState(() {
       _lots.add(BulkLotEntry(quantity: 1.0, batchCode: batchCode));
       _quantityControllers.add(TextEditingController(text: '1.0'));
@@ -1693,11 +1837,16 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
       data: Theme.of(context),
       child: AlertDialog(
         title: Text('Add Lots to ${widget.product.itemName}'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(
+            maxWidth: 600,
+            maxHeight: 600,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
               Text('Barcodes: ${widget.product.barcodes.join(", ")}'),
               const SizedBox(height: 16),
               const Text('Lot Options:', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1707,10 +1856,16 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                     child: RadioMenuButton<bool>(
                       value: true,
                       groupValue: _createNewLot,
-                      onChanged: (value) => setState(() {
-                        _createNewLot = value ?? true;
-                        _selectedLotId = null;
-                      }),
+                      onChanged: (value) async {
+                        setState(() {
+                          _createNewLot = value ?? true;
+                          _selectedLotId = null;
+                        });
+                        // Add first lot when switching to create mode
+                        if (_createNewLot && _lots.isEmpty) {
+                          await _addLot();
+                        }
+                      },
                       child: const Text('Create New Lots'),
                     ),
                   ),
@@ -1726,15 +1881,34 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
               ),
               const SizedBox(height: 16),
               if (!_createNewLot) ...[
-                const Text('Select Lot:'),
-                const SizedBox(height: 8),
-                StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('items')
-                      .doc(widget.product.itemId)
-                      .collection('lots')
-                      .orderBy('expiresAt', descending: false)
-                      .snapshots(),
+                if (widget.product.itemId.isEmpty || widget.product.isNew)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('This is a new product with no existing lots.'),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          setState(() {
+                            _createNewLot = true;
+                          });
+                          await _addLot();
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create New Lot'),
+                      ),
+                    ],
+                  )
+                else ...[
+                  const Text('Select Lot:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('items')
+                        .doc(widget.product.itemId)
+                        .collection('lots')
+                        .orderBy('expiresAt', descending: false)
+                        .snapshots(),
                   builder: (context, snapshot) {
                     if (snapshot.hasError) {
                       return const Text('Error loading lots');
@@ -1753,96 +1927,197 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
                     }).toList();
 
                     if (activeLots.isEmpty) {
-                      return const Text('No existing lots found. A new lot will be created.');
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('No existing lots found.'),
+                          const SizedBox(height: 8),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _createNewLot = true;
+                              });
+                              _addLot();
+                            },
+                            icon: const Icon(Icons.add),
+                            label: const Text('Create New Lot'),
+                          ),
+                        ],
+                      );
                     }
 
-                    return DropdownButtonFormField<String>(
-                      initialValue: _selectedLotId,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: 'Select Lot',
-                      ),
-                      items: activeLots.map((lotDoc) {
-                        final data = lotDoc.data() as Map<String, dynamic>;
-                        final lotCode = data['lotCode'] as String? ?? lotDoc.id.substring(0, 6);
-                        final qtyRemaining = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;
-                        final expTs = data['expiresAt'];
-                        final expiresAt = expTs is Timestamp ? expTs.toDate() : null;
+                    // Auto-select first lot if none selected
+                    if (_selectedLotId == null && activeLots.isNotEmpty) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          setState(() {
+                            _selectedLotId = activeLots.first.id;
+                          });
+                        }
+                      });
+                    }
 
-                        final displayText = "$lotCode (${qtyRemaining.toStringAsFixed(1)} ${widget.product.baseUnit})${expiresAt != null ? ' - Expires ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}' : ''}";
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          value: _selectedLotId,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            labelText: 'Select Lot',
+                          ),
+                          items: activeLots.map((lotDoc) {
+                            final data = lotDoc.data() as Map<String, dynamic>;
+                            final lotCode = data['lotCode'] as String? ?? lotDoc.id.substring(0, 6);
+                            final qtyRemaining = (data['qtyRemaining'] as num?)?.toDouble() ?? 0.0;
+                            final expTs = data['expiresAt'];
+                            final expiresAt = expTs is Timestamp ? expTs.toDate() : null;
 
-                        return DropdownMenuItem(
-                          value: lotDoc.id,
-                          child: Text(displayText),
-                        );
-                      }).toList(),
-                      onChanged: (value) => setState(() => _selectedLotId = value),
+                            final displayText = "$lotCode (${qtyRemaining.toStringAsFixed(1)} ${widget.product.baseUnit})${expiresAt != null ? ' - Expires ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}' : ''}";
+
+                            return DropdownMenuItem(
+                              value: lotDoc.id,
+                              child: Text(displayText),
+                            );
+                          }).toList(),
+                          onChanged: (value) => setState(() => _selectedLotId = value),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _addToExistingQuantityController,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Quantity to Add',
+                            suffixText: widget.product.baseUnit,
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
                     );
                   },
                 ),
+                ],
               ] else ...[
                 const Text('Lots to Add:', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 ..._lots.asMap().entries.map((entry) {
                   final index = entry.key;
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8.0),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: TextField(
-                            controller: _quantityControllers[index],
-                            keyboardType: TextInputType.number,
-
-                            decoration: InputDecoration(
-                              labelText: 'Quantity',
-                              suffixText: widget.product.baseUnit,
-                              border: const OutlineInputBorder(),
-                            ),
-                            onChanged: (value) {
-                              final qty = double.tryParse(value);
-                              if (qty != null) {
+                  final lot = _lots[index];
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12.0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text('Lot ${index + 1}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              const Spacer(),
+                              if (_lots.length > 1)
+                                IconButton(
+                                  icon: const Icon(Icons.delete),
+                                  onPressed: () => _removeLot(index),
+                                  tooltip: 'Remove lot',
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 2,
+                                child: TextField(
+                                  controller: _quantityControllers[index],
+                                  keyboardType: TextInputType.number,
+                                  decoration: InputDecoration(
+                                    labelText: 'Quantity',
+                                    suffixText: widget.product.baseUnit,
+                                    border: const OutlineInputBorder(),
+                                  ),
+                                  onChanged: (value) {
+                                    final qty = double.tryParse(value);
+                                    if (qty != null) {
+                                      setState(() {
+                                        _lots[index] = _lots[index].copyWith(quantity: qty);
+                                      });
+                                    }
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                flex: 3,
+                                child: TextField(
+                                  controller: _batchCodeControllers[index],
+                                  decoration: const InputDecoration(
+                                    labelText: 'Batch Code',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _lots[index] = _lots[index].copyWith(batchCode: value.isEmpty ? null : value);
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          InkWell(
+                            onTap: () async {
+                              final date = await showDatePicker(
+                                context: context,
+                                initialDate: lot.expiresAt ?? DateTime.now().add(const Duration(days: 365)),
+                                firstDate: DateTime.now(),
+                                lastDate: DateTime.now().add(const Duration(days: 3650)),
+                              );
+                              if (date != null) {
                                 setState(() {
-                                  _lots[index] = _lots[index].copyWith(quantity: qty);
+                                  _lots[index] = _lots[index].copyWith(expiresAt: date);
                                 });
                               }
                             },
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          flex: 3,
-                          child: TextField(
-                            controller: _batchCodeControllers[index],
-
-                            decoration: InputDecoration(
-                              labelText: 'Batch Code',
-                              border: const OutlineInputBorder(),
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Expiration Date (Optional)',
+                                border: OutlineInputBorder(),
+                                suffixIcon: Icon(Icons.calendar_today),
+                              ),
+                              child: Text(
+                                lot.expiresAt != null
+                                    ? MaterialLocalizations.of(context).formatShortDate(lot.expiresAt!)
+                                    : 'No expiration date',
+                                style: TextStyle(
+                                  color: lot.expiresAt != null ? null : Colors.grey,
+                                ),
+                              ),
                             ),
-                            onChanged: (value) {
-                              setState(() {
-                                _lots[index] = _lots[index].copyWith(batchCode: value.isEmpty ? null : value);
-                              });
-                            },
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete),
-                          onPressed: _lots.length > 1 ? () => _removeLot(index) : null,
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   );
                 }),
                 TextButton.icon(
-                  onPressed: _addLot,
+                  onPressed: () async {
+                    try {
+                      await _addLot();
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error adding lot: $e')),
+                        );
+                      }
+                    }
+                  },
                   icon: const Icon(Icons.add),
                   label: const Text('Add Another Lot'),
                 ),
               ],
             ],
           ),
+        ),
         ),
         actions: [
           TextButton(
@@ -1859,34 +2134,55 @@ class _BulkLotAdditionDialogState extends State<BulkLotAdditionDialog> {
   }
 
   Future<void> _submit() async {
-    if (_lots.isEmpty) return;
-
-    // Validate quantities
-    if (_lots.any((lot) => lot.quantity <= 0)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('All quantities must be greater than 0')),
-      );
-      return;
-    }
-
-    // Generate batch codes for new lots if not provided
     final lotsToAdd = <BulkLotEntry>[];
-    for (final lot in _lots) {
-      if (_createNewLot && lot.batchCode == null) {
-        final batchCode = await widget.generateBatchCode(widget.product.itemId);
-        lotsToAdd.add(lot.copyWith(batchCode: batchCode));
-      } else {
-        lotsToAdd.add(lot);
-      }
-    }
 
-    // If adding to existing lot, set the lotId
-    if (!_createNewLot && _selectedLotId != null) {
-      lotsToAdd.clear();
+    if (!_createNewLot) {
+      // Adding to existing lot
+      if (_selectedLotId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select a lot')),
+        );
+        return;
+      }
+      
+      final qty = double.tryParse(_addToExistingQuantityController.text);
+      if (qty == null || qty <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter a valid quantity')),
+        );
+        return;
+      }
+
       lotsToAdd.add(BulkLotEntry(
-        quantity: _lots.first.quantity,
+        quantity: qty,
         lotId: _selectedLotId,
       ));
+    } else {
+      // Creating new lots
+      if (_lots.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please add at least one lot')),
+        );
+        return;
+      }
+
+      // Validate quantities
+      if (_lots.any((lot) => lot.quantity <= 0)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('All quantities must be greater than 0')),
+        );
+        return;
+      }
+
+      // Generate batch codes for new lots if not provided
+      for (final lot in _lots) {
+        if (lot.batchCode == null) {
+          final batchCode = await widget.generateBatchCode(widget.product.itemId);
+          lotsToAdd.add(lot.copyWith(batchCode: batchCode));
+        } else {
+          lotsToAdd.add(lot);
+        }
+      }
     }
 
     if (!mounted) return;
@@ -2207,6 +2503,7 @@ class _QuickAddNewProductDialogState extends State<QuickAddNewProductDialog> {
                     SegmentedButton<UseType>(
                       segments: const [
                         ButtonSegment(value: UseType.staff, label: Text('Staff')),
+                        ButtonSegment(value: UseType.patient, label: Text('Patient')),
                         ButtonSegment(value: UseType.both, label: Text('Both')),
                       ],
                       selected: {_useType},
@@ -2518,17 +2815,21 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
       data: Theme.of(context),
       child: AlertDialog(
         title: Text('Existing Batches - ${widget.product.itemName}'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Barcodes: ${widget.product.barcodes.join(", ")}'),
-              const SizedBox(height: 16),
-              const Text('Current Batches:', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              StreamBuilder<QuerySnapshot>(
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(
+            maxHeight: 500,
+            maxWidth: 600,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Barcodes: ${widget.product.barcodes.join(", ")}'),
+                const SizedBox(height: 16),
+                const Text('Current Batches:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                StreamBuilder<QuerySnapshot>(
                 stream: _db
                     .collection('items')
                     .doc(widget.product.itemId)
@@ -2589,10 +2890,9 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
                     );
                   }
 
-                  return SizedBox(
-                    height: 300,
-                    child: ListView.builder(
+                  return ListView.builder(
                       shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
                       itemCount: activeBatches.length,
                       itemBuilder: (context, index) {
                         final batchDoc = activeBatches[index];
@@ -2657,23 +2957,23 @@ class _ExistingBatchesDialogState extends State<ExistingBatchesDialog> {
                           ),
                         );
                       },
-                    ),
-                  );
+                    );
                 },
               ),
-              const SizedBox(height: 16),
-              Center(
-                child: ElevatedButton.icon(
-                  onPressed: _createNewBatch,
-                  icon: const Icon(Icons.add_circle),
-                  label: const Text('Create New Batch'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.secondary,
-                    foregroundColor: Theme.of(context).colorScheme.onSecondary,
+                const SizedBox(height: 16),
+                Center(
+                  child: ElevatedButton.icon(
+                    onPressed: _createNewBatch,
+                    icon: const Icon(Icons.add_circle),
+                    label: const Text('Create New Batch'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.secondary,
+                      foregroundColor: Theme.of(context).colorScheme.onSecondary,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         actions: [

@@ -52,16 +52,20 @@ class LibraryItem {
   final String? description;
   final String? category;
   final String? barcode;
-  final String? serialNumber;
   final LibraryItemStatus status;
   final String? checkedOutBy; // Operator name
   final Timestamp? checkedOutAt;
-  final Timestamp? dueDate;
-  final String? location;
+  final String? usedAtLocation; // Where the item was/is being used
+  final String? location; // Default storage location
+  final int usageCount; // Number of times used
+  final int? maxUses; // How many uses before restocking needed (e.g., kit for X people)
+  final int? restockThreshold; // Flag for restocking when remaining uses <= this value
   final Timestamp createdAt;
   final Timestamp updatedAt;
   final String? createdBy;
   final String? notes;
+  final String? grantId; // Associated grant/budget
+  final List<String> imageUrls; // Photos of the item
 
   LibraryItem({
     required this.id,
@@ -69,16 +73,20 @@ class LibraryItem {
     this.description,
     this.category,
     this.barcode,
-    this.serialNumber,
     required this.status,
     this.checkedOutBy,
     this.checkedOutAt,
-    this.dueDate,
+    this.usedAtLocation,
     this.location,
+    this.usageCount = 0,
+    this.maxUses,
+    this.restockThreshold,
     required this.createdAt,
     required this.updatedAt,
     this.createdBy,
     this.notes,
+    this.grantId,
+    this.imageUrls = const [],
   });
 
   /// Create from Firestore document
@@ -90,16 +98,20 @@ class LibraryItem {
       description: data['description'],
       category: data['category'],
       barcode: data['barcode'],
-      serialNumber: data['serialNumber'],
       status: LibraryItemStatus.fromString(data['status'] ?? 'available'),
       checkedOutBy: data['checkedOutBy'],
       checkedOutAt: data['checkedOutAt'],
-      dueDate: data['dueDate'],
+      usedAtLocation: data['usedAtLocation'],
       location: data['location'],
+      usageCount: (data['usageCount'] as num?)?.toInt() ?? 0,
+      maxUses: (data['maxUses'] as num?)?.toInt(),
+      restockThreshold: (data['restockThreshold'] as num?)?.toInt(),
       createdAt: data['createdAt'] ?? Timestamp.now(),
       updatedAt: data['updatedAt'] ?? Timestamp.now(),
       createdBy: data['createdBy'],
       notes: data['notes'],
+      grantId: data['grantId'],
+      imageUrls: (data['imageUrls'] as List<dynamic>?)?.cast<String>() ?? [],
     );
   }
 
@@ -108,6 +120,7 @@ class LibraryItem {
     final data = <String, dynamic>{
       'name': name,
       'status': status.value,
+      'usageCount': usageCount,
       'createdAt': createdAt,
       'updatedAt': updatedAt,
     };
@@ -115,23 +128,32 @@ class LibraryItem {
     if (description != null) data['description'] = description;
     if (category != null) data['category'] = category;
     if (barcode != null) data['barcode'] = barcode;
-    if (serialNumber != null) data['serialNumber'] = serialNumber;
     if (checkedOutBy != null) data['checkedOutBy'] = checkedOutBy;
     if (checkedOutAt != null) data['checkedOutAt'] = checkedOutAt;
-    if (dueDate != null) data['dueDate'] = dueDate;
+    if (usedAtLocation != null) data['usedAtLocation'] = usedAtLocation;
     if (location != null) data['location'] = location;
+    if (maxUses != null) data['maxUses'] = maxUses;
+    if (restockThreshold != null) data['restockThreshold'] = restockThreshold;
     if (createdBy != null) data['createdBy'] = createdBy;
     if (notes != null) data['notes'] = notes;
+    if (grantId != null) data['grantId'] = grantId;
+    if (imageUrls.isNotEmpty) data['imageUrls'] = imageUrls;
 
     return data;
   }
 
-  /// Check if item is overdue
-  bool get isOverdue {
-    if (status != LibraryItemStatus.checkedOut || dueDate == null) {
-      return false;
-    }
-    return dueDate!.toDate().isBefore(DateTime.now());
+  /// Check if item needs restocking
+  bool get needsRestocking {
+    if (maxUses == null || maxUses == 0) return false;
+    final threshold = restockThreshold ?? 0;
+    final remaining = maxUses! - usageCount;
+    return remaining <= threshold;
+  }
+
+  /// Get remaining uses
+  int? get remainingUses {
+    if (maxUses == null) return null;
+    return maxUses! - usageCount;
   }
 
   /// Copy with updated fields
@@ -140,14 +162,18 @@ class LibraryItem {
     String? description,
     String? category,
     String? barcode,
-    String? serialNumber,
     LibraryItemStatus? status,
     String? checkedOutBy,
     Timestamp? checkedOutAt,
-    Timestamp? dueDate,
+    String? usedAtLocation,
     String? location,
+    int? usageCount,
+    int? maxUses,
+    int? restockThreshold,
     Timestamp? updatedAt,
     String? notes,
+    String? grantId,
+    List<String>? imageUrls,
   }) {
     return LibraryItem(
       id: id,
@@ -155,16 +181,20 @@ class LibraryItem {
       description: description ?? this.description,
       category: category ?? this.category,
       barcode: barcode ?? this.barcode,
-      serialNumber: serialNumber ?? this.serialNumber,
       status: status ?? this.status,
       checkedOutBy: checkedOutBy ?? this.checkedOutBy,
       checkedOutAt: checkedOutAt ?? this.checkedOutAt,
-      dueDate: dueDate ?? this.dueDate,
+      usedAtLocation: usedAtLocation ?? this.usedAtLocation,
       location: location ?? this.location,
+      usageCount: usageCount ?? this.usageCount,
+      maxUses: maxUses ?? this.maxUses,
+      restockThreshold: restockThreshold ?? this.restockThreshold,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       createdBy: createdBy,
       notes: notes ?? this.notes,
+      grantId: grantId ?? this.grantId,
+      imageUrls: imageUrls ?? this.imageUrls,
     );
   }
 }

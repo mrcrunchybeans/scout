@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../utils/audit.dart';
 import '../../utils/operator_store.dart';
 import '../../widgets/scanner_sheet.dart';
+import '../../widgets/image_picker_widget.dart';
 import '../../utils/lot_code.dart';
 import 'quick_use_sheet.dart';
 import 'bulk_inventory_entry_page.dart';
@@ -198,6 +199,11 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            // Images Section
+            _buildImagesSection(data, context),
+
+            const SizedBox(height: 16),
+
             // Stock Level Card
             _buildStockLevelCard(data, context),
 
@@ -375,6 +381,28 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildImagesSection(Map<String, dynamic> data, BuildContext context) {
+    final imageUrls = (data['imageUrls'] as List<dynamic>?)?.cast<String>() ?? [];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ImagePickerWidget(
+          imageUrls: imageUrls,
+          folder: 'items',
+          itemId: widget.itemId,
+          onImagesChanged: (newUrls) async {
+            // Update the item's imageUrls array
+            final ref = FirebaseFirestore.instance.collection('items').doc(widget.itemId);
+            await ref.update({
+              'imageUrls': newUrls,
+            });
+          },
         ),
       ),
     );

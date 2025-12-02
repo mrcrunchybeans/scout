@@ -17,6 +17,9 @@ import '../../widgets/scanner_sheet.dart';
 
 import '../../data/product_enrichment_service.dart';
 
+// Image picker widget
+import '../../widgets/image_picker_widget.dart';
+
 enum UseType { staff, patient, both }
 
 enum UnitType {
@@ -82,6 +85,9 @@ class _NewItemPageState extends State<NewItemPage> {
   UseType _useType = UseType.both;
   UnitType _unitType = UnitType.count;
 
+  // Image URLs
+  List<String> _imageUrls = [];
+
   bool _saving = false;
 
   void _addBarcodeField({String? initialValue}) {
@@ -144,6 +150,9 @@ class _NewItemPageState extends State<NewItemPage> {
       }
       _useType = item['useType'] != null ? 
         UseType.values.firstWhere((e) => e.name == item['useType'], orElse: () => UseType.both) : UseType.both;
+      
+      // Handle existing images
+      _imageUrls = (item['imageUrls'] as List<dynamic>?)?.cast<String>() ?? [];
     } else {
       // Handle new item creation
       final prefill = widget.initialBarcode ?? '';
@@ -373,6 +382,7 @@ class _NewItemPageState extends State<NewItemPage> {
         'lastUsedAt': null,
         'tags': <String>[],
         'imageUrl': null,
+        'imageUrls': _imageUrls,
 
         // barcodes: array of all barcodes
         if (barcodes.isNotEmpty) 'barcodes': barcodes,
@@ -463,6 +473,22 @@ class _NewItemPageState extends State<NewItemPage> {
     } finally {
       if (rootCtx.mounted) setState(() => _saving = false);
     }
+  }
+
+  Widget _buildImagesSection() {
+    // For new items, use a temporary ID since we don't have an actual item ID yet
+    final tempId = widget.itemId ?? 'temp_${DateTime.now().millisecondsSinceEpoch}';
+    
+    return ImagePickerWidget(
+      imageUrls: _imageUrls,
+      folder: 'items',
+      itemId: tempId,
+      onImagesChanged: (newUrls) {
+        setState(() {
+          _imageUrls = newUrls;
+        });
+      },
+    );
   }
 
   @override
@@ -798,13 +824,25 @@ class _NewItemPageState extends State<NewItemPage> {
                   SegmentedButton<UseType>(
                     segments: const [
                       ButtonSegment(value: UseType.staff, label: Text('Staff')),
-                      // ButtonSegment(value: UseType.patient, label: Text('Patient')),
+                      ButtonSegment(value: UseType.patient, label: Text('Patient')),
                       ButtonSegment(value: UseType.both, label: Text('Both')),
                     ],
                     selected: {_useType},
                     onSelectionChanged: (s) => setState(() => _useType = s.first),
                   ),
+                  const SizedBox(height: 16),
+
+                  // Images Section
+                  Text(
+                    'Images',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
                   const SizedBox(height: 8),
+                  _buildImagesSection(),
+                  const SizedBox(height: 16),
 
                   // Multiple Barcodes Section
                   Text(

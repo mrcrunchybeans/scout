@@ -5,6 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:go_router/go_router.dart';
+import 'package:uuid/uuid.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
@@ -38,6 +40,17 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
   bool _searchByName = false; // Toggle between barcode and name search
   List<Map<String, dynamic>> _nameSearchResults = [];
   Timer? _nameSearchDebounceTimer;
+  
+  // Mobile scanner session
+  late final String _sessionId;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scannerSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _sessionId = const Uuid().v4();
+    _listenForMobileScans();
+  }
 
   @override
   void dispose() {
@@ -46,6 +59,9 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     _nameController.dispose();
     _nameFocus.dispose();
     _nameSearchDebounceTimer?.cancel();
+    _scannerSubscription?.cancel();
+    // Clean up scanner session
+    _db.collection('scanner_sessions').doc(_sessionId).delete().catchError((_) {});
     super.dispose();
   }
 
@@ -201,6 +217,11 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
       appBar: AppBar(
         title: const Text('Add/Audit Inventory'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.phone_android),
+            tooltip: 'Scan with Phone',
+            onPressed: _showMobileScannerQR,
+          ),
           IconButton(
             icon: const Icon(Icons.qr_code_scanner),
             onPressed: () => _showScannerSheet(),
@@ -441,6 +462,81 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     if (scannedCode != null && scannedCode.isNotEmpty) {
       _handleBarcode(scannedCode);
     }
+  }
+
+  void _listenForMobileScans() {
+    _scannerSubscription = _db
+        .collection('scanner_sessions')
+        .doc(_sessionId)
+        .collection('scans')
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.docs.isNotEmpty) {
+        final scan = snapshot.docs.first;
+        final barcode = scan.data()['barcode'] as String?;
+        final processed = scan.data()['processed'] as bool? ?? false;
+        
+        if (barcode != null && !processed && mounted) {
+          _handleBarcode(barcode);
+          // Mark as processed
+          scan.reference.update({'processed': true});
+        }
+      }
+    });
+  }
+
+  void _showMobileScannerQR() {
+    // Use custom domain for cleaner URLs
+    final url = 'https://scout.littleempathy.com/mobile-scanner/$_sessionId';
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Scan with Phone'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Scan this QR code with your phone to use it as a barcode scanner:',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.white,
+                child: QrImageView(
+                  data: url,
+                  version: QrVersions.auto,
+                  size: 200.0,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Session: ${_sessionId.substring(0, 8)}...',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Scanned barcodes will appear on this page automatically.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

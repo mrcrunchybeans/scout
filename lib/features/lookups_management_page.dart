@@ -137,28 +137,67 @@ class _LookupManagerState extends State<_LookupManager> {
     final code = data['code'] as String? ?? '';
     final active = data['active'] != false;
     final kind = data['kind'] as String?; // For locations
+    
+    // Grant-specific fields
+    final grantNumber = data['grantNumber'] as String?;
+    final revenueAccount = data['revenueAccount'] as String?;
+    final startDate = data['startDate'] as Timestamp?;
+    final endDate = data['endDate'] as Timestamp?;
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ListTile(
         title: Text(name),
-        subtitle: Row(
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (code.isNotEmpty) ...[
-              Text('Code: $code'),
-              const SizedBox(width: 16),
+            Row(
+              children: [
+                if (code.isNotEmpty) ...[
+                  Text('Code: $code'),
+                  const SizedBox(width: 16),
+                ],
+                if (kind != null) ...[
+                  Text('Type: $kind'),
+                  const SizedBox(width: 16),
+                ],
+                Text(active ? 'Active' : 'Inactive',
+                    style: TextStyle(
+                      color: active ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.bold,
+                    )),
+              ],
+            ),
+            // Grant-specific display
+            if (widget.collection == 'grants' && (grantNumber != null || revenueAccount != null)) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  if (grantNumber != null && grantNumber.isNotEmpty) ...[
+                    Text('Grant #: $grantNumber', style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 16),
+                  ],
+                  if (revenueAccount != null && revenueAccount.isNotEmpty)
+                    Text('Revenue Acct: $revenueAccount', style: const TextStyle(fontSize: 12)),
+                ],
+              ),
             ],
-            if (kind != null) ...[
-              Text('Type: $kind'),
-              const SizedBox(width: 16),
+            if (widget.collection == 'grants' && (startDate != null || endDate != null)) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  if (startDate != null)
+                    Text('Start: ${_formatDate(startDate.toDate())}', style: const TextStyle(fontSize: 12)),
+                  if (startDate != null && endDate != null)
+                    const Text(' - ', style: TextStyle(fontSize: 12)),
+                  if (endDate != null)
+                    Text('End: ${_formatDate(endDate.toDate())}', style: const TextStyle(fontSize: 12)),
+                ],
+              ),
             ],
-            Text(active ? 'Active' : 'Inactive',
-                style: TextStyle(
-                  color: active ? Colors.green : Colors.red,
-                  fontWeight: FontWeight.bold,
-                )),
           ],
         ),
+        isThreeLine: widget.collection == 'grants' && (grantNumber != null || revenueAccount != null || startDate != null || endDate != null),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -269,6 +308,10 @@ class _LookupManagerState extends State<_LookupManager> {
     }
   }
 
+  String _formatDate(DateTime date) {
+    return '${date.month}/${date.day}/${date.year}';
+  }
+
   Future<void> _showDeleteDialog(String id, String name) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -329,6 +372,12 @@ class _LookupDialogState extends State<_LookupDialog> {
   final _nameController = TextEditingController();
   final _codeController = TextEditingController();
   String? _kind; // For locations
+  
+  // Grant-specific fields
+  final _grantNumberController = TextEditingController();
+  final _revenueAccountController = TextEditingController();
+  DateTime? _startDate;
+  DateTime? _endDate;
 
   @override
   void initState() {
@@ -337,6 +386,16 @@ class _LookupDialogState extends State<_LookupDialog> {
       _nameController.text = widget.initialData!['name'] ?? '';
       _codeController.text = widget.initialData!['code'] ?? '';
       _kind = widget.initialData!['kind'];
+      
+      // Grant-specific fields
+      _grantNumberController.text = widget.initialData!['grantNumber'] ?? '';
+      _revenueAccountController.text = widget.initialData!['revenueAccount'] ?? '';
+      if (widget.initialData!['startDate'] != null) {
+        _startDate = (widget.initialData!['startDate'] as Timestamp).toDate();
+      }
+      if (widget.initialData!['endDate'] != null) {
+        _endDate = (widget.initialData!['endDate'] as Timestamp).toDate();
+      }
     }
   }
 
@@ -344,6 +403,8 @@ class _LookupDialogState extends State<_LookupDialog> {
   void dispose() {
     _nameController.dispose();
     _codeController.dispose();
+    _grantNumberController.dispose();
+    _revenueAccountController.dispose();
     super.dispose();
   }
 
@@ -399,6 +460,64 @@ class _LookupDialogState extends State<_LookupDialog> {
                 },
               ),
             ],
+            if (widget.collection == 'grants') ...[
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _grantNumberController,
+                decoration: const InputDecoration(
+                  labelText: 'Grant Number (optional)',
+                  hintText: 'e.g., 1016200',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _revenueAccountController,
+                decoration: const InputDecoration(
+                  labelText: 'Revenue Account (optional)',
+                  hintText: 'e.g., 45200',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () => _pickDate(isStart: true),
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'Start Date (optional)',
+                    border: OutlineInputBorder(),
+                    suffixIcon: Icon(Icons.calendar_today),
+                  ),
+                  child: Text(
+                    _startDate != null
+                        ? '${_startDate!.month}/${_startDate!.day}/${_startDate!.year}'
+                        : 'Not set',
+                    style: TextStyle(
+                      color: _startDate != null ? null : Colors.grey,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () => _pickDate(isStart: false),
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'End Date (optional)',
+                    border: OutlineInputBorder(),
+                    suffixIcon: Icon(Icons.calendar_today),
+                  ),
+                  child: Text(
+                    _endDate != null
+                        ? '${_endDate!.month}/${_endDate!.day}/${_endDate!.year}'
+                        : 'Not set',
+                    style: TextStyle(
+                      color: _endDate != null ? null : Colors.grey,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -422,9 +541,35 @@ class _LookupDialogState extends State<_LookupDialog> {
       'name': _nameController.text.trim(),
       'code': _codeController.text.trim().isEmpty ? null : _codeController.text.trim(),
       if (_kind != null) 'kind': _kind,
+      // Grant-specific fields
+      if (widget.collection == 'grants') ...{
+        'grantNumber': _grantNumberController.text.trim().isEmpty ? null : _grantNumberController.text.trim(),
+        'revenueAccount': _revenueAccountController.text.trim().isEmpty ? null : _revenueAccountController.text.trim(),
+        'startDate': _startDate != null ? Timestamp.fromDate(_startDate!) : null,
+        'endDate': _endDate != null ? Timestamp.fromDate(_endDate!) : null,
+      },
     };
 
     Navigator.pop(context, result);
+  }
+  
+  Future<void> _pickDate({required bool isStart}) async {
+    final initialDate = isStart ? _startDate : _endDate;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        if (isStart) {
+          _startDate = picked;
+        } else {
+          _endDate = picked;
+        }
+      });
+    }
   }
 }
 
