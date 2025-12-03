@@ -1022,6 +1022,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
+              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
               'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': Timestamp.fromDate(now),
             });
@@ -1062,6 +1064,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
+              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
               'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': Timestamp.fromDate(now),
             });

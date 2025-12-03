@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../utils/audit.dart';
-import '../utils/operator_store.dart';
+import 'package:scout/utils/audit.dart';
+import 'package:scout/utils/operator_store.dart';
 
 class ProductEnrichmentService {
   static const _openFoodFactsBase = 'https://world.openfoodfacts.org/api/v0/product';

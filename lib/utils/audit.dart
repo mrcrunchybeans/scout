@@ -2,7 +2,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'operator_store.dart';
+import 'package:scout/utils/operator_store.dart';
 
 /// Simple, centralized audit helper for Firestore writes + audit log entries.
 ///
@@ -55,10 +55,16 @@ class Audit {
       return operatorName;
     }
     
-    // Fallback to Firebase Auth user display name or email
+    // Fallback to Firebase Auth user display name or email only
+    // Don't use UID-based names as they're not human-readable
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      return user.displayName ?? user.email ?? 'User ${user.uid.substring(0, 8)}';
+      if (user.displayName != null && user.displayName!.isNotEmpty) {
+        return user.displayName;
+      }
+      if (user.email != null && user.email!.isNotEmpty) {
+        return user.email;
+      }
     }
     
     return null; // Will show as "Unknown" in UI

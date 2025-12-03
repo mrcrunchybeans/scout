@@ -44,6 +44,7 @@ class SearchFilters {
   final Set<String> locationIds;
   final Set<String> grantIds;
   final Set<String> useTypes;
+  final Set<String> operatorNames;
   final RangeValues? qtyRange;
   final bool? hasLowStock;
   final bool? hasLots;
@@ -61,6 +62,7 @@ class SearchFilters {
     this.locationIds = const {},
     this.grantIds = const {},
     this.useTypes = const {},
+    this.operatorNames = const {},
     this.qtyRange,
     this.hasLowStock,
     this.hasLots,
@@ -72,9 +74,9 @@ class SearchFilters {
     this.hasExpired,
   });
 
-  bool get isEmpty => query.isEmpty && categories.isEmpty && baseUnits.isEmpty && locationIds.isEmpty && grantIds.isEmpty && useTypes.isEmpty && qtyRange == null && hasLowStock == null && hasLots == null && hasBarcode == null && hasMinQty == null && hasExpiringSoon == null && hasStale == null && hasExcess == null && hasExpired == null;
+  bool get isEmpty => query.isEmpty && categories.isEmpty && baseUnits.isEmpty && locationIds.isEmpty && grantIds.isEmpty && useTypes.isEmpty && operatorNames.isEmpty && qtyRange == null && hasLowStock == null && hasLots == null && hasBarcode == null && hasMinQty == null && hasExpiringSoon == null && hasStale == null && hasExcess == null && hasExpired == null;
 
-  bool get hasServerSideFilters => categories.isNotEmpty || baseUnits.isNotEmpty || locationIds.isNotEmpty || grantIds.isNotEmpty || useTypes.isNotEmpty || qtyRange != null || hasLowStock != null || hasLots != null || hasBarcode != null || hasMinQty != null || hasExpiringSoon != null || hasStale != null || hasExcess != null || hasExpired != null;
+  bool get hasServerSideFilters => categories.isNotEmpty || baseUnits.isNotEmpty || locationIds.isNotEmpty || grantIds.isNotEmpty || useTypes.isNotEmpty || operatorNames.isNotEmpty || qtyRange != null || hasLowStock != null || hasLots != null || hasBarcode != null || hasMinQty != null || hasExpiringSoon != null || hasStale != null || hasExcess != null || hasExpired != null;
 
   @override
   bool operator ==(Object other) {
@@ -91,6 +93,8 @@ class SearchFilters {
         other.grantIds.containsAll(grantIds) &&
         other.useTypes.length == useTypes.length &&
         other.useTypes.containsAll(useTypes) &&
+        other.operatorNames.length == operatorNames.length &&
+        other.operatorNames.containsAll(operatorNames) &&
         other.qtyRange == qtyRange &&
         other.hasLowStock == hasLowStock &&
         other.hasLots == hasLots &&
@@ -111,6 +115,7 @@ class SearchFilters {
       Object.hashAll(locationIds.toList()..sort()),
       Object.hashAll(grantIds.toList()..sort()),
       Object.hashAll(useTypes.toList()..sort()),
+      Object.hashAll(operatorNames.toList()..sort()),
       qtyRange,
       hasLowStock,
       hasLots,
@@ -130,6 +135,7 @@ class SearchFilters {
     Set<String>? locationIds,
     Set<String>? grantIds,
     Set<String>? useTypes,
+    Set<String>? operatorNames,
     RangeValues? qtyRange,
     // For boolean flags we accept an explicit null value to clear the filter.
     // To distinguish between "not provided" and "provided as null" we accept
@@ -151,6 +157,7 @@ class SearchFilters {
       locationIds: locationIds ?? this.locationIds,
       grantIds: grantIds ?? this.grantIds,
       useTypes: useTypes ?? this.useTypes,
+      operatorNames: operatorNames ?? this.operatorNames,
       qtyRange: qtyRange ?? this.qtyRange,
   hasLowStock: identical(hasLowStock, sentinel) ? this.hasLowStock : (hasLowStock as bool?),
   hasLots: identical(hasLots, sentinel) ? this.hasLots : (hasLots as bool?),
@@ -253,6 +260,7 @@ class SearchService {
     ];
 
     final needsClientSide = filters.query.isNotEmpty ||
+        filters.operatorNames.isNotEmpty ||
         filters.hasLots != null ||
         filters.hasExpiringSoon != null ||
         filters.hasStale != null ||
@@ -395,6 +403,12 @@ class SearchService {
         if (filters.hasExpired != null) {
           final flag = (data['flagExpired'] ?? false) as bool;
           if (flag != filters.hasExpired) continue;
+        }
+        
+        // Filter by operator name (who entered the item)
+        if (filters.operatorNames.isNotEmpty) {
+          final itemOperator = (data['operatorName'] ?? '') as String;
+          if (!filters.operatorNames.contains(itemOperator)) continue;
         }
 
         accumulated.add(doc);

@@ -1,8 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../../utils/audit.dart';
-import '../../utils/operator_store.dart';
+import 'package:scout/utils/audit.dart';
+import 'package:scout/utils/operator_store.dart';
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/image_picker_widget.dart';
 import '../../utils/lot_code.dart';
@@ -2302,10 +2302,16 @@ class _UsageHistoryCardState extends State<_UsageHistoryCard> {
             if (grantId != null)
               _buildInfoRow('Grant', grantId, Icons.account_balance),
             
-            // Operator
+            // Operator - show if available and not a UUID
             () {
               String? displayName = operatorName;
-              if (displayName == null || displayName.isEmpty || displayName.startsWith('User ')) {
+              // Check if it looks like a UUID (Firebase UIDs are 28 chars)
+              bool looksLikeUid = displayName != null && 
+                  displayName.length >= 20 && 
+                  RegExp(r'^[a-zA-Z0-9]+$').hasMatch(displayName);
+              
+              if (displayName == null || displayName.isEmpty || looksLikeUid || displayName.startsWith('User ')) {
+                // Try fallback to current operator name
                 displayName = OperatorStore.name.value;
               }
               if (displayName != null && displayName.isNotEmpty && !displayName.startsWith('User ')) {

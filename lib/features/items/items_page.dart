@@ -9,7 +9,7 @@ import 'package:scout/features/items/new_item_page.dart';
 import 'package:scout/widgets/label_sheet_preview.dart';
 import '../lookups_management_page.dart';
 import '../../services/search_service.dart';
-import '../../utils/audit.dart';
+import 'package:scout/utils/audit.dart';
 import '../../services/label_export_service.dart';
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -107,6 +107,7 @@ class _ItemsPageState extends State<ItemsPage> {
   bool _showAdvancedFilters = false;
   Future<List<String>>? _categoriesFuture;
   Future<List<OptionItem>>? _grantsFuture;
+  Future<List<String>>? _operatorsFuture;
   final Set<String> _selectedIds = {};
   List<String> _visibleIds = [];
 
@@ -293,6 +294,27 @@ class _ItemsPageState extends State<ItemsPage> {
         final data = d.data() as Map<String, dynamic>?;
         final cat = (data == null ? '' : (data['category'] ?? '')) as String;
         if (cat.isNotEmpty) set.add(cat);
+      }
+      final list = set.toList()..sort();
+      return list;
+    } catch (_) {
+      return <String>[];
+    }
+  }
+
+  /// Load distinct operator names (who entered items) from the items collection
+  Future<List<String>> _loadOperators() async {
+    try {
+      // Fetch a sample of items to get distinct operator names
+      final query = _db.collection('items')
+          .orderBy('updatedAt', descending: true)
+          .limit(500);
+      final snap = await query.get();
+      final set = <String>{};
+      for (final d in snap.docs) {
+        final data = d.data();
+        final operator = (data['operatorName'] ?? '') as String;
+        if (operator.isNotEmpty) set.add(operator);
       }
       final list = set.toList()..sort();
       return list;
@@ -503,7 +525,7 @@ class _ItemsPageState extends State<ItemsPage> {
           ],
         ],
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_showAdvancedFilters ? 520 : 220),
+          preferredSize: Size.fromHeight(_showAdvancedFilters ? 620 : 220),
           child: SafeArea(
             top: false,
             child: Padding(
@@ -563,6 +585,7 @@ class _ItemsPageState extends State<ItemsPage> {
                         _showAdvancedFilters = !_showAdvancedFilters;
                         if (_showAdvancedFilters) {
                           _categoriesFuture = _loadCategories();
+                          _operatorsFuture = _loadOperators();
                         }
                       }),
                       icon: Icon(_showAdvancedFilters ? Icons.filter_list_off : Icons.filter_list),
@@ -1646,6 +1669,82 @@ class _ItemsPageState extends State<ItemsPage> {
                     .toList(),
               ),
             ],
+
+            // Entered By (Operator) filter
+            FutureBuilder<List<String>>(
+              future: _operatorsFuture,
+              builder: (context, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return const SizedBox.shrink();
+                }
+
+                final operators = snap.data ?? <String>[];
+                if (operators.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Icon(Icons.person_outline, size: 18),
+                        const SizedBox(width: 6),
+                        const Text('Entered By', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                        const SizedBox(width: 8),
+                        if (_filters.operatorNames.isNotEmpty)
+                          TextButton(
+                            onPressed: () => setState(() {
+                              _filters = _filters.copyWith(operatorNames: {});
+                              _loadFirstPage();
+                            }),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('Clear'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: operators
+                          .map((operator) => FilterChip(
+                                avatar: CircleAvatar(
+                                  backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                                  child: Text(
+                                    operator.isNotEmpty ? operator[0].toUpperCase() : '?',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                                label: Text(operator),
+                                selected: _filters.operatorNames.contains(operator),
+                                onSelected: (selected) {
+                                  setState(() {
+                                    final newOperators = Set<String>.from(_filters.operatorNames);
+                                    if (selected) {
+                                      newOperators.add(operator);
+                                    } else {
+                                      newOperators.remove(operator);
+                                    }
+                                    _filters = _filters.copyWith(operatorNames: newOperators);
+                                    _loadFirstPage();
+                                  });
+                                },
+                              ))
+                          .toList(),
+                    ),
+                  ],
+                );
+              },
+            ),
           ],
         ),
       ),

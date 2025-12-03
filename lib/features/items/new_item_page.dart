@@ -6,7 +6,7 @@ import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
 
 // Audit helper
-import '../../utils/audit.dart';
+import 'package:scout/utils/audit.dart';
 import '../../utils/lot_code.dart';
 
 // Optional: USB wedge capture (keyboard-emulating scanners)

@@ -1026,3 +1026,104 @@ export const budgetProxy = onRequest((req, res) => {
     res.status(502).end("Bad Gateway");
   }
 });
+
+// ---------- Feedback RSS Feed ----------
+/**
+ * Generates an RSS feed of feedback items (bugs, features, questions)
+ * Access at: https://us-central1-scout-litteempathy.cloudfunctions.net/feedbackRss
+ */
+export const feedbackRss = onRequest(async (req, res) => {
+  try {
+    // Set CORS headers
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Content-Type", "application/rss+xml; charset=utf-8");
+    res.set("Cache-Control", "public, max-age=300"); // Cache for 5 minutes
+
+    // Fetch recent feedback items
+    const feedbackSnapshot = await db
+      .collection("feedback")
+      .orderBy("createdAt", "desc")
+      .limit(50)
+      .get();
+
+    const items: string[] = [];
+    const siteUrl = "https://scout.littleempathy.com";
+
+    for (const doc of feedbackSnapshot.docs) {
+      const data = doc.data();
+      const title = escapeXml(data.title || "Untitled");
+      const description = escapeXml(data.description || "");
+      const type = data.type || "bug"; // bug, feature, question
+      const status = data.status || "open";
+      const submittedBy = escapeXml(data.submittedBy || "Anonymous");
+      const voteCount = data.voteCount || 0;
+      const createdAt = data.createdAt?.toDate() || new Date();
+
+      // Format type label
+      let typeLabel = type;
+      if (type === "bug") {
+        typeLabel = "Bug";
+      } else if (type === "feature") {
+        typeLabel = "Feature Request";
+      } else if (type === "question") {
+        typeLabel = "Question";
+      }
+
+      const itemContent = `
+        <p><strong>Type:</strong> ${typeLabel}</p>
+        <p><strong>Status:</strong> ${status}</p>
+        <p><strong>Submitted by:</strong> ${submittedBy}</p>
+        <p><strong>Votes:</strong> ${voteCount}</p>
+        ${description ? `<p>${escapeXml(description)}</p>` : ""}
+      `.trim();
+
+      items.push(`
+    <item>
+      <title>[${typeLabel}] ${title}</title>
+      <link>${siteUrl}/feedback</link>
+      <guid isPermaLink="false">feedback-${doc.id}</guid>
+      <pubDate>${createdAt.toUTCString()}</pubDate>
+      <author>${submittedBy}</author>
+      <category>${type}</category>
+      <description><![CDATA[${itemContent}]]></description>
+    </item>`);
+    }
+
+    const rss = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>SCOUT Feedback</title>
+    <link>${siteUrl}/feedback</link>
+    <description>Bug reports, feature requests, and questions for SCOUT inventory management</description>
+    <language>en-us</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <atom:link href="https://us-central1-scout-litteempathy.cloudfunctions.net/feedbackRss" rel="self" type="application/rss+xml"/>
+    <image>
+      <url>${siteUrl}/icons/Icon-192.png</url>
+      <title>SCOUT Feedback</title>
+      <link>${siteUrl}/feedback</link>
+    </image>
+${items.join("\n")}
+  </channel>
+</rss>`;
+
+    res.status(200).send(rss);
+  } catch (error) {
+    console.error("RSS feed error:", error);
+    res.status(500).send("Error generating RSS feed");
+  }
+});
+
+/**
+ * Escape special XML characters
+ * @param {string} str - The string to escape
+ * @return {string} The escaped string
+ */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}

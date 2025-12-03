@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
-import '../../main.dart' as main;
+import 'package:scout/utils/operator_store.dart';
+import 'package:scout/main.dart' show ThemeModeNotifier;
 import '../../widgets/brand_logo.dart';
 import '../../services/version_service.dart';
 import '../items/new_item_page.dart';
@@ -53,7 +54,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _checkOperatorName() async {
-    final currentName = main.OperatorStore.name.value;
+    final currentName = OperatorStore.name.value;
     if (currentName == null || currentName.isEmpty) {
       if (!mounted) return;
       await _showOperatorDialog();
@@ -114,7 +115,7 @@ class _DashboardPageState extends State<DashboardPage> {
     );
 
     if (picked != null && picked.isNotEmpty && mounted) {
-      await main.OperatorStore.set(picked);
+      await OperatorStore.set(picked);
     } else if (picked != null && picked.isEmpty && mounted) {
       // If they somehow submit empty, show again
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -251,7 +252,7 @@ class _DashboardPageState extends State<DashboardPage> {
             ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
           }
         } else if (v == _DashboardMenuAction.theme) {
-          main.ThemeModeNotifier.instance.toggle();
+          ThemeModeNotifier.instance.toggle();
         }
       },
       itemBuilder: (ctx) => [
@@ -365,6 +366,13 @@ class _DashboardPageState extends State<DashboardPage> {
                       );
                     },
                   ),
+                  _PrimaryActionButton(
+                    icon: Icons.feedback_outlined,
+                    color: Colors.deepPurple.shade500,
+                    label: 'Feedback',
+                    subtitle: 'Bugs & feature requests',
+                    onTap: () => context.go('/feedback'),
+                  ),
                 ];
 
                 // Build a 3-column grid with 3 rows
@@ -392,14 +400,14 @@ class _DashboardPageState extends State<DashboardPage> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    // Row 3: New Item (centered or left-aligned)
+                    // Row 3: New Item, Team Budget, Feedback
                     Row(
                       children: [
                         Expanded(child: tiles[6]),
                         const SizedBox(width: 16),
                         Expanded(child: tiles[7]),
                         const SizedBox(width: 16),
-                        const Expanded(child: SizedBox()), // Empty space
+                        Expanded(child: tiles[8]),
                       ],
                     ),
                   ],

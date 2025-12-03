@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as web;
@@ -25,6 +24,8 @@ import 'features/admin/recalculate_lot_codes_page.dart';
 import 'services/search_service.dart';
 import 'features/budget/budget_page.dart';
 import 'features/items/mobile_barcode_scanner_page.dart';
+import 'features/feedback/feedback_page.dart';
+import 'package:scout/utils/operator_store.dart';
 
 /// Navigation observer for debugging navigation issues
 class ScoutNavigationObserver extends NavigatorObserver {
@@ -80,37 +81,8 @@ class ThemeModeNotifier extends ValueNotifier<ThemeMode> {
   }
 }
 
-/// Lightweight operator store (name shown in UI, cached locally)
-class OperatorStore {
-  static final ValueNotifier<String?> name = ValueNotifier<String?>(null);
-  static String? _mem; // in-memory fallback if prefs unavailable
-
-  static Future<void> load() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      name.value = sp.getString('operator_name');
-      _mem = name.value;
-    } catch (_) {
-      // Safari Private Mode or storage blocked: use in-memory
-      name.value = _mem;
-    }
-  }
-
-  static Future<void> set(String? v) async {
-    _mem = (v == null || v.isEmpty) ? null : v;
-    name.value = _mem;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      if (_mem == null) {
-        await sp.remove('operator_name');
-      } else {
-        await sp.setString('operator_name', _mem!);
-      }
-    } catch (_) {
-      // ignore — we already updated the in-memory value
-    }
-  }
-}
+/// Import OperatorStore from utils to ensure single instance across app
+// OperatorStore is now imported from package:scout/utils/operator_store.dart
 
 /// Initialize Firebase (single app) and ensure anonymous auth + operator loaded
 Future<void> _bootstrap() async {
@@ -384,6 +356,11 @@ void _initRouter() {
       path: '/budget',
       name: 'budget',
       builder: (context, state) => BudgetPage(),
+    ),
+    GoRoute(
+      path: '/feedback',
+      name: 'feedback',
+      builder: (context, state) => const FeedbackPage(),
     ),
     GoRoute(
       path: '/mobile-scanner/:sessionId',

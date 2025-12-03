@@ -10,7 +10,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
-import '../../utils/audit.dart';
+import 'package:scout/utils/audit.dart';
 import '../../utils/lot_code.dart';
 import '../../utils/deep_link_parser.dart';
 import '../../data/product_enrichment_service.dart';

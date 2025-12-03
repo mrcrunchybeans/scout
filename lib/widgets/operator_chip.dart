@@ -1,6 +1,6 @@
 // lib/widgets/operator_chip.dart
 import 'package:flutter/material.dart';
-import 'package:scout/main.dart' as main;
+import 'package:scout/utils/operator_store.dart';
 
 class OperatorChip extends StatelessWidget {
   const OperatorChip({super.key});
@@ -9,7 +9,7 @@ class OperatorChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return ValueListenableBuilder<String?>(
-      valueListenable: main.OperatorStore.name,
+      valueListenable: OperatorStore.name,
       builder: (context, name, _) {
         final isUnset = name?.isNotEmpty != true;
         final label = isUnset ? 'Tap to set your name' : name!;
@@ -49,7 +49,7 @@ class OperatorChip extends StatelessWidget {
               ),
             );
             if (picked == null) return;
-            await main.OperatorStore.set(picked.isEmpty ? null : picked);
+            await OperatorStore.set(picked.isEmpty ? null : picked);
             if (context.mounted && picked.isNotEmpty) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('Hello, $picked')),
