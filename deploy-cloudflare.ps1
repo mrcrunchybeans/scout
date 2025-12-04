@@ -4,46 +4,49 @@
 param(
     [string]$Message = "",
     [switch]$SkipGit = $false,
-    [switch]$Major = $false,
-    [switch]$Minor = $false,
+    [switch]$BumpMajor = $false,
+    [switch]$BumpMinor = $false,
     [switch]$NoIncrement = $false
 )
 
 # Get current version from pubspec.yaml
 $pubspecPath = "pubspec.yaml"
 $pubspec = Get-Content $pubspecPath -Raw
-if ($pubspec -match 'version:\s*(\d+)\.(\d+)\.(\d+)') {
-    $major = [int]$matches[1]
-    $minor = [int]$matches[2]
-    $patch = [int]$matches[3]
-    $oldVersion = "$major.$minor.$patch"
+
+# Extract version using regex
+$versionMatch = [regex]::Match($pubspec, 'version:\s*(\d+)\.(\d+)\.(\d+)')
+if ($versionMatch.Success) {
+    $vMajor = [int]$versionMatch.Groups[1].Value
+    $vMinor = [int]$versionMatch.Groups[2].Value
+    $vPatch = [int]$versionMatch.Groups[3].Value
+    $oldVersion = "$vMajor.$vMinor.$vPatch"
 } else {
-    $major = 0
-    $minor = 0
-    $patch = 0
-    $oldVersion = "0.0.0"
+    $vMajor = 1
+    $vMinor = 0
+    $vPatch = 0
+    $oldVersion = "1.0.0"
 }
 
 # Increment version (unless NoIncrement is set)
 if (-not $NoIncrement) {
-    if ($Major) {
-        $major++
-        $minor = 0
-        $patch = 0
-    } elseif ($Minor) {
-        $minor++
-        $patch = 0
+    if ($BumpMajor) {
+        $vMajor++
+        $vMinor = 0
+        $vPatch = 0
+    } elseif ($BumpMinor) {
+        $vMinor++
+        $vPatch = 0
     } else {
         # Default: increment patch
-        $patch++
+        $vPatch++
     }
 }
 
-$version = "$major.$minor.$patch"
+$version = "$vMajor.$vMinor.$vPatch"
 
 # Update pubspec.yaml with new version (unless NoIncrement)
 if (-not $NoIncrement -and $version -ne $oldVersion) {
-    $newPubspec = $pubspec -replace 'version:\s*\d+\.\d+\.\d+', "version: $version"
+    $newPubspec = $pubspec -replace 'version:\s*\d+\.\d+\.\d+(\+\d+)?', "version: $version"
     Set-Content $pubspecPath -Value $newPubspec -NoNewline
     Write-Host "Version bumped: $oldVersion -> $version" -ForegroundColor Magenta
 }
