@@ -42,8 +42,8 @@ $versionServiceContent = $versionServiceContent -replace "static const String _a
 Set-Content $versionServicePath $versionServiceContent
 Write-Host "📋 VersionService updated to: $newVersion" -ForegroundColor Green
 
-# Run Flutter build
-& flutter build web --release
+# Run Flutter build (without service worker to prevent caching issues on mobile)
+& flutter build web --release --pwa-strategy=none
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed"
     exit $LASTEXITCODE

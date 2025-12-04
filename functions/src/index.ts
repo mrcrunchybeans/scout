@@ -62,6 +62,7 @@ type Lot = {
   expiresAt?: admin.firestore.Timestamp | null;
   openAt?: admin.firestore.Timestamp | null;
   expiresAfterOpenDays?: number | null;
+  archived?: boolean;
 };
 
 /**
@@ -227,12 +228,21 @@ async function recomputeItemAggregates(itemId: string) {
       qtyOnHand = 0; // Reset to recalculate from lots
       lotsSnap.forEach((doc) => {
         const lot = doc.data() as Lot;
+
+        // Skip archived lots - they shouldn't count toward qty or expiration
+        if (lot.archived === true) {
+          return;
+        }
+
         const rem = Number(lot.qtyRemaining || 0);
         qtyOnHand += rem;
 
-        const eff = effectiveLotExpiry(lot);
-        if (eff) {
-          if (!earliest || eff < earliest) earliest = eff;
+        // Only consider expiry from lots with remaining quantity > 0
+        if (rem > 0) {
+          const eff = effectiveLotExpiry(lot);
+          if (eff) {
+            if (!earliest || eff < earliest) earliest = eff;
+          }
         }
       });
       console.error(`Item ${itemId}: recalculated qtyOnHand from lots: ${qtyOnHand}`);

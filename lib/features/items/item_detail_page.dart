@@ -31,9 +31,13 @@ class ItemDetailPage extends StatelessWidget {
             leading: IconButton(
               icon: const Icon(Icons.arrow_back),
               tooltip: 'Back to Items',
-              onPressed: () => GoRouter.of(context).canPop() 
-                  ? GoRouter.of(context).pop()
-                  : GoRouter.of(context).go('/'),
+              onPressed: () {
+                if (GoRouter.of(context).canPop()) {
+                  GoRouter.of(context).pop();
+                } else {
+                  GoRouter.of(context).go('/items');
+                }
+              },
             ),
             title: Text(itemName),
             actions: [
@@ -238,28 +242,48 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
   }
 
   Widget _buildStockLevelCard(Map<String, dynamic> data, BuildContext context) {
-    final qty = (data['qtyOnHand'] ?? 0) as num;
     final minQty = (data['minQty'] ?? 0) as num;
     final maxQty = (data['maxQty'] ?? 0) as num;
     final baseUnit = (data['baseUnit'] ?? 'each') as String;
 
-    // Calculate stock level percentage
-    final stockLevel = maxQty > 0 ? (qty / maxQty).clamp(0.0, 1.0) : 1.0;
-    final isLow = qty <= minQty && minQty > 0;
-    final isExcess = maxQty > 0 && qty > maxQty;
-
-    // Status flags
-    final flags = [
-      if (data['flagLow'] == true || isLow) 'LOW',
-      if (data['flagExcess'] == true || isExcess) 'EXCESS',
-      if (data['flagStale'] == true) 'STALE',
-      if (data['flagExpiringSoon'] == true) 'EXPIRING',
-    ];
-
     final ts = data['earliestExpiresAt'];
     final exp = (ts is Timestamp) ? ts.toDate() : null;
 
-    return Card(
+    // Stream lots to calculate qtyOnHand dynamically
+    // Query all lots and filter client-side (archived field may not exist on active lots)
+    final db = FirebaseFirestore.instance;
+    final lotsStream = db.collection('items').doc(widget.itemId).collection('lots')
+        .snapshots();
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: lotsStream,
+      builder: (context, lotsSnap) {
+        // Calculate qty from lots (sum of qtyRemaining for non-archived lots)
+        num qty = 0;
+        if (lotsSnap.hasData) {
+          for (final doc in lotsSnap.data!.docs) {
+            final lotData = doc.data();
+            // Only count non-archived lots (archived field missing = active)
+            if (lotData['archived'] != true) {
+              qty += (lotData['qtyRemaining'] ?? 0) as num;
+            }
+          }
+        }
+
+        // Calculate stock level percentage
+        final stockLevel = maxQty > 0 ? (qty / maxQty).clamp(0.0, 1.0) : 1.0;
+        final isLow = qty <= minQty && minQty > 0;
+        final isExcess = maxQty > 0 && qty > maxQty;
+
+        // Status flags
+        final flags = [
+          if (data['flagLow'] == true || isLow) 'LOW',
+          if (data['flagExcess'] == true || isExcess) 'EXCESS',
+          if (data['flagStale'] == true) 'STALE',
+          if (data['flagExpiringSoon'] == true) 'EXPIRING',
+        ];
+
+        return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -383,6 +407,8 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
           ],
         ),
       ),
+    );
+      },
     );
   }
 
@@ -773,13 +799,13 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
         final data = doc.data()!;
         final itemName = data['name'] as String? ?? 'Unknown Item';
         if (!context.mounted) return;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => QuickUseSheet(
-              itemId: widget.itemId,
-              itemName: itemName,
-            ),
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          useSafeArea: true,
+          builder: (ctx) => QuickUseSheet(
+            itemId: widget.itemId,
+            itemName: itemName,
           ),
         );
       }
@@ -994,6 +1020,11 @@ class _LotRow extends StatelessWidget {
     final afterOpen = d['expiresAfterOpenDays'] as int?;
     final receivedTs = d['receivedAt']; final received = (receivedTs is Timestamp) ? receivedTs.toDate() : null;
 
+    // Calculate expiration status
+    final now = DateTime.now();
+    final isExpired = exp != null && exp.isBefore(now);
+    final isExpiringSoon = !isExpired && exp != null && exp.difference(now).inDays <= 30;
+    
     final remainingText = qtyInitial > 0 
         ? '$qtyRemaining of $qtyInitial $baseUnit remaining'
         : '$qtyRemaining $baseUnit remaining';
@@ -1007,9 +1038,19 @@ class _LotRow extends StatelessWidget {
     ].join(' • ');
 
     final lotCode = (d['lotCode'] ?? lotDoc.id.substring(0, 6)) as String;
+    
+    // Determine background color based on expiration status
+    Color? backgroundColor;
+    if (isHighlighted) {
+      backgroundColor = Theme.of(context).colorScheme.primaryContainer.withAlpha((0.3 * 255).round());
+    } else if (isExpired) {
+      backgroundColor = Colors.red.withAlpha((0.15 * 255).round());
+    } else if (isExpiringSoon) {
+      backgroundColor = Colors.orange.withAlpha((0.15 * 255).round());
+    }
 
     return Container(
-      color: isHighlighted ? Theme.of(context).colorScheme.primaryContainer.withAlpha((0.3 * 255).round()) : null,
+      color: backgroundColor,
       child: ListTile(
         title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
         subtitle: Text(sub),
@@ -1552,6 +1593,54 @@ class _AdjustSheetContentState extends State<_AdjustSheetContent> {
                   'at': Timestamp.fromDate(usedAt),
                 });
 
+                if (!context.mounted) return;
+                
+                final finalRemaining = widget.currentRemaining + delta;
+                
+                // If quantity reached 0, prompt to archive BEFORE popping the bottom sheet
+                if (finalRemaining == 0) {
+                  final shouldArchive = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Archive Lot?'),
+                      content: const Text(
+                        'This lot now has 0 remaining. Would you like to archive it?'
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('No'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Yes'),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (shouldArchive == true) {
+                    await db.collection('items').doc(widget.itemId)
+                      .collection('lots').doc(widget.lotId)
+                      .set(Audit.updateOnly({'archived': true}), SetOptions(merge: true));
+                    
+                    await Audit.log('lot.archive', {
+                      'itemId': widget.itemId,
+                      'lotId': widget.lotId,
+                      'reason': 'quantity_zero',
+                    });
+                    
+                    if (context.mounted) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Lot adjusted by $delta and archived')),
+                      );
+                    }
+                    return;
+                  }
+                }
+                
+                // Pop the bottom sheet and show success message
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(

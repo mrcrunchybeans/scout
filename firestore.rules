@@ -213,6 +213,12 @@ service cloud.firestore {
       allow read, write: if isAuthed();
     }
 
+    // ---------- Meta (dashboard stats, etc.) ----------
+    match /meta/{document=**} {
+      allow read: if true;
+      allow write: if isAuthed();
+    }
+
     // ---------- Admin/config (authenticated users can write) ----------
     match /admin/{document=**} {
       allow write: if isAuthed();

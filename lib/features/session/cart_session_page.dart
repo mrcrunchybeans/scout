@@ -65,6 +65,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   // Auto-save timer
   Timer? _autoSaveTimer;
   bool _autoSavePending = false;
+  bool _isSaving = false;
 
   bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
   bool get _isClosed => _status == 'closed';
@@ -232,7 +233,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
     _autoSaveTimer = Timer(const Duration(seconds: 3), () async {
       if (!mounted || _isClosed) return;
       _autoSavePending = false;
-      await _saveDraft();
+      await _saveDraft(silent: true);
     });
   }
 
@@ -614,8 +615,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   // ---------- Save / close ----------
-  Future<void> _saveDraft() async {
-    setState(() => _busy = true);
+  Future<void> _saveDraft({bool silent = false}) async {
+    setState(() {
+      _busy = true;
+      _isSaving = true;
+    });
     try {
       _locationText = _locationC.text;
       _notes = _notesC.text;
@@ -715,17 +719,22 @@ class _CartSessionPageState extends State<CartSessionPage> {
         });
       }
 
-      final ctx = context;
-      if (!ctx.mounted) return;
-      SoundFeedback.ok();
-      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
+      if (!silent) {
+        final ctx = context;
+        if (!ctx.mounted) return;
+        SoundFeedback.ok();
+        ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
+      }
     } catch (e) {
       final ctx = context;
       if (!ctx.mounted) return;
       SoundFeedback.error();
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() {
+        _busy = false;
+        _isSaving = false;
+      });
     }
   }
 
@@ -1545,12 +1554,21 @@ class _CartSessionPageState extends State<CartSessionPage> {
             onPressed: (_busy || _isClosed) ? null : _showMobileScannerQR,
           ),
           IconButton(
-            tooltip: _autoSavePending ? 'Auto-saving soon...' : 'Save draft',
-            icon: Icon(
-              _autoSavePending ? Icons.sync : Icons.save,
-              color: _autoSavePending ? Theme.of(context).colorScheme.tertiary : null,
-            ),
-            onPressed: (_busy || _isClosed) ? null : _saveDraft,
+            tooltip: _isSaving ? 'Saving...' : (_autoSavePending ? 'Auto-saving soon...' : 'Save draft'),
+            icon: _isSaving
+                ? SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  )
+                : Icon(
+                    _autoSavePending ? Icons.sync : Icons.save,
+                    color: _autoSavePending ? Theme.of(context).colorScheme.tertiary : null,
+                  ),
+            onPressed: (_busy || _isClosed) ? null : () => _saveDraft(silent: false),
           ),
         ],
       ),

@@ -104,7 +104,6 @@ class _ItemsPageState extends State<ItemsPage> {
   SortOption _sortOption = SortOption.updatedDesc;
   ViewMode _viewMode = ViewMode.active;
   bool _selectionMode = false;
-  bool _showAdvancedFilters = false;
   Future<List<String>>? _categoriesFuture;
   Future<List<OptionItem>>? _grantsFuture;
   Future<List<String>>? _operatorsFuture;
@@ -525,7 +524,7 @@ class _ItemsPageState extends State<ItemsPage> {
           ],
         ],
         bottom: PreferredSize(
-          preferredSize: Size.fromHeight(_showAdvancedFilters ? 620 : 220),
+          preferredSize: const Size.fromHeight(190),
           child: SafeArea(
             top: false,
             child: Padding(
@@ -581,22 +580,36 @@ class _ItemsPageState extends State<ItemsPage> {
                     ),
                     const Spacer(),
                     TextButton.icon(
-                      onPressed: () => setState(() {
-                        _showAdvancedFilters = !_showAdvancedFilters;
-                        if (_showAdvancedFilters) {
-                          _categoriesFuture = _loadCategories();
-                          _operatorsFuture = _loadOperators();
-                        }
-                      }),
-                      icon: Icon(_showAdvancedFilters ? Icons.filter_list_off : Icons.filter_list),
-                      label: Text(_showAdvancedFilters ? 'Hide Filters' : 'Advanced Filters'),
+                      onPressed: () {
+                        // Load filter data
+                        _categoriesFuture = _loadCategories();
+                        _operatorsFuture = _loadOperators();
+                        // Show filters in a bottom sheet for better mobile UX
+                        _showFiltersBottomSheet(context);
+                      },
+                      icon: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          const Icon(Icons.filter_list),
+                          if (_hasActiveFilters())
+                            Positioned(
+                              right: -4,
+                              top: -4,
+                              child: Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      label: const Text('Filters'),
                     ),
                   ],
                 ),
-                if (_showAdvancedFilters) ...[
-                  const SizedBox(height: 8),
-                  _buildAdvancedFilters(),
-                ],
               ],
             ),
             ),
@@ -1413,339 +1426,54 @@ class _ItemsPageState extends State<ItemsPage> {
     }
   }
 
-  Widget _buildAdvancedFilters() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text('Filters', style: TextStyle(fontWeight: FontWeight.bold)),
-                const Spacer(),
-                TextButton(
-                  onPressed: () => setState(() {
-                    _filters = const SearchFilters();
-                    _loadFirstPage();
-                  }),
-                  child: const Text('Clear All'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
+  /// Check if any filters are active
+  bool _hasActiveFilters() {
+    return _filters.hasLowStock == true ||
+        _filters.hasLots == true ||
+        _filters.hasBarcode == true ||
+        _filters.hasMinQty == true ||
+        _filters.hasExpiringSoon == true ||
+        _filters.hasStale == true ||
+        _filters.hasExcess == true ||
+        _filters.hasExpired == true ||
+        _filters.categories.isNotEmpty ||
+        _filters.grantIds.isNotEmpty ||
+        _filters.locationIds.isNotEmpty ||
+        _filters.operatorNames.isNotEmpty;
+  }
 
-            // Quick Filters
-            const Text('Quick Filters', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                FilterChip(
-                  label: const Text('Low Stock'),
-                  selected: _filters.hasLowStock == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasLowStock: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Has Lots'),
-                  selected: _filters.hasLots == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasLots: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Has Barcode'),
-                  selected: _filters.hasBarcode == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasBarcode: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Has Min Qty'),
-                  selected: _filters.hasMinQty == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasMinQty: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Expiring Soon'),
-                  selected: _filters.hasExpiringSoon == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasExpiringSoon: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Stale'),
-                  selected: _filters.hasStale == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasStale: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Excess'),
-                  selected: _filters.hasExcess == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasExcess: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-                FilterChip(
-                  label: const Text('Expired'),
-                  selected: _filters.hasExpired == true,
-                  onSelected: (selected) => setState(() {
-                    _filters = _filters.copyWith(hasExpired: selected ? true : null);
-                    _loadFirstPage();
-                  }),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            // Categories
-            FutureBuilder<List<String>>(
-              future: _categoriesFuture,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
-                  );
-                }
-
-                final categories = snap.data ?? <String>[];
-                if (categories.isEmpty) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                      const SizedBox(height: 8),
-                      Text('No categories found for the current page.', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6))),
-                      Row(
-                        children: [
-                          TextButton.icon(
-                            onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('Reload (page)'),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton.icon(
-                            onPressed: () => setState(() => _categoriesFuture = _loadCategories(broad: true)),
-                            icon: const Icon(Icons.travel_explore),
-                            label: const Text('Find more (broader sample)'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                  );
-                }
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        TextButton.icon(
-                          onPressed: () => setState(() => _categoriesFuture = _loadCategories()),
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Reload (page)'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: () => setState(() => _categoriesFuture = _loadCategories(broad: true)),
-                          icon: const Icon(Icons.travel_explore),
-                          label: const Text('Find more (broader sample)'),
-                        ),
-                      ],
-                    ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: categories
-                          .map((category) => FilterChip(
-                                label: Text(category),
-                                selected: _filters.categories.contains(category),
-                                onSelected: (selected) {
-                                  setState(() {
-                                    final newCategories = Set<String>.from(_filters.categories);
-                                    if (selected) {
-                                      newCategories.add(category);
-                                    } else {
-                                      newCategories.remove(category);
-                                    }
-                                    _filters = _filters.copyWith(categories: newCategories);
-                                    _loadFirstPage();
-                                  });
-                                },
-                              ))
-                          .toList(),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                );
-              },
-            ),
-
-            // Grants filter
-            FutureBuilder<List<OptionItem>>(
-              future: _grantsFuture,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const SizedBox.shrink();
-                }
-
-                final grants = snap.data ?? <OptionItem>[];
-                if (grants.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Grants / Budgets', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: grants
-                          .map((grant) => FilterChip(
-                                label: Text(grant.name),
-                                selected: _filters.grantIds.contains(grant.id),
-                                onSelected: (selected) {
-                                  setState(() {
-                                    final newGrantIds = Set<String>.from(_filters.grantIds);
-                                    if (selected) {
-                                      newGrantIds.add(grant.id);
-                                    } else {
-                                      newGrantIds.remove(grant.id);
-                                    }
-                                    _filters = _filters.copyWith(grantIds: newGrantIds);
-                                    _loadFirstPage();
-                                  });
-                                },
-                              ))
-                          .toList(),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                );
-              },
-            ),
-
-            // Locations (if any are selected, show them)
-            if (_filters.locationIds.isNotEmpty) ...[
-              const Text('Locations', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: _filters.locationIds
-                    .map((locationId) => FilterChip(
-                          label: Text(locationId),
-                          selected: true,
-                          onSelected: (selected) {
-                            if (!selected) {
-                              setState(() {
-                                final newLocationIds = Set<String>.from(_filters.locationIds);
-                                newLocationIds.remove(locationId);
-                                _filters = _filters.copyWith(locationIds: newLocationIds);
-                                _loadFirstPage();
-                              });
-                            }
-                          },
-                        ))
-                    .toList(),
-              ),
-            ],
-
-            // Entered By (Operator) filter
-            FutureBuilder<List<String>>(
-              future: _operatorsFuture,
-              builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const SizedBox.shrink();
-                }
-
-                final operators = snap.data ?? <String>[];
-                if (operators.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Icon(Icons.person_outline, size: 18),
-                        const SizedBox(width: 6),
-                        const Text('Entered By', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                        const SizedBox(width: 8),
-                        if (_filters.operatorNames.isNotEmpty)
-                          TextButton(
-                            onPressed: () => setState(() {
-                              _filters = _filters.copyWith(operatorNames: {});
-                              _loadFirstPage();
-                            }),
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              minimumSize: Size.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                            child: const Text('Clear'),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: operators
-                          .map((operator) => FilterChip(
-                                avatar: CircleAvatar(
-                                  backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                                  child: Text(
-                                    operator.isNotEmpty ? operator[0].toUpperCase() : '?',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Theme.of(context).colorScheme.onPrimaryContainer,
-                                    ),
-                                  ),
-                                ),
-                                label: Text(operator),
-                                selected: _filters.operatorNames.contains(operator),
-                                onSelected: (selected) {
-                                  setState(() {
-                                    final newOperators = Set<String>.from(_filters.operatorNames);
-                                    if (selected) {
-                                      newOperators.add(operator);
-                                    } else {
-                                      newOperators.remove(operator);
-                                    }
-                                    _filters = _filters.copyWith(operatorNames: newOperators);
-                                    _loadFirstPage();
-                                  });
-                                },
-                              ))
-                          .toList(),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ],
+  /// Show filters in a scrollable bottom sheet
+  void _showFiltersBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.3,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (context, scrollController) => _FiltersBottomSheet(
+          filters: _filters,
+          categoriesFuture: _categoriesFuture,
+          operatorsFuture: _operatorsFuture,
+          grantsFuture: _grantsFuture,
+          scrollController: scrollController,
+          onFiltersChanged: (newFilters) {
+            setState(() {
+              _filters = newFilters;
+              _loadFirstPage();
+            });
+          },
+          onClearAll: () {
+            setState(() {
+              _filters = const SearchFilters();
+              _loadFirstPage();
+            });
+            Navigator.pop(context);
+          },
+          loadCategoriesBroad: () => _loadCategories(broad: true),
+          loadCategoriesPage: () => _loadCategories(),
         ),
       ),
     );
@@ -1841,6 +1569,381 @@ class _MergeItemsDialogState extends State<_MergeItemsDialog> {
           child: const Text('Continue'),
         ),
       ],
+    );
+  }
+}
+
+/// Bottom sheet widget for filters - more mobile-friendly
+class _FiltersBottomSheet extends StatefulWidget {
+  final SearchFilters filters;
+  final Future<List<String>>? categoriesFuture;
+  final Future<List<String>>? operatorsFuture;
+  final Future<List<OptionItem>>? grantsFuture;
+  final ScrollController scrollController;
+  final ValueChanged<SearchFilters> onFiltersChanged;
+  final VoidCallback onClearAll;
+  final Future<List<String>> Function() loadCategoriesBroad;
+  final Future<List<String>> Function() loadCategoriesPage;
+
+  const _FiltersBottomSheet({
+    required this.filters,
+    required this.categoriesFuture,
+    required this.operatorsFuture,
+    required this.grantsFuture,
+    required this.scrollController,
+    required this.onFiltersChanged,
+    required this.onClearAll,
+    required this.loadCategoriesBroad,
+    required this.loadCategoriesPage,
+  });
+
+  @override
+  State<_FiltersBottomSheet> createState() => _FiltersBottomSheetState();
+}
+
+class _FiltersBottomSheetState extends State<_FiltersBottomSheet> {
+  late SearchFilters _localFilters;
+  late Future<List<String>>? _categoriesFuture;
+  late Future<List<String>>? _operatorsFuture;
+  late Future<List<OptionItem>>? _grantsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _localFilters = widget.filters;
+    _categoriesFuture = widget.categoriesFuture;
+    _operatorsFuture = widget.operatorsFuture;
+    _grantsFuture = widget.grantsFuture;
+  }
+
+  void _updateFilter(SearchFilters newFilters) {
+    setState(() => _localFilters = newFilters);
+    widget.onFiltersChanged(newFilters);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // Handle bar
+        Container(
+          margin: const EdgeInsets.only(top: 8),
+          width: 40,
+          height: 4,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        // Header
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Row(
+            children: [
+              Text('Filters', style: Theme.of(context).textTheme.titleLarge),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  setState(() => _localFilters = const SearchFilters());
+                  widget.onClearAll();
+                },
+                child: const Text('Clear All'),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        // Scrollable content
+        Expanded(
+          child: ListView(
+            controller: widget.scrollController,
+            padding: const EdgeInsets.all(16),
+            children: [
+              // Quick Filters Section
+              _buildSectionHeader('Quick Filters'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _buildFilterChip('Low Stock', _localFilters.hasLowStock == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasLowStock: selected ? true : null));
+                  }),
+                  _buildFilterChip('Has Lots', _localFilters.hasLots == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasLots: selected ? true : null));
+                  }),
+                  _buildFilterChip('Has Barcode', _localFilters.hasBarcode == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasBarcode: selected ? true : null));
+                  }),
+                  _buildFilterChip('Has Min Qty', _localFilters.hasMinQty == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasMinQty: selected ? true : null));
+                  }),
+                  _buildFilterChip('Expiring Soon', _localFilters.hasExpiringSoon == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasExpiringSoon: selected ? true : null));
+                  }),
+                  _buildFilterChip('Stale', _localFilters.hasStale == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasStale: selected ? true : null));
+                  }),
+                  _buildFilterChip('Excess', _localFilters.hasExcess == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasExcess: selected ? true : null));
+                  }),
+                  _buildFilterChip('Expired', _localFilters.hasExpired == true, (selected) {
+                    _updateFilter(_localFilters.copyWith(hasExpired: selected ? true : null));
+                  }),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+
+              // Categories Section
+              _buildSectionHeader('Categories'),
+              const SizedBox(height: 8),
+              FutureBuilder<List<String>>(
+                future: _categoriesFuture,
+                builder: (context, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
+                    );
+                  }
+
+                  final categories = snap.data ?? <String>[];
+                  if (categories.isEmpty) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('No categories found.', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6))),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            TextButton.icon(
+                              onPressed: () => setState(() => _categoriesFuture = widget.loadCategoriesPage()),
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Reload'),
+                            ),
+                            TextButton.icon(
+                              onPressed: () => setState(() => _categoriesFuture = widget.loadCategoriesBroad()),
+                              icon: const Icon(Icons.travel_explore, size: 18),
+                              label: const Text('Find more'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    );
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: categories.map((category) => FilterChip(
+                          label: Text(category),
+                          selected: _localFilters.categories.contains(category),
+                          onSelected: (selected) {
+                            final newCategories = Set<String>.from(_localFilters.categories);
+                            if (selected) {
+                              newCategories.add(category);
+                            } else {
+                              newCategories.remove(category);
+                            }
+                            _updateFilter(_localFilters.copyWith(categories: newCategories));
+                          },
+                        )).toList(),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () => setState(() => _categoriesFuture = widget.loadCategoriesPage()),
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Reload'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => setState(() => _categoriesFuture = widget.loadCategoriesBroad()),
+                            icon: const Icon(Icons.travel_explore, size: 18),
+                            label: const Text('Find more'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 24),
+
+              // Grants Section
+              FutureBuilder<List<OptionItem>>(
+                future: _grantsFuture,
+                builder: (context, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final grants = snap.data ?? <OptionItem>[];
+                  if (grants.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSectionHeader('Grants / Budgets'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: grants.map((grant) => FilterChip(
+                          label: Text(grant.name),
+                          selected: _localFilters.grantIds.contains(grant.id),
+                          onSelected: (selected) {
+                            final newGrantIds = Set<String>.from(_localFilters.grantIds);
+                            if (selected) {
+                              newGrantIds.add(grant.id);
+                            } else {
+                              newGrantIds.remove(grant.id);
+                            }
+                            _updateFilter(_localFilters.copyWith(grantIds: newGrantIds));
+                          },
+                        )).toList(),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                  );
+                },
+              ),
+
+              // Locations Section (if any are selected)
+              if (_localFilters.locationIds.isNotEmpty) ...[
+                _buildSectionHeader('Locations'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _localFilters.locationIds.map((locationId) => FilterChip(
+                    label: Text(locationId),
+                    selected: true,
+                    onSelected: (selected) {
+                      if (!selected) {
+                        final newLocationIds = Set<String>.from(_localFilters.locationIds);
+                        newLocationIds.remove(locationId);
+                        _updateFilter(_localFilters.copyWith(locationIds: newLocationIds));
+                      }
+                    },
+                  )).toList(),
+                ),
+                const SizedBox(height: 24),
+              ],
+
+              // Entered By Section
+              FutureBuilder<List<String>>(
+                future: _operatorsFuture,
+                builder: (context, snap) {
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final operators = snap.data ?? <String>[];
+                  if (operators.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.person_outline, size: 18),
+                          const SizedBox(width: 6),
+                          const Text('Entered By', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                          if (_localFilters.operatorNames.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: () {
+                                _updateFilter(_localFilters.copyWith(operatorNames: {}));
+                              },
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              child: const Text('Clear'),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: operators.map((operator) => FilterChip(
+                          avatar: CircleAvatar(
+                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                            child: Text(
+                              operator.isNotEmpty ? operator[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                          ),
+                          label: Text(operator),
+                          selected: _localFilters.operatorNames.contains(operator),
+                          onSelected: (selected) {
+                            final newOperators = Set<String>.from(_localFilters.operatorNames);
+                            if (selected) {
+                              newOperators.add(operator);
+                            } else {
+                              newOperators.remove(operator);
+                            }
+                            _updateFilter(_localFilters.copyWith(operatorNames: newOperators));
+                          },
+                        )).toList(),
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 24),
+            ],
+          ),
+        ),
+        // Apply button
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Done'),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14));
+  }
+
+  Widget _buildFilterChip(String label, bool selected, ValueChanged<bool> onSelected) {
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: onSelected,
     );
   }
 }
