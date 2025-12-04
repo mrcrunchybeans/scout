@@ -103,10 +103,14 @@ if (-not $SkipGit) {
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  Created tag v$version" -ForegroundColor Green
             
-            # Create GitHub release using gh CLI (if available)
-            $ghAvailable = Get-Command gh -ErrorAction SilentlyContinue
-            if ($ghAvailable) {
-                gh release create "v$version" --title "v$version" --notes "$commitMessage" --latest
+            # Create GitHub release using gh CLI (check both PATH and default install location)
+            $ghPath = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+            if (-not $ghPath -and (Test-Path "C:\Program Files\GitHub CLI\gh.exe")) {
+                $ghPath = "C:\Program Files\GitHub CLI\gh.exe"
+            }
+            
+            if ($ghPath) {
+                & $ghPath release create "v$version" --title "v$version" --notes "$commitMessage" --latest
                 if ($LASTEXITCODE -eq 0) {
                     Write-Host "  Created GitHub release v$version" -ForegroundColor Green
                 } else {
