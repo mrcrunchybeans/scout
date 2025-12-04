@@ -6,7 +6,8 @@ param(
     [switch]$SkipGit = $false,
     [switch]$BumpMajor = $false,
     [switch]$BumpMinor = $false,
-    [switch]$NoIncrement = $false
+    [switch]$NoIncrement = $false,
+    [switch]$NoAI = $false
 )
 
 # Get current version from pubspec.yaml
@@ -52,6 +53,64 @@ if (-not $NoIncrement -and $version -ne $oldVersion) {
 }
 
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm"
+
+# Find gh CLI path
+$ghPath = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+if (-not $ghPath -and (Test-Path "C:\Program Files\GitHub CLI\gh.exe")) {
+    $ghPath = "C:\Program Files\GitHub CLI\gh.exe"
+}
+
+# Generate release notes using AI (based on changes since last tag)
+$releaseNotes = ""
+if (-not $NoAI -and $ghPath) {
+    Write-Host "Generating release notes with AI..." -ForegroundColor Cyan
+    
+    # Get the last tag
+    $lastTag = git describe --tags --abbrev=0 2>$null
+    
+    if ($lastTag) {
+        # Get commit messages since last tag
+        $commitLog = git log "$lastTag..HEAD" --pretty=format:"%s" 2>$null
+        
+        # Get file changes summary
+        $fileChanges = git diff --stat "$lastTag..HEAD" 2>$null
+        
+        if ($commitLog -or $fileChanges) {
+            $prompt = @"
+Generate concise release notes for version $version of a Flutter web app called Scout (inventory management for a non-profit).
+
+Recent commits:
+$commitLog
+
+Files changed:
+$fileChanges
+
+Format as markdown bullet points. Focus on user-facing changes. Be brief (3-6 bullet points max). Don't include technical details like file paths.
+"@
+            
+            try {
+                # Use gh copilot to generate release notes
+                $releaseNotes = $prompt | & $ghPath copilot explain --no-pager 2>$null
+                
+                if ($LASTEXITCODE -ne 0 -or -not $releaseNotes) {
+                    # Fallback: generate simple notes from commit messages
+                    $releaseNotes = "## What's Changed`n`n"
+                    $commitLog -split "`n" | Where-Object { $_ -and $_ -notmatch "^(Merge|Deploy v)" } | Select-Object -First 10 | ForEach-Object {
+                        $releaseNotes += "- $_`n"
+                    }
+                }
+            } catch {
+                Write-Host "  AI generation failed, using commit log" -ForegroundColor Yellow
+                $releaseNotes = ""
+            }
+        }
+    }
+}
+
+# Fallback commit message and release notes
+if (-not $releaseNotes) {
+    $releaseNotes = "Release v$version - $timestamp"
+}
 $commitMessage = if ($Message) { $Message } else { "Deploy v$version - $timestamp" }
 
 Write-Host ""
@@ -103,14 +162,9 @@ if (-not $SkipGit) {
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  Created tag v$version" -ForegroundColor Green
             
-            # Create GitHub release using gh CLI (check both PATH and default install location)
-            $ghPath = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-            if (-not $ghPath -and (Test-Path "C:\Program Files\GitHub CLI\gh.exe")) {
-                $ghPath = "C:\Program Files\GitHub CLI\gh.exe"
-            }
-            
             if ($ghPath) {
-                & $ghPath release create "v$version" --title "v$version" --notes "$commitMessage" --latest
+                # Create release with AI-generated or fallback notes
+                & $ghPath release create "v$version" --title "v$version" --notes "$releaseNotes" --latest
                 if ($LASTEXITCODE -eq 0) {
                     Write-Host "  Created GitHub release v$version" -ForegroundColor Green
                 } else {
