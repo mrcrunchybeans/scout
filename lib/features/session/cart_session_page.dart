@@ -287,45 +287,103 @@ class _CartSessionPageState extends State<CartSessionPage> {
         if (q.docs.isNotEmpty) d = q.docs.first;
       }
 
-      if (d == null) {
-        // unknown barcode -> try auto-create with enrichment
-        final itemId = await ProductEnrichmentService.createItemWithEnrichment(code, _db);
-        if (itemId != null) {
-          final itemSnap = await _db.collection('items').doc(itemId).get();
+      if (d != null) {
+        final data = d.data();
+        final isArchived = data['archived'] == true;
+        
+        // If item is archived, offer to reactivate it
+        if (isArchived) {
           if (!ctx.mounted) return;
-          final data = itemSnap.data()!;
-          final name = (data['name'] ?? 'Unnamed') as String;
-          final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
-          _addOrBumpLine(
-            itemId: itemId,
-            itemName: name,
-            baseUnit: baseUnit,
+          final shouldReactivate = await showDialog<bool>(
+            context: ctx,
+            builder: (dialogCtx) => AlertDialog(
+              title: const Text('Reactivate Item?'),
+              content: Text(
+                'The item "${data['name'] ?? 'Unnamed'}" was previously archived. '
+                'Would you like to reactivate it to preserve its usage history?'
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogCtx, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogCtx, true),
+                  child: const Text('Reactivate'),
+                ),
+              ],
+            ),
           );
-          if (!ctx.mounted) return;
-          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Created and added: $name')));
-          _refocusQuickAdd();
-          return;
-        } else {
-          // fallback to offer attach
-          SoundFeedback.error();
-          if (!ctx.mounted) return;
-          await _offerAttachBarcode(code);
-          _refocusQuickAdd();
-          return;
+          
+          if (shouldReactivate == true) {
+            // Unarchive the item
+            await _db.collection('items').doc(d.id).update({
+              'archived': false,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+            
+            // Log the reactivation
+            await _db.collection('audit_logs').add({
+              'type': 'item.unarchive',
+              'data': {
+                'itemId': d.id,
+                'name': data['name'],
+                'reason': 'barcode_scan_reactivation',
+              },
+              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+              'createdBy': FirebaseAuth.instance.currentUser?.uid,
+              'createdAt': FieldValue.serverTimestamp(),
+            });
+            
+            if (!ctx.mounted) return;
+            ScaffoldMessenger.of(ctx).showSnackBar(
+              SnackBar(content: Text('Reactivated: ${data['name']}')),
+            );
+          } else {
+            _refocusQuickAdd();
+            return;
+          }
         }
+        
+        final name = (data['name'] ?? 'Unnamed') as String;
+        final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+
+        // FEFO lot (prefer first with qtyRemaining > 0)
+        final lotId = await _fefoLotIdForItem(d.id);
+
+        _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
+        if (!ctx.mounted) return;
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
+        _refocusQuickAdd();
+        return;
       }
 
-      final data = d.data();
-      final name = (data['name'] ?? 'Unnamed') as String;
-      final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
-
-      // FEFO lot (prefer first with qtyRemaining > 0)
-      final lotId = await _fefoLotIdForItem(d.id);
-
-      _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-      if (!ctx.mounted) return;
-      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
-      _refocusQuickAdd();
+      // d == null: unknown barcode -> try auto-create with enrichment
+      final itemId = await ProductEnrichmentService.createItemWithEnrichment(code, _db);
+      if (itemId != null) {
+        final itemSnap = await _db.collection('items').doc(itemId).get();
+        if (!ctx.mounted) return;
+        final data = itemSnap.data()!;
+        final name = (data['name'] ?? 'Unnamed') as String;
+        final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
+        _addOrBumpLine(
+          itemId: itemId,
+          itemName: name,
+          baseUnit: baseUnit,
+        );
+        if (!ctx.mounted) return;
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Created and added: $name')));
+        _refocusQuickAdd();
+        return;
+      } else {
+        // fallback to offer attach
+        SoundFeedback.error();
+        if (!ctx.mounted) return;
+        await _offerAttachBarcode(code);
+        _refocusQuickAdd();
+        return;
+      }
     } catch (e) {
       if (!ctx.mounted) return;
       SoundFeedback.error();
@@ -962,6 +1020,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       // Build single large batch with all operations
       final batch = _db.batch();
       var operationCount = 0;
+      final List<Map<String, dynamic>> lotsToArchive = [];
 
       // Process each line with pre-loaded data
       for (final line in _lines) {
@@ -1005,6 +1064,15 @@ class _CartSessionPageState extends State<CartSessionPage> {
             };
             if (lotData['openAt'] == null) {
               lotUpdateData['openAt'] = Timestamp.fromDate(now);
+            }
+            // Auto-archive lot when it hits 0 remaining
+            if (newLotRem == 0) {
+              lotUpdateData['archived'] = true;
+              lotsToArchive.add({
+                'itemId': line.itemId,
+                'lotId': line.lotId,
+                'lotCode': lotData['lotCode'] ?? line.lotId,
+              });
             }
             batch.update(lotRef, lotUpdateData);
             operationCount++;
@@ -1134,12 +1202,31 @@ class _CartSessionPageState extends State<CartSessionPage> {
             'interventionId': _interventionId,
             'numLines': _lines.length,
             'totalQtyUsed': totalQtyUsed,
+            'lotsArchived': lotsToArchive.length,
           },
           'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
                         FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
           'createdBy': FirebaseAuth.instance.currentUser?.uid,
           'createdAt': now,
         });
+        
+        // Log individual lot archive events
+        for (final lot in lotsToArchive) {
+          await _db.collection('audit_logs').add({
+            'type': 'lot.archive',
+            'data': {
+              'itemId': lot['itemId'],
+              'lotId': lot['lotId'],
+              'lotCode': lot['lotCode'],
+              'reason': 'cart_session_depleted',
+              'sessionId': _sessionId,
+            },
+            'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
+                          FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+            'createdBy': FirebaseAuth.instance.currentUser?.uid,
+            'createdAt': now,
+          });
+        }
       } catch (auditError) {
         debugPrint('CartSessionPage: Warning - audit log failed: $auditError');
         // Continue even if audit fails
@@ -1148,7 +1235,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
       final ctx = context;
       if (!ctx.mounted) return;
       SoundFeedback.ok();
-      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Session closed')));
+      
+      // Show message with archived lots count if any
+      final archivedCount = lotsToArchive.length;
+      final message = archivedCount > 0 
+          ? 'Session closed. $archivedCount lot${archivedCount == 1 ? '' : 's'} auto-archived (depleted).'
+          : 'Session closed';
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(message)));
       Navigator.of(ctx).pop(true);
     } catch (e, stackTrace) {
       final ctx = context;

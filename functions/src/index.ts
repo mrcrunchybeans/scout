@@ -220,6 +220,7 @@ async function recomputeItemAggregates(itemId: string) {
     // Sum remaining from lots & compute earliest expiry
     let qtyOnHand = Number(item.qtyOnHand || 0); // Preserve current qtyOnHand
     let earliest: Date | null = null;
+    let hasActiveLots = false; // Track if there are any non-archived lots
 
     console.error(`Item ${itemId}: has ${lotsSnap.size} lots, current qtyOnHand: ${qtyOnHand}, minQty: ${minQty}`);
 
@@ -234,6 +235,7 @@ async function recomputeItemAggregates(itemId: string) {
           return;
         }
 
+        hasActiveLots = true;
         const rem = Number(lot.qtyRemaining || 0);
         qtyOnHand += rem;
 
@@ -245,14 +247,15 @@ async function recomputeItemAggregates(itemId: string) {
           }
         }
       });
-      console.error(`Item ${itemId}: recalculated qtyOnHand from lots: ${qtyOnHand}`);
+      console.error(`Item ${itemId}: recalculated qtyOnHand from lots: ${qtyOnHand}, hasActiveLots: ${hasActiveLots}`);
     } else {
       console.error(`Item ${itemId}: preserving qtyOnHand: ${qtyOnHand}`);
     }
 
     // Flags
     const now = new Date();
-    const flagLow = minQty > 0 && qtyOnHand <= minQty;
+    // Don't flag as low if item has lots but all are archived (depleted inventory)
+    const flagLow = minQty > 0 && qtyOnHand <= minQty && (lotsSnap.empty || hasActiveLots);
     const flagExcess = minQty > 0 && qtyOnHand >= EXCESS_FACTOR * minQty;
     const flagStale = daysSince(lastUsedAt, now) >= STALE_DAYS;
     const flagExpiringSoon = isExpiringSoon(earliest, now);

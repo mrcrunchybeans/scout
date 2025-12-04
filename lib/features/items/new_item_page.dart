@@ -362,6 +362,77 @@ class _NewItemPageState extends State<NewItemPage> {
           .where((barcode) => barcode.isNotEmpty)
           .toList();
       
+      // For new items, check if any barcode matches an archived item
+      if (widget.itemId == null && barcodes.isNotEmpty) {
+        for (final barcode in barcodes) {
+          // Check for archived item with this barcode
+          var q = await _db.collection('items')
+              .where('barcode', isEqualTo: barcode)
+              .where('archived', isEqualTo: true)
+              .limit(1)
+              .get();
+          if (q.docs.isEmpty) {
+            q = await _db.collection('items')
+                .where('barcodes', arrayContains: barcode)
+                .where('archived', isEqualTo: true)
+                .limit(1)
+                .get();
+          }
+          
+          if (q.docs.isNotEmpty) {
+            final archivedItem = q.docs.first;
+            final archivedData = archivedItem.data();
+            
+            if (!rootCtx.mounted) return;
+            final shouldReactivate = await showDialog<bool>(
+              context: rootCtx,
+              builder: (dialogCtx) => AlertDialog(
+                title: const Text('Reactivate Existing Item?'),
+                content: Text(
+                  'An archived item "${archivedData['name'] ?? 'Unnamed'}" already has this barcode. '
+                  'Would you like to reactivate it instead of creating a new item?\n\n'
+                  'This will preserve its usage history and analytics.'
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogCtx, false),
+                    child: const Text('Create New'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(dialogCtx, true),
+                    child: const Text('Reactivate'),
+                  ),
+                ],
+              ),
+            );
+            
+            if (shouldReactivate == true) {
+              // Unarchive the existing item
+              await _db.collection('items').doc(archivedItem.id).update({
+                'archived': false,
+                'updatedAt': FieldValue.serverTimestamp(),
+              });
+              
+              await Audit.log('item.unarchive', {
+                'itemId': archivedItem.id,
+                'name': archivedData['name'],
+                'reason': 'barcode_match_reactivation',
+              });
+              
+              if (rootCtx.mounted) {
+                ScaffoldMessenger.of(rootCtx).showSnackBar(
+                  SnackBar(content: Text('Reactivated: ${archivedData['name']}')),
+                );
+                Navigator.pop(rootCtx, true);
+              }
+              return;
+            }
+            // User chose to create new, break out and continue with save
+            break;
+          }
+        }
+      }
+      
       final qtyOnHand = num.tryParse(_qtyOnHand.text.trim()) ?? 0;
       
       final itemData = Audit.attach({
