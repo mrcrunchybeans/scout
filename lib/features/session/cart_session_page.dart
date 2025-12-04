@@ -1066,13 +1066,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
               lotUpdateData['openAt'] = Timestamp.fromDate(now);
             }
             // Auto-archive lot when it hits 0 remaining
-            if (newLotRem == 0) {
+            if (newLotRem <= 0) {
               lotUpdateData['archived'] = true;
               lotsToArchive.add({
                 'itemId': line.itemId,
                 'lotId': line.lotId,
                 'lotCode': lotData['lotCode'] ?? line.lotId,
               });
+              debugPrint('CartSessionPage: Lot ${line.lotId} will be auto-archived (newLotRem=$newLotRem)');
             }
             batch.update(lotRef, lotUpdateData);
             operationCount++;
