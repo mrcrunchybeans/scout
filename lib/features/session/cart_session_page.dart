@@ -74,7 +74,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
   /// Falls back to email, then "System" for automated operations.
   String get _operatorName {
     final user = FirebaseAuth.instance.currentUser;
-    return user?.displayName ?? user?.email ?? 'System';
+    if (user == null) return 'System';
+    // Check displayName first (handle empty string as null)
+    final name = user.displayName;
+    if (name != null && name.isNotEmpty) return name;
+    // Fall back to email
+    final email = user.email;
+    if (email != null && email.isNotEmpty) return email;
+    return 'System';
   }
 
   @override
