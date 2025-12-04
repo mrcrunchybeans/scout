@@ -70,6 +70,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
   bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
   bool get _isClosed => _status == 'closed';
 
+  /// Get the current user's display name for audit logs.
+  /// Falls back to email, then "System" for automated operations.
+  String get _operatorName {
+    final user = FirebaseAuth.instance.currentUser;
+    return user?.displayName ?? user?.email ?? 'System';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -330,8 +337,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 'name': data['name'],
                 'reason': 'barcode_scan_reactivation',
               },
-              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+              'operatorName': _operatorName,
               'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': FieldValue.serverTimestamp(),
             });
@@ -635,14 +641,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 onTap: () async {
                   final data = d.data();
                   final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
-              final now = DateTime.now();
-                  final user = FirebaseAuth.instance.currentUser;
+                  final now = DateTime.now();
                   
                   await d.reference.set(
                     {
                       'barcodes': FieldValue.arrayUnion([code]),
                       if (!hasSingle) 'barcode': code,
-                      'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+                      'operatorName': _operatorName,
                       'updatedAt': now,
                     },
                     SetOptions(merge: true),
@@ -654,8 +659,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       'itemId': d.id,
                       'barcode': code,
                     },
-                    'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
-                    'createdBy': user?.uid,
+                    'operatorName': _operatorName,
+                    'createdBy': FirebaseAuth.instance.currentUser?.uid,
                     'createdAt': now,
                   });
                   if (sheetCtx.mounted) Navigator.pop(sheetCtx);
@@ -705,14 +710,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
       final payload = isNew 
           ? {
               ...basePayload,
-              'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+              'operatorName': _operatorName,
               'createdBy': user?.uid,
               'createdAt': Timestamp.fromDate(now),
               'updatedAt': Timestamp.fromDate(now),
             }
           : {
               ...basePayload,
-              'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+              'operatorName': _operatorName,
               'updatedAt': Timestamp.fromDate(now),
             };
 
@@ -730,7 +735,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         // Manual audit fields for line data
         final linePayload = {
           ...line.toMap(),
-          'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+          'operatorName': _operatorName,
           'createdBy': user?.uid,
           'createdAt': Timestamp.fromDate(now),
           'updatedAt': Timestamp.fromDate(now),
@@ -760,7 +765,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
           'numLines': _lines.length,
           if (deletedLineIds.isNotEmpty) 'deletedLines': deletedLineIds.length,
         },
-        'operatorName': user?.displayName ?? user?.email ?? 'Unknown',
+        'operatorName': _operatorName,
         'createdBy': user?.uid,
         'createdAt': Timestamp.fromDate(now),
       });
@@ -1100,8 +1105,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
-              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+              'operatorName': _operatorName,
               'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': Timestamp.fromDate(now),
             });
@@ -1142,8 +1146,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'grantId': _defaultGrantId,
               'notes': _notes.trim().isEmpty ? null : _notes.trim(),
               'isReversal': false,
-              'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                            FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+              'operatorName': _operatorName,
               'createdBy': FirebaseAuth.instance.currentUser?.uid,
               'createdAt': Timestamp.fromDate(now),
             });
@@ -1181,8 +1184,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
           'status': 'closed',
           'closedAt': now,
           'closedBy': FirebaseAuth.instance.currentUser?.uid,
-          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'operatorName': _operatorName,
           'updatedAt': now,
         },
         SetOptions(merge: true),
@@ -1205,8 +1207,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
             'totalQtyUsed': totalQtyUsed,
             'lotsArchived': lotsToArchive.length,
           },
-          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'operatorName': _operatorName,
           'createdBy': FirebaseAuth.instance.currentUser?.uid,
           'createdAt': now,
         });
@@ -1222,8 +1223,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
               'reason': 'cart_session_depleted',
               'sessionId': _sessionId,
             },
-            'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                          FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+            'operatorName': _operatorName,
             'createdBy': FirebaseAuth.instance.currentUser?.uid,
             'createdAt': now,
           });
@@ -1403,8 +1403,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
             'sessionId': _sessionId,
             'numUsageLogsReversed': usageLogsQuery.docs.length,
           },
-          'operatorName': FirebaseAuth.instance.currentUser?.displayName ?? 
-                        FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
+          'operatorName': _operatorName,
           'createdBy': FirebaseAuth.instance.currentUser?.uid,
           'createdAt': now,
         });
