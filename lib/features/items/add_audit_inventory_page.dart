@@ -1316,6 +1316,10 @@ class _AuditOptionsState extends State<_AuditOptions> {
   }
 
   Future<void> _addNewLot() async {
+    // Fetch item data for defaults
+    final itemDoc = await _db.collection('items').doc(widget.itemId).get();
+    final itemData = itemDoc.data() ?? {};
+    
     final suggestedLotCode = await generateNextLotCode(itemId: widget.itemId);
     final cQtyInit = TextEditingController();
     final cQtyRemain = TextEditingController();
@@ -1324,7 +1328,21 @@ class _AuditOptionsState extends State<_AuditOptions> {
     DateTime? expiresAt;
     int? expiresAfterOpenDays;
     String baseUnit = widget.baseUnit;
+    
+    // Default grant and location from item
+    String? selectedGrantId = itemData['grantId'] as String?;
+    String? storageLocation = itemData['homeLocationId'] as String?;
 
+    if (!mounted) return;
+    
+    // Load grants for dropdown
+    final grantsSnap = await _db.collection('grants').orderBy('name').get();
+    final grants = grantsSnap.docs;
+    
+    // Load locations for dropdown
+    final locationsSnap = await _db.collection('lookups').doc('locations').get();
+    final locationsList = (locationsSnap.data()?['values'] as List<dynamic>?)?.cast<String>() ?? [];
+    
     if (!mounted) return;
 
     await showModalBottomSheet(
@@ -1429,6 +1447,34 @@ class _AuditOptionsState extends State<_AuditOptions> {
                     ),
                     onChanged: (s) => expiresAfterOpenDays = int.tryParse(s),
                   ),
+                  const SizedBox(height: 8),
+                  // Grant dropdown
+                  DropdownButtonFormField<String>(
+                    value: selectedGrantId,
+                    decoration: const InputDecoration(labelText: 'Grant (optional)'),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('No grant')),
+                      ...grants.map((g) => DropdownMenuItem(
+                        value: g.id,
+                        child: Text(g.data()['name'] ?? g.id),
+                      )),
+                    ],
+                    onChanged: (v) => bottomSheetSetState(() => selectedGrantId = v),
+                  ),
+                  const SizedBox(height: 8),
+                  // Storage location dropdown
+                  DropdownButtonFormField<String>(
+                    value: storageLocation,
+                    decoration: const InputDecoration(labelText: 'Storage location (optional)'),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('No location')),
+                      ...locationsList.map((loc) => DropdownMenuItem(
+                        value: loc,
+                        child: Text(loc),
+                      )),
+                    ],
+                    onChanged: (v) => bottomSheetSetState(() => storageLocation = v),
+                  ),
                   const SizedBox(height: 12),
                   FilledButton.icon(
                     icon: const Icon(Icons.save),
@@ -1462,6 +1508,8 @@ class _AuditOptionsState extends State<_AuditOptions> {
                           'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                           'openAt': null,
                           'expiresAfterOpenDays': expiresAfterOpenDays,
+                          'grantId': selectedGrantId,
+                          'storageLocation': storageLocation,
                         }),
                       );
                       
@@ -1471,6 +1519,8 @@ class _AuditOptionsState extends State<_AuditOptions> {
                         'lotId': ref.id,
                         'qtyInitial': qi,
                         'qtyRemaining': qr,
+                        'grantId': selectedGrantId,
+                        'storageLocation': storageLocation,
                       });
                       
                       // Update total item quantity

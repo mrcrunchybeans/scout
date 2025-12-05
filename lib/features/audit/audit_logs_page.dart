@@ -3,6 +3,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:scout/utils/operator_store.dart';
 
 /// All known audit log types for filtering
 class AuditLogTypes {
@@ -270,6 +271,7 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
       // Log the undo action
       await db.collection('audit_logs').add({
         'type': 'action.undo',
+        'operatorName': OperatorStore.name.value ?? 'System',
         'data': {
           'originalAuditLogId': docId,
           'originalType': type,

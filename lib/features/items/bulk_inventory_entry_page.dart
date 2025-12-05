@@ -732,6 +732,9 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
               'openAt': null,
               'createdAt': FieldValue.serverTimestamp(),
               'updatedAt': FieldValue.serverTimestamp(),
+              // Copy grant and location from new item data
+              'grantId': newItemData['grantId'],
+              'storageLocation': newItemData['homeLocationId'],
             });
 
             _createdBatchCodes.add(lot.batchCode!);
@@ -749,6 +752,10 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         } else {
           // Add to existing item
           final totalQuantity = product.lots.fold(0.0, (total, lot) => total + lot.quantity);
+
+          // Fetch existing item data for grant/location defaults
+          final existingItemDoc = await _db.collection('items').doc(product.itemId).get();
+          final existingItemData = existingItemDoc.data() ?? {};
 
           // Update total item quantity
           await _db.collection('items').doc(product.itemId).update({
@@ -771,6 +778,9 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
               'openAt': null,
               'createdAt': FieldValue.serverTimestamp(),
               'updatedAt': FieldValue.serverTimestamp(),
+              // Copy grant and location from existing item
+              'grantId': existingItemData['grantId'],
+              'storageLocation': existingItemData['homeLocationId'],
             });
 
             _createdBatchCodes.add(lot.batchCode!);

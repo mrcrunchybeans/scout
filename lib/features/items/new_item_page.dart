@@ -498,6 +498,9 @@ class _NewItemPageState extends State<NewItemPage> {
             'openAt': null,
             'createdAt': FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
+            // Copy grant and location from item
+            'grantId': _grant?.id,
+            'storageLocation': _homeLoc?.id,
           });
         }
 

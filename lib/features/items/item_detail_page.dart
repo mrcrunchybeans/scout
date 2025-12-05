@@ -1177,6 +1177,7 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
 
   final itemDoc = await db.collection('items').doc(itemId).get();
   if (!itemDoc.exists || !context.mounted) return;
+  final itemData = itemDoc.data() ?? {};
   final suggestedLotCode = await generateNextLotCode(itemId: itemId);
 
   final cQtyInit = TextEditingController();
@@ -1186,6 +1187,20 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
   DateTime? expiresAt;
   int? expiresAfterOpenDays;
   String baseUnit = 'each';
+  
+  // Default grant and location from item
+  String? selectedGrantId = itemData['grantId'] as String?;
+  String? storageLocation = itemData['homeLocationId'] as String?;
+
+  if (!context.mounted) return;
+  
+  // Load grants for dropdown
+  final grantsSnap = await db.collection('grants').orderBy('name').get();
+  final grants = grantsSnap.docs;
+  
+  // Load locations for dropdown
+  final locationsSnap = await db.collection('lookups').doc('locations').get();
+  final locationsList = (locationsSnap.data()?['values'] as List<dynamic>?)?.cast<String>() ?? [];
 
   if (!context.mounted) return;
 
@@ -1283,6 +1298,34 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                   ),
                   onChanged: (s) => expiresAfterOpenDays = int.tryParse(s),
                 ),
+                const SizedBox(height: 8),
+                // Grant dropdown
+                DropdownButtonFormField<String>(
+                  value: selectedGrantId,
+                  decoration: const InputDecoration(labelText: 'Grant (optional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('No grant')),
+                    ...grants.map((g) => DropdownMenuItem(
+                      value: g.id,
+                      child: Text(g.data()['name'] ?? g.id),
+                    )),
+                  ],
+                  onChanged: (v) => bottomSheetSetState(() => selectedGrantId = v),
+                ),
+                const SizedBox(height: 8),
+                // Storage location dropdown
+                DropdownButtonFormField<String>(
+                  value: storageLocation,
+                  decoration: const InputDecoration(labelText: 'Storage location (optional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('No location')),
+                    ...locationsList.map((loc) => DropdownMenuItem(
+                      value: loc,
+                      child: Text(loc),
+                    )),
+                  ],
+                  onChanged: (v) => bottomSheetSetState(() => storageLocation = v),
+                ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
                   icon: const Icon(Icons.save),
@@ -1303,6 +1346,8 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                         'expiresAt':  expiresAt  != null ? Timestamp.fromDate(expiresAt!)  : null,
                         'openAt': null,
                         'expiresAfterOpenDays': expiresAfterOpenDays,
+                        'grantId': selectedGrantId,
+                        'storageLocation': storageLocation,
                       }),
                     );
                     await Audit.log('lot.create', {
@@ -1310,6 +1355,8 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                       'lotId': ref.id,
                       'qtyInitial': qi,
                       'qtyRemaining': qr,
+                      'grantId': selectedGrantId,
+                      'storageLocation': storageLocation,
                     });
                     if (bottomSheetContext.mounted) {
                       Navigator.pop(bottomSheetContext);
@@ -1334,6 +1381,18 @@ Future<void> _showEditLotSheet(
   DateTime? expiresAt = (d['expiresAt'] is Timestamp) ? (d['expiresAt'] as Timestamp).toDate() : null;
   DateTime? openAt     = (d['openAt']   is Timestamp) ? (d['openAt']   as Timestamp).toDate() : null;
   int? afterOpenDays   = d['expiresAfterOpenDays'] as int?;
+  String? selectedGrantId = d['grantId'] as String?;
+  String? storageLocation = d['storageLocation'] as String?;
+  
+  // Load grants for dropdown
+  final grantsSnap = await db.collection('grants').orderBy('name').get();
+  final grants = grantsSnap.docs;
+  
+  // Load locations for dropdown
+  final locationsSnap = await db.collection('lookups').doc('locations').get();
+  final locationsList = (locationsSnap.data()?['values'] as List<dynamic>?)?.cast<String>() ?? [];
+  
+  if (!context.mounted) return;
   
   await showModalBottomSheet(
     context: context,
@@ -1397,6 +1456,34 @@ Future<void> _showEditLotSheet(
                   controller: TextEditingController(text: afterOpenDays?.toString() ?? ''),
                   onChanged: (s) => afterOpenDays = int.tryParse(s),
                 ),
+                const SizedBox(height: 8),
+                // Grant dropdown
+                DropdownButtonFormField<String>(
+                  value: selectedGrantId,
+                  decoration: const InputDecoration(labelText: 'Grant (optional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('No grant')),
+                    ...grants.map((g) => DropdownMenuItem(
+                      value: g.id,
+                      child: Text(g.data()['name'] ?? g.id),
+                    )),
+                  ],
+                  onChanged: (v) => bottomSheetSetState(() => selectedGrantId = v),
+                ),
+                const SizedBox(height: 8),
+                // Storage location dropdown
+                DropdownButtonFormField<String>(
+                  value: storageLocation,
+                  decoration: const InputDecoration(labelText: 'Storage location (optional)'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('No location')),
+                    ...locationsList.map((loc) => DropdownMenuItem(
+                      value: loc,
+                      child: Text(loc),
+                    )),
+                  ],
+                  onChanged: (v) => bottomSheetSetState(() => storageLocation = v),
+                ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
                   icon: const Icon(Icons.save),
@@ -1408,6 +1495,8 @@ Future<void> _showEditLotSheet(
                         'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                         'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                         'expiresAfterOpenDays': afterOpenDays,
+                        'grantId': selectedGrantId,
+                        'storageLocation': storageLocation,
                       }),
                       SetOptions(merge: true),
                     );
@@ -1417,6 +1506,8 @@ Future<void> _showEditLotSheet(
                       'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                       'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                       'expiresAfterOpenDays': afterOpenDays,
+                      'grantId': selectedGrantId,
+                      'storageLocation': storageLocation,
                     });
                     if (bottomSheetContext.mounted) {
                       Navigator.pop(bottomSheetContext);

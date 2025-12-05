@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:scout/utils/operator_store.dart';
 
 /// Admin tool to analyze and clean up item data:
 /// - Find potential duplicate items
@@ -545,6 +546,7 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
       // 6. Log the merge operation with backup data for undo
       await _db.collection('audit_logs').add({
         'type': 'item.merge',
+        'operatorName': OperatorStore.name.value ?? 'System',
         'data': {
           'primaryItemId': primaryId,
           'primaryItemName': primaryItem!['name'],

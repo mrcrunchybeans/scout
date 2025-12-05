@@ -660,16 +660,34 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final operatorTotals = <String, double>{};
     final operatorTransactions = <String, int>{};
     for (final doc in _usageLogs) {
-      final operator = _getField(doc, 'operatorName') as String? ?? '(Unknown)';
+      final rawOp = _getField(doc, 'operatorName');
+      final operator = (rawOp as String?)?.trim();
+      final displayName = (operator == null || operator.isEmpty) ? '(Unknown)' : operator;
       final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
-      operatorTotals[operator] = (operatorTotals[operator] ?? 0) + qty;
-      operatorTransactions[operator] = (operatorTransactions[operator] ?? 0) + 1;
+      operatorTotals[displayName] = (operatorTotals[displayName] ?? 0) + qty;
+      operatorTransactions[displayName] = (operatorTransactions[displayName] ?? 0) + 1;
     }
     
     final sorted = operatorTotals.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
     final totalQty = operatorTotals.values.fold<double>(0, (s, v) => s + v);
+
+    if (sorted.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.people_outline, size: 64, color: Colors.grey),
+              SizedBox(height: 16),
+              Text('No usage data in this period', style: TextStyle(fontSize: 16, color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
 
     return ListView.builder(
       padding: const EdgeInsets.all(16),
@@ -687,8 +705,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('${sorted.length} team members', style: Theme.of(context).textTheme.titleLarge),
-                      Text('${_usageLogs.length} total transactions', style: Theme.of(context).textTheme.bodyMedium),
+                      Text('${sorted.length} team member${sorted.length == 1 ? '' : 's'}', style: Theme.of(context).textTheme.titleLarge),
+                      Text('${_usageLogs.length} total transaction${_usageLogs.length == 1 ? '' : 's'}', style: Theme.of(context).textTheme.bodyMedium),
                     ],
                   ),
                 ],
@@ -729,11 +747,24 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Widget _buildMyActivityTab() {
     final currentOperator = OperatorStore.name.value ?? '';
     
-    // Filter to current user's activity
+    debugPrint('MyActivity: currentOperator = "$currentOperator"');
+    debugPrint('MyActivity: total usage logs = ${_usageLogs.length}');
+    
+    // Show all unique operators for debugging
+    final allOperators = <String>{};
+    for (final doc in _usageLogs) {
+      final op = _getField(doc, 'operatorName');
+      if (op != null) allOperators.add(op.toString());
+    }
+    debugPrint('MyActivity: all operators in logs = $allOperators');
+    
+    // Filter to current user's activity (case-insensitive, trimmed)
     final myLogs = _usageLogs.where((doc) {
-      final op = _getField(doc, 'operatorName') as String? ?? '';
-      return op.toLowerCase() == currentOperator.toLowerCase();
+      final op = (_getField(doc, 'operatorName') as String? ?? '').trim();
+      return op.toLowerCase() == currentOperator.trim().toLowerCase();
     }).toList();
+    
+    debugPrint('MyActivity: matched logs = ${myLogs.length}');
 
     final totalQty = myLogs.fold<double>(0, (sum, doc) => sum + ((_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0));
     final uniqueItems = myLogs.map((d) => _getField(d, 'itemId')).toSet().length;
@@ -748,6 +779,37 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             Text('No operator name set'),
             Text('Set your name to see your activity'),
           ],
+        ),
+      );
+    }
+
+    // If no activity found, show helpful message
+    if (myLogs.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.search_off, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              Text('No activity found for "$currentOperator"'),
+              const SizedBox(height: 8),
+              Text(
+                'Make sure your name matches exactly how it appears when logging usage.',
+                style: TextStyle(color: Theme.of(context).colorScheme.outline),
+                textAlign: TextAlign.center,
+              ),
+              if (allOperators.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Names in system: ${allOperators.take(5).join(", ")}${allOperators.length > 5 ? "..." : ""}',
+                  style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }

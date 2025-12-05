@@ -21,6 +21,7 @@ import 'package:scout/features/admin/data_cleanup_page.dart';
 import 'package:scout/features/library/library_management_page.dart';
 import 'package:scout/services/search_service.dart';
 import 'package:scout/utils/admin_pin.dart';
+import 'package:scout/utils/operator_store.dart';
 
 class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
@@ -978,6 +979,7 @@ class _AdminPageState extends State<AdminPage> {
       // Log the restore
       await db.collection('audit_logs').add({
         'type': 'item.restore',
+        'operatorName': OperatorStore.name.value ?? 'System',
         'data': {
           'itemId': itemId,
           'name': itemData['name'],
