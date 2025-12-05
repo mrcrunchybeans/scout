@@ -15,6 +15,7 @@ import 'package:scout/features/admin/label_designer_page.dart';
 import 'package:scout/features/admin/recalculate_lot_codes_page.dart';
 import 'package:scout/features/admin/diagnose_lot_codes_page.dart';
 import 'package:scout/features/admin/merge_operators_page.dart';
+import 'package:scout/features/admin/data_cleanup_page.dart';
 import 'package:scout/features/library/library_management_page.dart';
 import 'package:scout/services/search_service.dart';
 import 'package:scout/utils/admin_pin.dart';
@@ -577,6 +578,18 @@ class _AdminPageState extends State<AdminPage> {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const MergeOperatorsPage()),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.cleaning_services),
+                      title: const Text('Data Cleanup'),
+                      subtitle: const Text('Find duplicates, fix categories & item names'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const DataCleanupPage()),
                         );
                       },
                     ),
