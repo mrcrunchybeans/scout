@@ -34,6 +34,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Map<String, String> _operatorNames = {};
   bool _loading = true;
 
+  // Helper to safely get field from document
+  dynamic _getField(QueryDocumentSnapshot doc, String field) {
+    try {
+      final data = doc.data() as Map<String, dynamic>?;
+      return data?[field];
+    } catch (e) {
+      return null;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -130,7 +140,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     
     // Extract unique operator names from usage logs
     for (final doc in _usageLogs) {
-      final op = doc['operatorName'] as String?;
+      final op = _getField(doc, 'operatorName') as String?;
       if (op != null && op.isNotEmpty) {
         _operatorNames[op] = op;
       }
@@ -284,17 +294,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   // ==================== OVERVIEW TAB ====================
   Widget _buildOverviewTab() {
-    final totalQty = _usageLogs.fold<double>(0, (sum, doc) => sum + ((doc['qtyUsed'] as num?)?.toDouble() ?? 0));
-    final uniqueItems = _usageLogs.map((d) => d['itemId']).toSet().length;
-    final uniqueOperators = _usageLogs.map((d) => d['operatorName']).where((n) => n != null).toSet().length;
+    final totalQty = _usageLogs.fold<double>(0, (sum, doc) => sum + ((_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0));
+    final uniqueItems = _usageLogs.map((d) => _getField(d, 'itemId')).toSet().length;
+    final uniqueOperators = _usageLogs.map((d) => _getField(d, 'operatorName')).where((n) => n != null).toSet().length;
     final days = _endDate.difference(_startDate).inDays + 1;
     final avgPerDay = days > 0 ? totalQty / days : 0;
 
     // Daily usage for trend
     final dailyUsage = <DateTime, double>{};
     for (final doc in _usageLogs) {
-      final usedAt = (doc['usedAt'] as Timestamp?)?.toDate();
-      final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
+      final usedAt = (_getField(doc, 'usedAt') as Timestamp?)?.toDate();
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
       if (usedAt != null) {
         final day = DateTime(usedAt.year, usedAt.month, usedAt.day);
         dailyUsage[day] = (dailyUsage[day] ?? 0) + qty;
@@ -355,8 +365,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     // Aggregate by item
     final itemTotals = <String, double>{};
     for (final doc in _usageLogs) {
-      final itemId = doc['itemId'] as String?;
-      final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
+      final itemId = _getField(doc, 'itemId') as String?;
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
       if (itemId != null) {
         itemTotals[itemId] = (itemTotals[itemId] ?? 0) + qty;
       }
@@ -411,8 +421,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final itemTotals = <String, double>{};
     final itemTransactions = <String, int>{};
     for (final doc in _usageLogs) {
-      final itemId = doc['itemId'] as String?;
-      final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
+      final itemId = _getField(doc, 'itemId') as String?;
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
       if (itemId != null) {
         itemTotals[itemId] = (itemTotals[itemId] ?? 0) + qty;
         itemTransactions[itemId] = (itemTransactions[itemId] ?? 0) + 1;
@@ -424,58 +434,118 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     final totalQty = itemTotals.values.fold<double>(0, (s, v) => s + v);
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: sorted.length + 1, // +1 for header
-      itemBuilder: (context, index) {
-        if (index == 0) {
-          return Card(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  const Icon(Icons.inventory_2, size: 32),
-                  const SizedBox(width: 16),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('${sorted.length} items used', style: Theme.of(context).textTheme.titleLarge),
-                      Text('${totalQty.toStringAsFixed(0)} total quantity', style: Theme.of(context).textTheme.bodyMedium),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
-        
-        final entry = sorted[index - 1];
-        final itemId = entry.key;
-        final qty = entry.value;
-        final txns = itemTransactions[itemId] ?? 0;
-        final name = _itemNames[itemId] ?? 'Unknown Item';
-        final pct = totalQty > 0 ? (qty / totalQty * 100) : 0;
-
-        return Card(
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: _getColorForIndex(index - 1),
-              child: Text('${index}', style: const TextStyle(color: Colors.white)),
-            ),
-            title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text('$txns transactions'),
-            trailing: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text('${qty.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                Text('${pct.toStringAsFixed(1)}%', style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
+    if (sorted.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.inventory_2_outlined, size: 64, color: Colors.grey),
+              SizedBox(height: 16),
+              Text('No item usage in this period', style: TextStyle(fontSize: 16, color: Colors.grey)),
+            ],
           ),
-        );
-      },
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        // Summary header
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          color: Theme.of(context).colorScheme.primaryContainer,
+          child: Row(
+            children: [
+              Icon(Icons.inventory_2, size: 28, color: Theme.of(context).colorScheme.onPrimaryContainer),
+              const SizedBox(width: 12),
+              Text(
+                '${sorted.length} items used  •  ${totalQty.toStringAsFixed(0)} total',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Items list
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            itemCount: sorted.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final entry = sorted[index];
+              final itemId = entry.key;
+              final qty = entry.value;
+              final txns = itemTransactions[itemId] ?? 0;
+              final name = _itemNames[itemId] ?? 'Unknown Item';
+              final pct = totalQty > 0 ? (qty / totalQty * 100) : 0;
+
+              return ListTile(
+                dense: true,
+                leading: SizedBox(
+                  width: 36,
+                  child: Text(
+                    '${index + 1}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text('$txns transaction${txns == 1 ? '' : 's'}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          qty.toStringAsFixed(0),
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                        ),
+                        Text(
+                          '${pct.toStringAsFixed(1)}%',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.outline,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(width: 8),
+                    // Mini bar showing percentage
+                    Container(
+                      width: 4,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Container(
+                          width: 4,
+                          height: 32 * (pct / 100).clamp(0.05, 1.0),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primary,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -485,8 +555,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final grantTotals = <String, double>{};
     final grantTransactions = <String, int>{};
     for (final doc in _usageLogs) {
-      final grantId = doc['grantId'] as String? ?? '(No Grant)';
-      final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
+      final grantId = _getField(doc, 'grantId') as String? ?? '(No Grant)';
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
       grantTotals[grantId] = (grantTotals[grantId] ?? 0) + qty;
       grantTransactions[grantId] = (grantTransactions[grantId] ?? 0) + 1;
     }
@@ -590,8 +660,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final operatorTotals = <String, double>{};
     final operatorTransactions = <String, int>{};
     for (final doc in _usageLogs) {
-      final operator = doc['operatorName'] as String? ?? '(Unknown)';
-      final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
+      final operator = _getField(doc, 'operatorName') as String? ?? '(Unknown)';
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
       operatorTotals[operator] = (operatorTotals[operator] ?? 0) + qty;
       operatorTransactions[operator] = (operatorTransactions[operator] ?? 0) + 1;
     }
@@ -661,12 +731,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     
     // Filter to current user's activity
     final myLogs = _usageLogs.where((doc) {
-      final op = doc['operatorName'] as String? ?? '';
+      final op = _getField(doc, 'operatorName') as String? ?? '';
       return op.toLowerCase() == currentOperator.toLowerCase();
     }).toList();
 
-    final totalQty = myLogs.fold<double>(0, (sum, doc) => sum + ((doc['qtyUsed'] as num?)?.toDouble() ?? 0));
-    final uniqueItems = myLogs.map((d) => d['itemId']).toSet().length;
+    final totalQty = myLogs.fold<double>(0, (sum, doc) => sum + ((_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0));
+    final uniqueItems = myLogs.map((d) => _getField(d, 'itemId')).toSet().length;
 
     if (currentOperator.isEmpty) {
       return const Center(
@@ -765,11 +835,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           )
         else
           ...myLogs.take(20).map((doc) {
-            final itemId = doc['itemId'] as String?;
+            final itemId = _getField(doc, 'itemId') as String?;
             final itemName = _itemNames[itemId ?? ''] ?? 'Unknown Item';
-            final qty = (doc['qtyUsed'] as num?)?.toDouble() ?? 0;
-            final usedAt = (doc['usedAt'] as Timestamp?)?.toDate();
-            final grantId = doc['grantId'] as String?;
+            final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
+            final usedAt = (_getField(doc, 'usedAt') as Timestamp?)?.toDate();
+            final grantId = _getField(doc, 'grantId') as String?;
             final grantName = grantId != null ? _grantNames[grantId] ?? grantId : null;
             
             return Card(

@@ -15,6 +15,7 @@ class AuditLogTypes {
   static const itemDelete = 'item.delete';
   static const itemQuickUse = 'item.quickUse';
   static const itemMerge = 'item.merge';
+  static const itemRestore = 'item.restore';
   static const itemBarcodeAttach = 'item.attach_barcode';
   static const itemBarcodeRemove = 'item.barcode.remove';
   
@@ -49,14 +50,18 @@ class AuditLogTypes {
   // Config events
   static const configUpdate = 'config.timeTracking.update';
   
+  // Undo events
+  static const actionUndo = 'action.undo';
+  
   /// Categories for grouping in the filter UI
   static const Map<String, List<String>> categories = {
-    'Items': [itemCreate, itemCreated, itemUpdate, itemDelete, itemQuickUse, itemMerge, itemBarcodeAttach, itemBarcodeRemove],
+    'Items': [itemCreate, itemCreated, itemUpdate, itemDelete, itemQuickUse, itemMerge, itemRestore, itemBarcodeAttach, itemBarcodeRemove],
     'Lots': [lotCreate, lotUpdate, lotAdjust, lotArchive, lotUnarchive, lotDelete, lotBarcodeScan, lotAddStock, lotWaste, lotUpdateAudit],
     'Inventory': [inventoryBulkAdd, inventoryBulkAdjust],
     'Library': [libraryItemCreate, libraryItemUpdate, libraryItemDelete, libraryCheckout, libraryCheckin, libraryRestock],
     'Sessions': [sessionSave, sessionClose],
     'Config': [configUpdate],
+    'System': [actionUndo],
   };
   
   /// Get a friendly display name for a type
@@ -68,6 +73,7 @@ class AuditLogTypes {
       case itemDelete: return 'Item Deleted';
       case itemQuickUse: return 'Quick Use';
       case itemMerge: return 'Items Merged';
+      case itemRestore: return 'Item Restored';
       case itemBarcodeAttach: return 'Barcode Attached';
       case itemBarcodeRemove: return 'Barcode Removed';
       case lotCreate: return 'Lot Created';
@@ -91,6 +97,7 @@ class AuditLogTypes {
       case sessionSave: return 'Session Saved';
       case sessionClose: return 'Session Closed';
       case configUpdate: return 'Config Updated';
+      case actionUndo: return 'Action Undone';
       default: return type.split('.').map((p) => p.isNotEmpty ? '${p[0].toUpperCase()}${p.substring(1)}' : p).join(' ');
     }
   }
@@ -180,16 +187,218 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
               final data = doc.data() as Map<String, dynamic>;
 
               return _AuditLogTile(
+                docId: doc.id,
                 type: data['type'] as String? ?? 'Unknown',
                 operatorName: data['operatorName'] as String?,
                 createdAt: data['createdAt'] as Timestamp?,
                 details: data['data'] as Map<String, dynamic>? ?? {},
+                undoData: data['undoData'] as Map<String, dynamic>?,
+                canUndo: data['canUndo'] as bool? ?? false,
+                onUndo: () => _handleUndo(doc.id, data),
               );
             },
           );
         },
       ),
     );
+  }
+  
+  Future<void> _handleUndo(String docId, Map<String, dynamic> auditData) async {
+    final type = auditData['type'] as String? ?? '';
+    final undoData = auditData['undoData'] as Map<String, dynamic>?;
+    
+    if (undoData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No undo data available for this action')),
+      );
+      return;
+    }
+    
+    // Confirm undo
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Undo Action'),
+        content: Text(
+          'Are you sure you want to undo this ${AuditLogTypes.displayName(type)}?\n\n'
+          'This will attempt to restore the previous state.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Undo'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    try {
+      final db = FirebaseFirestore.instance;
+      
+      switch (type) {
+        case 'item.merge':
+          await _undoMerge(db, undoData);
+          break;
+        case 'item.delete':
+        case 'lot.delete':
+          await _undoDelete(db, type, undoData);
+          break;
+        case 'item.update':
+        case 'lot.update':
+        case 'lot.adjust':
+          await _undoUpdate(db, type, undoData);
+          break;
+        default:
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Undo not supported for "$type"')),
+          );
+          return;
+      }
+      
+      // Mark as undone in the audit log
+      await db.collection('audit_logs').doc(docId).update({
+        'canUndo': false,
+        'undoneAt': FieldValue.serverTimestamp(),
+      });
+      
+      // Log the undo action
+      await db.collection('audit_logs').add({
+        'type': 'action.undo',
+        'data': {
+          'originalAuditLogId': docId,
+          'originalType': type,
+        },
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Successfully undone!')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Undo failed: $e')),
+        );
+      }
+    }
+  }
+  
+  Future<void> _undoMerge(FirebaseFirestore db, Map<String, dynamic> undoData) async {
+    final primaryItem = undoData['primaryItem'] as Map<String, dynamic>?;
+    final duplicateItems = (undoData['duplicateItems'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final movedLots = (undoData['movedLots'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final updatedUsageLogs = (undoData['updatedUsageLogs'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    
+    if (primaryItem == null) throw Exception('No primary item data to restore');
+    
+    final primaryId = primaryItem['id'] as String;
+    
+    // 1. Restore the duplicate items (unarchive)
+    for (final dupItem in duplicateItems) {
+      final dupId = dupItem['id'] as String;
+      await db.collection('items').doc(dupId).update({
+        'archived': false,
+        'mergedInto': FieldValue.delete(),
+        'mergedAt': FieldValue.delete(),
+        'qtyOnHand': dupItem['qtyOnHand'] ?? 0,
+      });
+    }
+    
+    // 2. Move lots back to their original items
+    for (final lotInfo in movedLots) {
+      final originalItemId = lotInfo['originalItemId'] as String;
+      final lotId = lotInfo['lotId'] as String;
+      final lotData = (lotInfo['lotData'] as Map<String, dynamic>?) ?? {};
+      
+      // Recreate the lot in the original item
+      await db
+          .collection('items')
+          .doc(originalItemId)
+          .collection('lots')
+          .doc(lotId)
+          .set(lotData);
+      
+      // Find and delete the merged lot from primary (it has a modified ID)
+      final mergedLots = await db
+          .collection('items')
+          .doc(primaryId)
+          .collection('lots')
+          .where('originalLotId', isEqualTo: lotId)
+          .get();
+      
+      for (final mergedLot in mergedLots.docs) {
+        await mergedLot.reference.delete();
+      }
+    }
+    
+    // 3. Restore usage logs to point to original items
+    for (final logInfo in updatedUsageLogs) {
+      final logId = logInfo['logId'] as String;
+      final originalItemId = logInfo['originalItemId'] as String;
+      
+      await db.collection('usage_logs').doc(logId).update({
+        'itemId': originalItemId,
+        'originalItemId': FieldValue.delete(),
+        'mergedAt': FieldValue.delete(),
+      });
+    }
+    
+    // 4. Restore primary item's original barcodes and qty
+    final originalBarcodes = undoData['primaryItemOriginalBarcodes'];
+    final originalBarcode = undoData['primaryItemOriginalBarcode'];
+    final originalQty = undoData['primaryItemOriginalQty'];
+    
+    await db.collection('items').doc(primaryId).update({
+      'barcodes': originalBarcodes,
+      'barcode': originalBarcode,
+      'qtyOnHand': originalQty ?? 0,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+  
+  Future<void> _undoDelete(FirebaseFirestore db, String type, Map<String, dynamic> undoData) async {
+    // For item or lot deletion, restore from backup
+    final backup = undoData['backup'] as Map<String, dynamic>?;
+    if (backup == null) throw Exception('No backup data found');
+    
+    if (type == 'item.delete') {
+      final itemId = undoData['itemId'] as String?;
+      if (itemId != null) {
+        await db.collection('items').doc(itemId).set(backup);
+      }
+    } else if (type == 'lot.delete') {
+      final itemId = undoData['itemId'] as String?;
+      final lotId = undoData['lotId'] as String?;
+      if (itemId != null && lotId != null) {
+        await db.collection('items').doc(itemId).collection('lots').doc(lotId).set(backup);
+      }
+    }
+  }
+  
+  Future<void> _undoUpdate(FirebaseFirestore db, String type, Map<String, dynamic> undoData) async {
+    final previousValues = undoData['previousValues'] as Map<String, dynamic>?;
+    if (previousValues == null) throw Exception('No previous values found');
+    
+    if (type == 'item.update') {
+      final itemId = undoData['itemId'] as String?;
+      if (itemId != null) {
+        await db.collection('items').doc(itemId).update(previousValues);
+      }
+    } else if (type == 'lot.update' || type == 'lot.adjust') {
+      final itemId = undoData['itemId'] as String?;
+      final lotId = undoData['lotId'] as String?;
+      if (itemId != null && lotId != null) {
+        await db.collection('items').doc(itemId).collection('lots').doc(lotId).update(previousValues);
+      }
+    }
   }
 
   Query<Map<String, dynamic>> _buildQuery() {
@@ -316,16 +525,24 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
 }
 
 class _AuditLogTile extends StatelessWidget {
+  final String docId;
   final String type;
   final String? operatorName;
   final Timestamp? createdAt;
   final Map<String, dynamic> details;
+  final Map<String, dynamic>? undoData;
+  final bool canUndo;
+  final VoidCallback? onUndo;
 
   const _AuditLogTile({
+    required this.docId,
     required this.type,
     required this.operatorName,
     required this.createdAt,
     required this.details,
+    this.undoData,
+    this.canUndo = false,
+    this.onUndo,
   });
 
   @override
@@ -346,9 +563,22 @@ class _AuditLogTile extends StatelessWidget {
           backgroundColor: color.withValues(alpha: 0.2),
           child: Icon(icon, color: color),
         ),
-        title: Text(
-          AuditLogTypes.displayName(type),
-          style: Theme.of(context).textTheme.titleSmall,
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                AuditLogTypes.displayName(type),
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            if (canUndo && undoData != null)
+              IconButton(
+                icon: Icon(Icons.undo, size: 20, color: cs.primary),
+                tooltip: 'Undo this action',
+                onPressed: onUndo,
+                visualDensity: VisualDensity.compact,
+              ),
+          ],
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -386,6 +616,7 @@ class _AuditLogTile extends StatelessWidget {
     if (type.contains('quickUse')) return Icons.flash_on;
     if (type.contains('session')) return Icons.shopping_cart;
     if (type.contains('library')) return Icons.medical_services;
+    if (type.contains('undo')) return Icons.undo;
     if (type.startsWith('item.')) return Icons.inventory;
     if (type.startsWith('lot.')) return Icons.warehouse;
     if (type.startsWith('config')) return Icons.settings;
@@ -404,6 +635,7 @@ class _AuditLogTile extends StatelessWidget {
     if (type.contains('restock') || type.contains('add_stock')) return Colors.lightGreen;
     if (type.contains('merge')) return Colors.deepPurple;
     if (type.contains('quickUse')) return Colors.amber;
+    if (type.contains('undo')) return Colors.cyan;
     return Colors.grey;
   }
 
@@ -499,11 +731,42 @@ class _AuditLogTile extends StatelessWidget {
                   value: _formatValue(entry.value),
                 )),
                 if (details.isEmpty)
-                  Text('No additional details', style: TextStyle(color: cs.outline, fontStyle: FontStyle.italic)),
+                  Text('No additional details', style: TextStyle(color: cs.onSurfaceVariant, fontStyle: FontStyle.italic)),
+                if (canUndo && undoData != null) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: cs.primaryContainer,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: cs.primary.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, color: cs.onPrimaryContainer, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This action can be undone',
+                            style: TextStyle(fontSize: 12, color: cs.onPrimaryContainer),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
           actions: [
+            if (canUndo && undoData != null)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  onUndo?.call();
+                },
+                child: const Text('Undo'),
+              ),
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('Close'),
@@ -556,7 +819,7 @@ class _DetailRow extends StatelessWidget {
             width: 100,
             child: Text(
               '$label:',
-              style: TextStyle(color: cs.outline, fontWeight: FontWeight.w500),
+              style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w500),
             ),
           ),
           Expanded(

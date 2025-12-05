@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:scout/features/admin/admin_pin_page.dart';
 import 'package:scout/features/admin/backup_history_page.dart';
 import 'package:scout/features/admin/backup_settings_page.dart';
@@ -580,6 +581,14 @@ class _AdminPageState extends State<AdminPage> {
                         );
                       },
                     ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.restore),
+                      title: const Text('Restore Archived Items'),
+                      subtitle: const Text('Recover deleted or merged items'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _showRestoreArchivedItemsDialog(),
+                    ),
                   ],
                 ),
               ),
@@ -823,5 +832,171 @@ class _AdminPageState extends State<AdminPage> {
         ],
       ),
     );
+  }
+  
+  Future<void> _showRestoreArchivedItemsDialog() async {
+    final db = FirebaseFirestore.instance;
+    
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore Archived Items'),
+        content: SizedBox(
+          width: 600,
+          height: 500,
+          child: FutureBuilder<QuerySnapshot>(
+            future: db.collection('items')
+                .where('archived', isEqualTo: true)
+                .orderBy('mergedAt', descending: true)
+                .limit(100)
+                .get(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              
+              if (snapshot.hasError) {
+                // Try without orderBy if index doesn't exist
+                return FutureBuilder<QuerySnapshot>(
+                  future: db.collection('items')
+                      .where('archived', isEqualTo: true)
+                      .limit(100)
+                      .get(),
+                  builder: (context, snapshot2) {
+                    if (snapshot2.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (snapshot2.hasError) {
+                      return Center(child: Text('Error: ${snapshot2.error}'));
+                    }
+                    return _buildArchivedItemsList(snapshot2.data?.docs ?? []);
+                  },
+                );
+              }
+              
+              return _buildArchivedItemsList(snapshot.data?.docs ?? []);
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildArchivedItemsList(List<QueryDocumentSnapshot> docs) {
+    if (docs.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle, size: 64, color: Colors.green),
+            SizedBox(height: 16),
+            Text('No archived items found'),
+          ],
+        ),
+      );
+    }
+    
+    return ListView.builder(
+      itemCount: docs.length,
+      itemBuilder: (context, index) {
+        final doc = docs[index];
+        final data = doc.data() as Map<String, dynamic>;
+        final name = data['name'] as String? ?? 'Unknown Item';
+        final mergedInto = data['mergedInto'] as String?;
+        final mergedAt = data['mergedAt'] as Timestamp?;
+        final archivedAt = data['archivedAt'] as Timestamp?;
+        final category = data['category'] as String? ?? 'No Category';
+        
+        String subtitle = 'Category: $category';
+        if (mergedInto != null) {
+          subtitle += '\nMerged into another item';
+        }
+        if (mergedAt != null) {
+          subtitle += '\n${DateFormat('MMM d, yyyy h:mm a').format(mergedAt.toDate())}';
+        } else if (archivedAt != null) {
+          subtitle += '\nArchived: ${DateFormat('MMM d, yyyy').format(archivedAt.toDate())}';
+        }
+        
+        return Card(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          child: ListTile(
+            leading: const Icon(Icons.archive, color: Colors.orange),
+            title: Text(name),
+            subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+            trailing: FilledButton.icon(
+              icon: const Icon(Icons.restore, size: 18),
+              label: const Text('Restore'),
+              onPressed: () => _restoreArchivedItem(doc.id, data),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  
+  Future<void> _restoreArchivedItem(String itemId, Map<String, dynamic> itemData) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore Item'),
+        content: Text(
+          'Restore "${itemData['name']}"?\n\n'
+          'This will unarchive the item and make it visible in your inventory again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    try {
+      final db = FirebaseFirestore.instance;
+      
+      await db.collection('items').doc(itemId).update({
+        'archived': false,
+        'mergedInto': FieldValue.delete(),
+        'mergedAt': FieldValue.delete(),
+        'archivedAt': FieldValue.delete(),
+        'restoredAt': FieldValue.serverTimestamp(),
+      });
+      
+      // Log the restore
+      await db.collection('audit_logs').add({
+        'type': 'item.restore',
+        'data': {
+          'itemId': itemId,
+          'name': itemData['name'],
+        },
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      
+      if (mounted) {
+        Navigator.pop(context); // Close the list dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Restored "${itemData['name']}"')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to restore: $e')),
+        );
+      }
+    }
   }
 }

@@ -402,6 +402,14 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
           .map((item) => item['id'] as String)
           .toList();
       
+      // Store backup data for potential undo
+      final backupData = <String, dynamic>{
+        'primaryItem': primaryItem,
+        'duplicateItems': group.items.where((item) => item['id'] != primaryId).toList(),
+        'movedLots': <Map<String, dynamic>>[],
+        'updatedUsageLogs': <Map<String, dynamic>>[],
+      };
+      
       // Collect all barcodes from all items
       final allBarcodes = <String>{};
       for (final item in group.items) {
@@ -430,19 +438,30 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
         for (final lotDoc in lotsSnapshot.docs) {
           final lotData = lotDoc.data();
           
-          // Create the lot under the primary item
+          // Store backup of lot for undo
+          (backupData['movedLots'] as List).add({
+            'originalItemId': duplicateId,
+            'lotId': lotDoc.id,
+            'lotData': lotData,
+          });
+          
+          // Generate a new lot ID to avoid conflicts
+          final newLotId = '${lotDoc.id}_merged_${DateTime.now().millisecondsSinceEpoch}';
+          
+          // Create the lot under the primary item with a new ID
           await _db
               .collection('items')
               .doc(primaryId)
               .collection('lots')
-              .doc(lotDoc.id)
+              .doc(newLotId)
               .set({
             ...lotData,
             'mergedFrom': duplicateId,
+            'originalLotId': lotDoc.id,
             'mergedAt': FieldValue.serverTimestamp(),
           });
           
-          // Delete from the duplicate (or mark as moved)
+          // Delete from the duplicate
           await lotDoc.reference.delete();
           lotsMoved++;
         }
@@ -455,6 +474,12 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
         
         final batch = _db.batch();
         for (final logDoc in usageLogsSnapshot.docs) {
+          // Store backup for undo
+          (backupData['updatedUsageLogs'] as List).add({
+            'logId': logDoc.id,
+            'originalItemId': duplicateId,
+          });
+          
           batch.update(logDoc.reference, {
             'itemId': primaryId,
             'originalItemId': duplicateId, // Keep reference to original
@@ -500,6 +525,11 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
         'updatedAt': FieldValue.serverTimestamp(),
       });
       
+      // Store primary item's original state for undo
+      backupData['primaryItemOriginalBarcodes'] = primaryItem!['barcodes'];
+      backupData['primaryItemOriginalBarcode'] = primaryItem!['barcode'];
+      backupData['primaryItemOriginalQty'] = primaryItem!['qtyOnHand'];
+      
       // 5. Archive the duplicate items
       final archiveBatch = _db.batch();
       for (final duplicateId in duplicateIds) {
@@ -512,7 +542,7 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
       }
       await archiveBatch.commit();
       
-      // 6. Log the merge operation
+      // 6. Log the merge operation with backup data for undo
       await _db.collection('audit_logs').add({
         'type': 'item.merge',
         'data': {
@@ -523,6 +553,8 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
           'usageLogsUpdated': usageLogsUpdated,
           'barcodesConsolidated': allBarcodes.length,
         },
+        'undoData': backupData,
+        'canUndo': true,
         'createdAt': FieldValue.serverTimestamp(),
       });
       
