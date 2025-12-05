@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:scout/features/admin/admin_pin_page.dart';
@@ -83,42 +84,6 @@ class _AdminPageState extends State<AdminPage> {
     }
   }
 
-  Future<void> _configureAlgoliaIndex() async {
-    setState(() => _busy = true);
-    try {
-      await _searchService.configureAlgoliaIndex();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Algolia index configured successfully')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to configure Algolia index: $e')),
-      );
-    } finally {
-      setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _syncItemsToAlgolia() async {
-    setState(() => _busy = true);
-    try {
-      await _searchService.syncItemsToAlgolia();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Items synced to Algolia successfully')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to sync items to Algolia: $e')),
-      );
-    } finally {
-      setState(() => _busy = false);
-    }
-  }
-
   Future<void> _recalculateItemAggregates() async {
     setState(() => _busy = true);
     try {
@@ -136,6 +101,54 @@ class _AdminPageState extends State<AdminPage> {
       );
     } finally {
       setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _clearInventoryData() async {
+    final password = await AdminPin.promptDeveloperPassword(context);
+    if (!mounted || password == null) return;
+    
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Clear inventory data?'),
+        content: const Text(
+          'This deletes ALL items, sessions, and cart sessions.\n\n'
+          'THIS CANNOT BE UNDONE.',
+          style: TextStyle(color: Colors.red),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete Everything'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirm != true || !mounted) return;
+    
+    setState(() => _busy = true);
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('wipeInventoryData')
+          .call({'password': password});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inventory cleared')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -517,23 +530,9 @@ class _AdminPageState extends State<AdminPage> {
                 child: Column(
                   children: [
                     ListTile(
-                      leading: const Icon(Icons.library_books),
-                      title: const Text('Library Management'),
-                      subtitle: const Text('Check in/out reusable items and equipment'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const LibraryManagementPage(),
-                          ),
-                        );
-                      },
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
                       leading: const Icon(Icons.list),
                       title: const Text('Manage Lookups'),
-                      subtitle: const Text('Departments, Grants, Locations, Categories, Interventions'),
+                      subtitle: const Text('Departments, Grants, Locations, Categories'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
                         Navigator.of(context).push(
@@ -559,33 +558,9 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: const Icon(Icons.history),
-                      title: const Text('Audit Logs'),
-                      subtitle: const Text('View all inventory operations and changes'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const AuditLogsPage()),
-                        );
-                      },
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
-                      leading: const Icon(Icons.merge),
-                      title: const Text('Merge Operator Names'),
-                      subtitle: const Text('Combine duplicate user names across the app'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const MergeOperatorsPage()),
-                        );
-                      },
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
                       leading: const Icon(Icons.cleaning_services),
                       title: const Text('Data Cleanup'),
-                      subtitle: const Text('Find duplicates, fix categories & item names'),
+                      subtitle: const Text('Merge duplicates, fix categories & item names'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
                         Navigator.of(context).push(
@@ -595,34 +570,13 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.calculate, color: Theme.of(context).colorScheme.primary),
-                      title: Text('Recalculate Lot Codes',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                      subtitle: Text('Standardize lot codes to YYMM-XXX format',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                      trailing: Icon(Icons.chevron_right,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
-                      onTap: () async {
-                        if (await AdminPin.ensureDeveloper(context)) {
-                          if (!context.mounted) return;
-                          Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const RecalculateLotCodesPage()),
-                          );
-                        }
-                      },
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
-                      leading: Icon(Icons.search, color: Theme.of(context).colorScheme.secondary),
-                      title:
-                          Text('Diagnose Lot Codes', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                      subtitle: Text('Check for duplicate lot codes within items',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                      trailing: Icon(Icons.chevron_right,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      leading: const Icon(Icons.merge),
+                      title: const Text('Merge Operator Names'),
+                      subtitle: const Text('Combine duplicate user names'),
+                      trailing: const Icon(Icons.chevron_right),
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const DiagnoseLotCodesPage()),
+                          MaterialPageRoute(builder: (_) => const MergeOperatorsPage()),
                         );
                       },
                     ),
@@ -632,54 +586,35 @@ class _AdminPageState extends State<AdminPage> {
 
               const SizedBox(height: 24),
 
-              // Search & Indexing Section (Developer Only)
-              _buildSectionHeader('Search & Indexing', Icons.search, isDeveloper: true),
+              // Tools Section
+              _buildSectionHeader('Tools', Icons.build),
               Card(
                 elevation: 1,
                 child: Column(
                   children: [
                     ListTile(
-                      leading: Icon(Icons.tune, color: Theme.of(context).colorScheme.primary),
-                      title: Text('Configure Algolia Index',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                      subtitle: Text('Set up search facets and indexing',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                      trailing: Icon(Icons.chevron_right,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
-                      onTap: () async {
-                        if (await AdminPin.ensureDeveloper(context)) {
-                          _configureAlgoliaIndex();
-                        }
+                      leading: const Icon(Icons.library_books),
+                      title: const Text('Library Management'),
+                      subtitle: const Text('Check in/out reusable items and equipment'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const LibraryManagementPage(),
+                          ),
+                        );
                       },
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: Icon(Icons.sync, color: Theme.of(context).colorScheme.primary),
-                      title: Text('Sync Items to Algolia',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                      subtitle: Text('Populate search index with current items',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                      trailing: Icon(Icons.chevron_right,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
-                      onTap: () async {
-                        if (await AdminPin.ensureDeveloper(context)) {
-                          _syncItemsToAlgolia();
-                        }
-                      },
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
-                      leading: Icon(Icons.calculate, color: Colors.green),
-                      title: Text('Recalculate Item Flags',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                      subtitle: Text('Update expired/low stock flags for all items',
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                      trailing: Icon(Icons.chevron_right,
-                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
-                      onTap: () async {
-                        if (await AdminPin.ensureDeveloper(context)) {
-                          _recalculateItemAggregates();
-                        }
+                      leading: const Icon(Icons.history),
+                      title: const Text('Audit Logs'),
+                      subtitle: const Text('View inventory operations and changes'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const AuditLogsPage()),
+                        );
                       },
                     ),
                   ],
@@ -689,7 +624,7 @@ class _AdminPageState extends State<AdminPage> {
               const SizedBox(height: 24),
 
               // Database Operations Section (Developer Only)
-              _buildSectionHeader('Database Operations', Icons.storage, isDeveloper: true),
+              _buildSectionHeader('Backups & Recovery', Icons.backup, isDeveloper: true),
               Card(
                 elevation: 1,
                 child: Column(
@@ -759,18 +694,80 @@ class _AdminPageState extends State<AdminPage> {
               _buildSectionHeader('Development Tools', Icons.developer_mode, isDeveloper: true),
               Card(
                 elevation: 1,
-                child: ListTile(
-                  leading: Icon(Icons.bug_report, color: Colors.red),
-                  title: Text('Seed Config', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                  subtitle: Text('Initialize app configuration (debug only)',
-                      style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
-                  trailing:
-                      Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
-                  onTap: () async {
-                    if (await AdminPin.ensureDeveloper(context)) {
-                      _seedConfig();
-                    }
-                  },
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: Icon(Icons.calculate, color: Colors.red),
+                      title: Text('Recalculate Lot Codes', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Standardize lot codes to YYMM-XXX format',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing:
+                          Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          if (!context.mounted) return;
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const RecalculateLotCodesPage()),
+                          );
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.search, color: Colors.red),
+                      title: Text('Diagnose Lot Codes', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Check for duplicate lot codes within items',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing:
+                          Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          if (!context.mounted) return;
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const DiagnoseLotCodesPage()),
+                          );
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.refresh, color: Colors.red),
+                      title: Text('Recalculate Item Flags', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Update expired/low stock flags for all items',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing:
+                          Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          _recalculateItemAggregates();
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.bug_report, color: Colors.red),
+                      title: Text('Seed Config', style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+                      subtitle: Text('Initialize app configuration (debug only)',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing:
+                          Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () async {
+                        if (await AdminPin.ensureDeveloper(context)) {
+                          _seedConfig();
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: Icon(Icons.delete_forever, color: Colors.red),
+                      title: Text('Clear Inventory Data', style: TextStyle(color: Colors.red)),
+                      subtitle: Text('Delete ALL items, sessions, and cart data',
+                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7))),
+                      trailing:
+                          Icon(Icons.chevron_right, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5)),
+                      onTap: () => _clearInventoryData(),
+                    ),
+                  ],
                 ),
               ),
 

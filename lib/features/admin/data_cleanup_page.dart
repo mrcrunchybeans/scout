@@ -235,8 +235,8 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
         .toList()
       ..sort();
     
-    final controller = TextEditingController(text: '');
-    String? selectedCategory;
+    final controller = TextEditingController(text: currentCategory);
+    String? selectedCategory = existingCategories.contains(currentCategory) ? currentCategory : null;
     
     final newCategory = await showDialog<String>(
       context: context,
@@ -270,7 +270,9 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
                   onChanged: (v) {
                     setDialogState(() {
                       selectedCategory = v;
-                      controller.text = v ?? '';
+                      if (v != null) {
+                        controller.text = v;
+                      }
                     });
                   },
                 ),
@@ -281,6 +283,12 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
                     labelText: 'Or enter new category',
                     border: OutlineInputBorder(),
                   ),
+                  onChanged: (v) {
+                    // Clear dropdown selection when typing custom value
+                    if (v != selectedCategory) {
+                      setDialogState(() => selectedCategory = null);
+                    }
+                  },
                 ),
               ],
             ),
@@ -299,15 +307,15 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
       ),
     );
     
-    if (newCategory != null && newCategory != currentCategory) {
+    if (newCategory != null && newCategory.isNotEmpty && newCategory != currentCategory) {
       await _db.collection('items').doc(item['id']).update({
-        'category': newCategory.isEmpty ? null : newCategory,
+        'category': newCategory,
         'updatedAt': FieldValue.serverTimestamp(),
       });
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Category updated')),
+          SnackBar(content: Text('Category updated to "$newCategory"')),
         );
         _analyzeData(); // Refresh
       }

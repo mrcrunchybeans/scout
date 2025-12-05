@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 
 import 'package:scout/utils/operator_store.dart';
 import 'package:scout/main.dart' show ThemeModeNotifier;
@@ -16,17 +15,11 @@ import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
 import '../reports/usage_report_page.dart';
 import '../library/library_management_page.dart';
-import '../../dev/manual_dashboard_fix.dart';
 import '../budget/budget_page.dart';
 
 enum _DashboardMenuAction {
-  theme,
   reports,
   admin,
-  recalcStats,
-  recalcItemFlags,
-  manualFixStats,
-  clearData,
 }
 
 class DashboardPage extends StatefulWidget {
@@ -149,129 +142,54 @@ class _DashboardPageState extends State<DashboardPage> {
         titleSpacing: 0,
         title: Center(child: BrandLogo(height: logoHeight)),
         actions: [
-    // NEW: operator chip
-    const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 8),
-      child: OperatorChip(),
-    ),
-    PopupMenuButton<_DashboardMenuAction>(
-      onSelected: (v) async {
-        final ctx = context; // capture-context for lint safety
-        if (v == _DashboardMenuAction.reports) {
-          Navigator.push(ctx, MaterialPageRoute(builder: (_) => const UsageReportPage()));
-        } else if (v == _DashboardMenuAction.admin) {
-          final ok = await AdminPin.ensure(ctx); // shows PIN dialog if needed
-          if (!ctx.mounted || !ok) return;
-          Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
-        } else if (v == _DashboardMenuAction.recalcItemFlags) {
-          final ok = await AdminPin.ensure(ctx);
-          if (!ctx.mounted || !ok) return;
-          final confirm = await showDialog<bool>(
-            context: ctx,
-            builder: (_) => AlertDialog(
-              title: const Text('Recalculate Item Flags?'),
-              content: const Text('This recomputes low/expiring/stale/expired flags for ALL items. This may take a few minutes.'),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Recalculate')),
-              ],
-            ),
-          );
-          if (confirm == true) {
-            try {
-              final result = await FirebaseFunctions.instance.httpsCallable('recalculateAllItemAggregates')();
-              if (!ctx.mounted) return;
-              final processed = result.data['processed'] ?? 0;
-              ScaffoldMessenger.of(ctx).showSnackBar(
-                SnackBar(content: Text('Recalculated $processed items successfully')),
-              );
-            } catch (e) {
-              if (!ctx.mounted) return;
-              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
-            }
-          }
-        } else if (v == _DashboardMenuAction.recalcStats) {
-          final ok = await AdminPin.ensure(ctx);
-          if (!ctx.mounted || !ok) return;
-          final confirm = await showDialog<bool>(
-            context: ctx,
-            builder: (_) => AlertDialog(
-              title: const Text('Recalculate Dashboard Counts?'),
-              content: const Text('This recomputes low/expiring/stale/expired counts from all items.'),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Recalculate')),
-              ],
-            ),
-          );
-          if (confirm == true) {
-            try {
-              await FirebaseFunctions.instance.httpsCallable('recalcDashboardStatsManual')();
-              if (!ctx.mounted) return;
-              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Recalculation started')));
-            } catch (e) {
-              if (!ctx.mounted) return;
-              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
-            }
-          }
-        } else if (v == _DashboardMenuAction.clearData) {
-          final password = await AdminPin.promptDeveloperPassword(ctx);
-          if (!ctx.mounted || password == null) return;
-          final confirm = await showDialog<bool>(
-            context: ctx,
-            builder: (_) => AlertDialog(
-              title: const Text('Clear inventory data?'),
-              content: const Text('This deletes all items, sessions, and cart sessions. This cannot be undone.'),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete Everything')),
-              ],
-            ),
-          );
-          if (confirm == true) {
-            try {
-              await FirebaseFunctions.instance
-                  .httpsCallable('wipeInventoryData')
-                  .call({'password': password});
-              if (!ctx.mounted) return;
-              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Inventory cleared')));
-            } catch (e) {
-              if (!ctx.mounted) return;
-              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
-            }
-          }
-        } else if (v == _DashboardMenuAction.manualFixStats) {
-          try {
-            final counts = await manuallyFixDashboardStats();
-            if (!ctx.mounted) return;
-            ScaffoldMessenger.of(ctx).showSnackBar(
-              SnackBar(content: Text('Fixed! Low: ${counts['low']}, Expiring: ${counts['expiring']}, Stale: ${counts['stale']}, Expired: ${counts['expired']}')),
-            );
-          } catch (e) {
-            if (!ctx.mounted) return;
-            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Failed: $e')));
-          }
-        } else if (v == _DashboardMenuAction.theme) {
-          ThemeModeNotifier.instance.toggle();
-        }
-      },
-      itemBuilder: (ctx) => [
-        const PopupMenuItem(value: _DashboardMenuAction.theme, child: Text('Toggle Theme')),
-        const PopupMenuItem(value: _DashboardMenuAction.reports, child: Text('Usage Reports')),
-        const PopupMenuItem(value: _DashboardMenuAction.admin, child: Text('Admin / Config')),
-        const PopupMenuDivider(),
-        const PopupMenuItem(value: _DashboardMenuAction.recalcItemFlags, child: Text('Recalc Item Flags')),
-        const PopupMenuItem(value: _DashboardMenuAction.recalcStats, child: Text('Recalc Dashboard Counts (Cloud)')),
-        const PopupMenuItem(value: _DashboardMenuAction.manualFixStats, child: Text('Manual Fix Counts (Client)')),
-        const PopupMenuItem(
-          value: _DashboardMenuAction.clearData,
-          child: Text(
-            'Clear Inventory Data',
-            style: TextStyle(color: Colors.redAccent),
+          // Operator chip
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: OperatorChip(),
           ),
-        ),
-      ],
-    ),
+          // Theme toggle button - clearly visible
+          IconButton(
+            icon: Icon(
+              Theme.of(context).brightness == Brightness.dark
+                  ? Icons.light_mode
+                  : Icons.dark_mode,
+            ),
+            tooltip: 'Toggle theme',
+            onPressed: () => ThemeModeNotifier.instance.toggle(),
+          ),
+          // Simplified menu
+          PopupMenuButton<_DashboardMenuAction>(
+            onSelected: (v) async {
+              final ctx = context;
+              if (v == _DashboardMenuAction.reports) {
+                Navigator.push(ctx, MaterialPageRoute(builder: (_) => const UsageReportPage()));
+              } else if (v == _DashboardMenuAction.admin) {
+                final ok = await AdminPin.ensure(ctx);
+                if (!ctx.mounted || !ok) return;
+                Navigator.push(ctx, MaterialPageRoute(builder: (_) => const AdminPage()));
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: _DashboardMenuAction.reports,
+                child: ListTile(
+                  leading: Icon(Icons.bar_chart),
+                  title: Text('Usage Reports'),
+                  contentPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+              const PopupMenuItem(
+                value: _DashboardMenuAction.admin,
+                child: ListTile(
+                  leading: Icon(Icons.admin_panel_settings),
+                  title: Text('Admin / Config'),
+                  contentPadding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
         ],
       ),
       body: ListView(
