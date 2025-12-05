@@ -329,7 +329,7 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Select the item to keep (others will be archived):'),
+                const Text('Select the PRIMARY item to keep.\n\nAll lots, barcodes, and usage history from duplicates will be merged into this item:'),
                 const SizedBox(height: 16),
                 ...group.items.map((item) => RadioListTile<Map<String, dynamic>>(
                   value: item,
@@ -337,10 +337,35 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
                   title: Text(item['name'] ?? 'Unnamed'),
                   subtitle: Text(
                     'Category: ${item['category'] ?? 'None'}\n'
-                    'Qty: ${item['qtyOnHand'] ?? 0} • ID: ${(item['id'] as String).substring(0, 8)}...',
+                    'Qty: ${item['qtyOnHand'] ?? 0} • Barcodes: ${_formatBarcodes(item)}\n'
+                    'ID: ${(item['id'] as String).substring(0, 8)}...',
                   ),
                   onChanged: (v) => setDialogState(() => primaryItem = v),
                 )),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'This will:\n'
+                          '• Move all lots to the primary item\n'
+                          '• Merge all barcodes\n'
+                          '• Update usage history references\n'
+                          '• Archive the duplicate items',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -358,27 +383,195 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
       ),
     );
     
-    if (confirmed == true && primaryItem != null) {
-      // Archive all non-primary items
-      final batch = _db.batch();
+    if (confirmed != true || primaryItem == null) return;
+    
+    setState(() => _loading = true);
+    
+    try {
+      final primaryId = primaryItem!['id'] as String;
+      final duplicateIds = group.items
+          .where((item) => item['id'] != primaryId)
+          .map((item) => item['id'] as String)
+          .toList();
+      
+      // Collect all barcodes from all items
+      final allBarcodes = <String>{};
       for (final item in group.items) {
-        if (item['id'] != primaryItem!['id']) {
-          batch.update(_db.collection('items').doc(item['id']), {
-            'archived': true,
-            'mergedInto': primaryItem!['id'],
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+        final barcodes = item['barcodes'] as List<dynamic>? ?? [];
+        for (final b in barcodes) {
+          if (b is String && b.isNotEmpty) allBarcodes.add(b);
+        }
+        final singleBarcode = item['barcode'] as String?;
+        if (singleBarcode != null && singleBarcode.isNotEmpty) {
+          allBarcodes.add(singleBarcode);
         }
       }
-      await batch.commit();
+      
+      int lotsMoved = 0;
+      int usageLogsUpdated = 0;
+      
+      // Process each duplicate item
+      for (final duplicateId in duplicateIds) {
+        // 1. Move all lots from duplicate to primary
+        final lotsSnapshot = await _db
+            .collection('items')
+            .doc(duplicateId)
+            .collection('lots')
+            .get();
+        
+        for (final lotDoc in lotsSnapshot.docs) {
+          final lotData = lotDoc.data();
+          
+          // Create the lot under the primary item
+          await _db
+              .collection('items')
+              .doc(primaryId)
+              .collection('lots')
+              .doc(lotDoc.id)
+              .set({
+            ...lotData,
+            'mergedFrom': duplicateId,
+            'mergedAt': FieldValue.serverTimestamp(),
+          });
+          
+          // Delete from the duplicate (or mark as moved)
+          await lotDoc.reference.delete();
+          lotsMoved++;
+        }
+        
+        // 2. Update usage_logs to point to primary item
+        final usageLogsSnapshot = await _db
+            .collection('usage_logs')
+            .where('itemId', isEqualTo: duplicateId)
+            .get();
+        
+        final batch = _db.batch();
+        for (final logDoc in usageLogsSnapshot.docs) {
+          batch.update(logDoc.reference, {
+            'itemId': primaryId,
+            'originalItemId': duplicateId, // Keep reference to original
+            'mergedAt': FieldValue.serverTimestamp(),
+          });
+          usageLogsUpdated++;
+        }
+        if (usageLogsSnapshot.docs.isNotEmpty) {
+          await batch.commit();
+        }
+        
+        // 3. Update audit_logs references (optional, for history)
+        final auditLogsSnapshot = await _db
+            .collection('audit_logs')
+            .where('data.itemId', isEqualTo: duplicateId)
+            .limit(500)
+            .get();
+        
+        if (auditLogsSnapshot.docs.isNotEmpty) {
+          final auditBatch = _db.batch();
+          for (final logDoc in auditLogsSnapshot.docs) {
+            final data = logDoc.data();
+            final logData = Map<String, dynamic>.from(data['data'] as Map? ?? {});
+            logData['itemId'] = primaryId;
+            logData['originalItemId'] = duplicateId;
+            auditBatch.update(logDoc.reference, {'data': logData});
+          }
+          await auditBatch.commit();
+        }
+      }
+      
+      // 4. Update the primary item with merged barcodes and recalculate qty
+      // First, get all lots to recalculate qtyOnHand
+      final primaryLotsSnapshot = await _db
+          .collection('items')
+          .doc(primaryId)
+          .collection('lots')
+          .get();
+      
+      num totalQty = 0;
+      for (final lotDoc in primaryLotsSnapshot.docs) {
+        final lotData = lotDoc.data();
+        if (lotData['archived'] != true) {
+          totalQty += (lotData['qtyRemaining'] as num?) ?? 0;
+        }
+      }
+      
+      // If no lots, sum up qtyOnHand from all items
+      if (primaryLotsSnapshot.docs.isEmpty) {
+        for (final item in group.items) {
+          totalQty += (item['qtyOnHand'] as num?) ?? 0;
+        }
+      }
+      
+      await _db.collection('items').doc(primaryId).update({
+        'barcodes': allBarcodes.toList(),
+        'barcode': allBarcodes.isNotEmpty ? allBarcodes.first : null,
+        'qtyOnHand': totalQty,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      
+      // 5. Archive the duplicate items
+      final archiveBatch = _db.batch();
+      for (final duplicateId in duplicateIds) {
+        archiveBatch.update(_db.collection('items').doc(duplicateId), {
+          'archived': true,
+          'mergedInto': primaryId,
+          'mergedAt': FieldValue.serverTimestamp(),
+          'qtyOnHand': 0, // Clear qty since lots were moved
+        });
+      }
+      await archiveBatch.commit();
+      
+      // 6. Log the merge operation
+      await _db.collection('audit_logs').add({
+        'type': 'item.merge',
+        'data': {
+          'primaryItemId': primaryId,
+          'primaryItemName': primaryItem!['name'],
+          'mergedItemIds': duplicateIds,
+          'lotsMoved': lotsMoved,
+          'usageLogsUpdated': usageLogsUpdated,
+          'barcodesConsolidated': allBarcodes.length,
+        },
+        'createdAt': FieldValue.serverTimestamp(),
+      });
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Merged ${group.items.length - 1} items into ${primaryItem!['name']}')),
+          SnackBar(
+            content: Text(
+              'Merged ${duplicateIds.length} items into "${primaryItem!['name']}"\n'
+              '$lotsMoved lots moved, $usageLogsUpdated usage logs updated, ${allBarcodes.length} barcodes consolidated'
+            ),
+            duration: const Duration(seconds: 5),
+          ),
         );
-        _analyzeData(); // Refresh
+        await _analyzeData(); // Refresh
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Merge failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
       }
     }
+  }
+  
+  String _formatBarcodes(Map<String, dynamic> item) {
+    final barcodes = <String>[];
+    final list = item['barcodes'] as List<dynamic>? ?? [];
+    for (final b in list) {
+      if (b is String && b.isNotEmpty) barcodes.add(b);
+    }
+    final single = item['barcode'] as String?;
+    if (single != null && single.isNotEmpty && !barcodes.contains(single)) {
+      barcodes.add(single);
+    }
+    if (barcodes.isEmpty) return 'None';
+    if (barcodes.length == 1) return barcodes.first;
+    return '${barcodes.length} codes';
   }
 
   Future<void> _bulkFixCategory(String oldCategory, String newCategory) async {
@@ -512,8 +705,15 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
             children: [
               ...group.items.map((item) => ListTile(
                 title: Text(item['name'] ?? 'Unnamed'),
-                subtitle: Text('Category: ${item['category'] ?? 'None'} • Qty: ${item['qtyOnHand'] ?? 0}'),
-                trailing: Text((item['id'] as String).substring(0, 8)),
+                subtitle: Text(
+                  'Category: ${item['category'] ?? 'None'} • Qty: ${item['qtyOnHand'] ?? 0}\n'
+                  'Barcodes: ${_formatBarcodes(item)}',
+                ),
+                trailing: Text(
+                  (item['id'] as String).substring(0, 8),
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                isThreeLine: true,
               )),
               Padding(
                 padding: const EdgeInsets.all(16),
