@@ -48,11 +48,14 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _loadData() async {
+    debugPrint('ReportsPage: _loadData started');
     setState(() => _loading = true);
     try {
       // Load usage logs for the period
       final start = Timestamp.fromDate(_startDate);
       final end = Timestamp.fromDate(_endDate.add(const Duration(days: 1)));
+      
+      debugPrint('ReportsPage: Querying usage_logs from $_startDate to $_endDate');
       
       final usageSnapshot = await _db
           .collection('usage_logs')
@@ -62,16 +65,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           .limit(1000) // Limit to prevent performance issues
           .get();
       
+      debugPrint('ReportsPage: Got ${usageSnapshot.docs.length} usage logs');
       _usageLogs = usageSnapshot.docs;
       
       // Load lookups
       await _loadLookups();
       
+      debugPrint('ReportsPage: Finished loading, setting _loading = false');
       if (mounted) {
         setState(() => _loading = false);
       }
-    } catch (e) {
+    } catch (e, stack) {
       debugPrint('ReportsPage error: $e');
+      debugPrint('Stack trace: $stack');
       if (mounted) {
         setState(() => _loading = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -168,6 +174,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('ReportsPage: build() called, _loading=$_loading, _usageLogs.length=${_usageLogs.length}');
     return Scaffold(
       appBar: AppBar(
         title: const Text('Reports & Analytics'),
@@ -238,17 +245,41 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   child: TabBarView(
                     controller: _tabController,
                     children: [
-                      _buildOverviewTab(),
-                      _buildByItemTab(),
-                      _buildByGrantTab(),
-                      _buildByOperatorTab(),
-                      _buildMyActivityTab(),
+                      _safeTabBuilder(_buildOverviewTab, 'Overview'),
+                      _safeTabBuilder(_buildByItemTab, 'By Item'),
+                      _safeTabBuilder(_buildByGrantTab, 'By Grant'),
+                      _safeTabBuilder(_buildByOperatorTab, 'By Operator'),
+                      _safeTabBuilder(_buildMyActivityTab, 'My Activity'),
                     ],
                   ),
                 ),
               ],
             ),
     );
+  }
+
+  // Helper to safely build tabs with error handling
+  Widget _safeTabBuilder(Widget Function() builder, String tabName) {
+    try {
+      return builder();
+    } catch (e, stack) {
+      debugPrint('Error building $tabName tab: $e\n$stack');
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, size: 48, color: Colors.red[300]),
+              const SizedBox(height: 16),
+              Text('Error loading $tabName'),
+              const SizedBox(height: 8),
+              Text('$e', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
   }
 
   // ==================== OVERVIEW TAB ====================
