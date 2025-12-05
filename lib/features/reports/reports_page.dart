@@ -59,6 +59,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           .where('usedAt', isGreaterThanOrEqualTo: start)
           .where('usedAt', isLessThan: end)
           .orderBy('usedAt', descending: true)
+          .limit(1000) // Limit to prevent performance issues
           .get();
       
       _usageLogs = usageSnapshot.docs;
@@ -66,10 +67,13 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       // Load lookups
       await _loadLookups();
       
-      setState(() => _loading = false);
-    } catch (e) {
-      setState(() => _loading = false);
       if (mounted) {
+        setState(() => _loading = false);
+      }
+    } catch (e) {
+      debugPrint('ReportsPage error: $e');
+      if (mounted) {
+        setState(() => _loading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to load data: $e')),
         );
@@ -78,26 +82,44 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _loadLookups() async {
-    // Load item names
-    final itemIds = _usageLogs.map((d) => d['itemId'] as String?).where((id) => id != null).toSet();
-    for (final itemId in itemIds) {
-      if (itemId == null) continue;
-      final doc = await _db.collection('items').doc(itemId).get();
-      if (doc.exists) {
-        _itemNames[itemId] = doc.data()?['name'] as String? ?? 'Unknown Item';
+    try {
+      // Load item names in batch (not one by one!)
+      final itemIds = _usageLogs
+          .map((d) => d['itemId'] as String?)
+          .where((id) => id != null && id.isNotEmpty)
+          .toSet()
+          .take(100) // Limit to prevent too many reads
+          .toList();
+      
+      // Batch load items - Firestore whereIn is limited to 30 items
+      for (var i = 0; i < itemIds.length; i += 30) {
+        final batch = itemIds.skip(i).take(30).toList();
+        if (batch.isEmpty) continue;
+        
+        final itemsSnapshot = await _db
+            .collection('items')
+            .where(FieldPath.documentId, whereIn: batch)
+            .get();
+        
+        for (final doc in itemsSnapshot.docs) {
+          _itemNames[doc.id] = doc.data()['name'] as String? ?? 'Unknown Item';
+        }
       }
-    }
-    
-    // Load intervention names
-    final interventionSnap = await _db.collection('interventions').get();
-    for (final doc in interventionSnap.docs) {
-      _interventionNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
-    }
-    
-    // Load grant names
-    final grantSnap = await _db.collection('grants').get();
-    for (final doc in grantSnap.docs) {
-      _grantNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      
+      // Load intervention names
+      final interventionSnap = await _db.collection('interventions').get();
+      for (final doc in interventionSnap.docs) {
+        _interventionNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      }
+      
+      // Load grant names
+      final grantSnap = await _db.collection('grants').get();
+      for (final doc in grantSnap.docs) {
+        _grantNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      }
+    } catch (e) {
+      debugPrint('Error loading lookups: $e');
+      // Continue anyway - we can still show reports with IDs instead of names
     }
     
     // Extract unique operator names from usage logs
