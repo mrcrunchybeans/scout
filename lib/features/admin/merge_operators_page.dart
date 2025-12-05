@@ -89,6 +89,16 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
         }
       }
       
+      // Count from usage_logs
+      final usageLogs = await db.collection('usage_logs').get();
+      for (final doc in usageLogs.docs) {
+        final data = doc.data();
+        final operatorName = data['operatorName'] as String?;
+        if (operatorName != null && operatorName.isNotEmpty) {
+          counts[operatorName] = (counts[operatorName] ?? 0) + 1;
+        }
+      }
+      
       setState(() {
         _operatorCounts = counts;
         _loading = false;
@@ -115,6 +125,7 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
           'This will replace all occurrences of "$_sourceOperator" with "$_targetOperator" across:\n\n'
           '• Items (operatorName, createdBy)\n'
           '• Cart sessions\n'
+          '• Usage logs\n'
           '• Feedback & votes\n'
           '• Library items\n\n'
           'Note: Audit logs are preserved for historical accuracy.\n\n'
@@ -260,6 +271,16 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
         }
       }
       _log('  Updated $libraryUpdated library items');
+      
+      // Merge in usage_logs
+      _log('Checking usage logs...');
+      final usageLogs = await db.collection('usage_logs').where('operatorName', isEqualTo: source).get();
+      int usageLogsUpdated = 0;
+      for (final doc in usageLogs.docs) {
+        await doc.reference.update({'operatorName': target});
+        usageLogsUpdated++;
+      }
+      _log('  Updated $usageLogsUpdated usage logs');
       
       _log('\n✓ Merge complete!');
       
