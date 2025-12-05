@@ -13,7 +13,7 @@ import '../session/cart_session_page.dart';
 import 'package:scout/widgets/operator_chip.dart';
 import 'package:scout/utils/admin_pin.dart';
 import '../admin/admin_page.dart';
-import '../reports/usage_report_page.dart';
+import '../reports/reports_page.dart';
 import '../library/library_management_page.dart';
 import '../budget/budget_page.dart';
 
@@ -162,7 +162,7 @@ class _DashboardPageState extends State<DashboardPage> {
             onSelected: (v) async {
               final ctx = context;
               if (v == _DashboardMenuAction.reports) {
-                Navigator.push(ctx, MaterialPageRoute(builder: (_) => const UsageReportPage()));
+                Navigator.push(ctx, MaterialPageRoute(builder: (_) => const ReportsPage()));
               } else if (v == _DashboardMenuAction.admin) {
                 final ok = await AdminPin.ensure(ctx);
                 if (!ctx.mounted || !ok) return;

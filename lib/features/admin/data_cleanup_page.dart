@@ -466,24 +466,8 @@ class _DataCleanupPageState extends State<DataCleanupPage> with SingleTickerProv
           await batch.commit();
         }
         
-        // 3. Update audit_logs references (optional, for history)
-        final auditLogsSnapshot = await _db
-            .collection('audit_logs')
-            .where('data.itemId', isEqualTo: duplicateId)
-            .limit(500)
-            .get();
-        
-        if (auditLogsSnapshot.docs.isNotEmpty) {
-          final auditBatch = _db.batch();
-          for (final logDoc in auditLogsSnapshot.docs) {
-            final data = logDoc.data();
-            final logData = Map<String, dynamic>.from(data['data'] as Map? ?? {});
-            logData['itemId'] = primaryId;
-            logData['originalItemId'] = duplicateId;
-            auditBatch.update(logDoc.reference, {'data': logData});
-          }
-          await auditBatch.commit();
-        }
+        // Note: We don't update audit_logs because they are append-only by design.
+        // The merge operation itself is logged at the end.
       }
       
       // 4. Update the primary item with merged barcodes and recalculate qty
