@@ -310,16 +310,16 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
     }
   }
 
-  /// Fix usage_logs that have "System" as operatorName by looking up
+  /// Fix usage_logs that have missing or "System" operatorName by looking up
   /// the correct name from the createdBy UID
   Future<void> _fixSystemEntries() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Fix "System" Entries'),
+        title: const Text('Fix Missing Operator Names'),
         content: const Text(
-          'This will find all usage_logs with operatorName "System" and '
-          'attempt to fix them by looking up the correct operator name '
+          'This will find all usage_logs with missing, empty, or "System" '
+          'operatorName and fix them by looking up the correct name '
           'from the createdBy UID.\n\n'
           'The UID-to-name mapping is built from:\n'
           '• Audit logs\n'
@@ -398,18 +398,26 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
       // Log the mappings found
       _log('\nUID to Name mappings:');
       for (final entry in uidToName.entries) {
-        _log('  ${entry.key.substring(0, 8)}... → ${entry.value}');
+        final shortUid = entry.key.length > 8 ? '${entry.key.substring(0, 8)}...' : entry.key;
+        _log('  $shortUid → ${entry.value}');
       }
       
-      // Step 2: Find usage_logs with "System" as operatorName
-      _log('\nFinding usage_logs with operatorName="System"...');
-      final systemLogs = await db.collection('usage_logs')
-          .where('operatorName', isEqualTo: 'System')
-          .get();
-      _log('  Found ${systemLogs.docs.length} entries to fix');
+      // Step 2: Find ALL usage_logs and fix those with bad operatorName
+      _log('\nScanning all usage_logs...');
+      final allLogs = await db.collection('usage_logs').get();
+      _log('  Total usage_logs: ${allLogs.docs.length}');
       
-      if (systemLogs.docs.isEmpty) {
-        _log('\n✓ No "System" entries to fix!');
+      // Find logs that need fixing (operatorName is null, empty, or "System")
+      final logsToFix = allLogs.docs.where((doc) {
+        final data = doc.data();
+        final opName = data['operatorName'] as String?;
+        return opName == null || opName.isEmpty || opName == 'System';
+      }).toList();
+      
+      _log('  Logs needing fix: ${logsToFix.length}');
+      
+      if (logsToFix.isEmpty) {
+        _log('\n✓ No entries to fix!');
         return;
       }
       
@@ -419,7 +427,7 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
       int notFound = 0;
       final notFoundUids = <String>{};
       
-      for (final doc in systemLogs.docs) {
+      for (final doc in logsToFix) {
         final data = doc.data();
         final uid = data['createdBy'] as String?;
         
@@ -640,27 +648,26 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
                   
                   const SizedBox(height: 12),
                   
-                  // Fix System Entries button
-                  if (_operatorCounts.containsKey('System'))
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: (!_merging && !_fixingSystem) ? _fixSystemEntries : null,
-                        icon: _fixingSystem 
-                            ? const SizedBox(
-                                width: 20, 
-                                height: 20, 
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.auto_fix_high),
-                        label: Text(_fixingSystem 
-                            ? 'Fixing...' 
-                            : 'Auto-Fix "System" Entries (${_operatorCounts['System']})'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                        ),
+                  // Fix Missing Operator Names button
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: (!_merging && !_fixingSystem) ? _fixSystemEntries : null,
+                      icon: _fixingSystem 
+                          ? const SizedBox(
+                              width: 20, 
+                              height: 20, 
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.auto_fix_high),
+                      label: Text(_fixingSystem 
+                          ? 'Fixing...' 
+                          : 'Auto-Fix Missing Operator Names'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
                     ),
+                  ),
                   
                   const SizedBox(height: 24),
                   
