@@ -15,6 +15,7 @@ class MergeOperatorsPage extends StatefulWidget {
 class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
   bool _loading = true;
   bool _merging = false;
+  bool _fixingSystem = false;
   Map<String, int> _operatorCounts = {};
   String? _sourceOperator;
   String? _targetOperator;
@@ -309,6 +310,163 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
     }
   }
 
+  /// Fix usage_logs that have "System" as operatorName by looking up
+  /// the correct name from the createdBy UID
+  Future<void> _fixSystemEntries() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Fix "System" Entries'),
+        content: const Text(
+          'This will find all usage_logs with operatorName "System" and '
+          'attempt to fix them by looking up the correct operator name '
+          'from the createdBy UID.\n\n'
+          'The UID-to-name mapping is built from:\n'
+          '• Audit logs\n'
+          '• Cart sessions\n'
+          '• Items\n\n'
+          'Continue?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Fix')),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() {
+      _fixingSystem = true;
+      _mergeLog = 'Starting fix for "System" entries...\n';
+    });
+    
+    try {
+      final db = FirebaseFirestore.instance;
+      
+      // Step 1: Build UID → name mapping from various sources
+      _log('Building UID to name mapping...');
+      final uidToName = <String, String>{};
+      
+      // From audit_logs (most reliable - has both createdBy UID and operatorName)
+      _log('  Scanning audit_logs...');
+      final auditLogs = await db.collection('audit_logs').limit(500).get();
+      for (final doc in auditLogs.docs) {
+        final data = doc.data();
+        final uid = data['createdBy'] as String?;
+        final name = data['operatorName'] as String?;
+        if (uid != null && uid.isNotEmpty && 
+            name != null && name.isNotEmpty && 
+            name != 'System' && name != 'Unknown') {
+          uidToName[uid] = name;
+        }
+      }
+      _log('    Found ${uidToName.length} UID mappings from audit_logs');
+      
+      // From cart_sessions
+      _log('  Scanning cart_sessions...');
+      final sessions = await db.collection('cart_sessions').get();
+      for (final doc in sessions.docs) {
+        final data = doc.data();
+        final uid = data['createdBy'] as String?;
+        final name = data['operatorName'] as String?;
+        if (uid != null && uid.isNotEmpty && 
+            name != null && name.isNotEmpty && 
+            name != 'System' && name != 'Unknown' &&
+            !uidToName.containsKey(uid)) {
+          uidToName[uid] = name;
+        }
+      }
+      _log('    Total mappings: ${uidToName.length}');
+      
+      // From items
+      _log('  Scanning items...');
+      final items = await db.collection('items').get();
+      for (final doc in items.docs) {
+        final data = doc.data();
+        final uid = data['createdBy'] as String?;
+        final name = data['operatorName'] as String?;
+        if (uid != null && uid.isNotEmpty && 
+            name != null && name.isNotEmpty && 
+            name != 'System' && name != 'Unknown' &&
+            !uidToName.containsKey(uid)) {
+          uidToName[uid] = name;
+        }
+      }
+      _log('    Total mappings: ${uidToName.length}');
+      
+      // Log the mappings found
+      _log('\nUID to Name mappings:');
+      for (final entry in uidToName.entries) {
+        _log('  ${entry.key.substring(0, 8)}... → ${entry.value}');
+      }
+      
+      // Step 2: Find usage_logs with "System" as operatorName
+      _log('\nFinding usage_logs with operatorName="System"...');
+      final systemLogs = await db.collection('usage_logs')
+          .where('operatorName', isEqualTo: 'System')
+          .get();
+      _log('  Found ${systemLogs.docs.length} entries to fix');
+      
+      if (systemLogs.docs.isEmpty) {
+        _log('\n✓ No "System" entries to fix!');
+        return;
+      }
+      
+      // Step 3: Update each usage_log
+      _log('\nUpdating usage_logs...');
+      int fixed = 0;
+      int notFound = 0;
+      final notFoundUids = <String>{};
+      
+      for (final doc in systemLogs.docs) {
+        final data = doc.data();
+        final uid = data['createdBy'] as String?;
+        
+        if (uid != null && uidToName.containsKey(uid)) {
+          final correctName = uidToName[uid]!;
+          await doc.reference.update({'operatorName': correctName});
+          fixed++;
+        } else {
+          notFound++;
+          if (uid != null) notFoundUids.add(uid);
+        }
+      }
+      
+      _log('  Fixed: $fixed');
+      _log('  Could not fix (UID not found): $notFound');
+      if (notFoundUids.isNotEmpty) {
+        _log('  Unknown UIDs:');
+        for (final uid in notFoundUids) {
+          _log('    $uid');
+        }
+      }
+      
+      _log('\n✓ Fix complete!');
+      
+      // Reload operators
+      await _loadOperators();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Fixed $fixed usage logs. $notFound could not be mapped.'),
+            backgroundColor: fixed > 0 ? Colors.green : Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      _log('\n✗ Error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      setState(() => _fixingSystem = false);
+    }
+  }
+
   void _log(String message) {
     setState(() {
       _mergeLog += '$message\n';
@@ -479,6 +637,30 @@ class _MergeOperatorsPageState extends State<MergeOperatorsPage> {
                       ),
                     ),
                   ),
+                  
+                  const SizedBox(height: 12),
+                  
+                  // Fix System Entries button
+                  if (_operatorCounts.containsKey('System'))
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: (!_merging && !_fixingSystem) ? _fixSystemEntries : null,
+                        icon: _fixingSystem 
+                            ? const SizedBox(
+                                width: 20, 
+                                height: 20, 
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.auto_fix_high),
+                        label: Text(_fixingSystem 
+                            ? 'Fixing...' 
+                            : 'Auto-Fix "System" Entries (${_operatorCounts['System']})'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                      ),
+                    ),
                   
                   const SizedBox(height: 24),
                   
