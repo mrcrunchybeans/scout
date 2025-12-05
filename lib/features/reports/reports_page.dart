@@ -78,6 +78,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       debugPrint('ReportsPage: Got ${usageSnapshot.docs.length} usage logs');
       _usageLogs = usageSnapshot.docs;
       
+      // Debug: Print first few usage_logs to see actual fields
+      for (var i = 0; i < _usageLogs.length && i < 3; i++) {
+        final data = _usageLogs[i].data() as Map<String, dynamic>?;
+        if (data != null) {
+          debugPrint('ReportsPage: usage_log[$i] fields: ${data.keys.toList()}');
+          debugPrint('ReportsPage: usage_log[$i] operatorName: "${data['operatorName']}"');
+          debugPrint('ReportsPage: usage_log[$i] itemId: "${data['itemId']}"');
+        }
+      }
+      
       // Load lookups
       await _loadLookups();
       
@@ -101,7 +111,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     try {
       // Load item names in batch (not one by one!)
       final itemIds = _usageLogs
-          .map((d) => d['itemId'] as String?)
+          .map((d) => _getField(d, 'itemId') as String?)
           .where((id) => id != null && id.isNotEmpty)
           .toSet()
           .take(100) // Limit to prevent too many reads

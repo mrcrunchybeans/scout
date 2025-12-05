@@ -104,11 +104,43 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
   Map<String, dynamic>? _usageStats;
   List<Map<String, dynamic>> _recentUsage = [];
   bool _loadingUsage = true;
+  Map<String, String> _grantNames = {};
+  Map<String, String> _locationNames = {};
 
   @override
   void initState() {
     super.initState();
+    _loadLookups();
     _loadUsageData();
+  }
+
+  Future<void> _loadLookups() async {
+    try {
+      final db = FirebaseFirestore.instance;
+      
+      // Load grant names
+      final grantSnap = await db.collection('grants').get();
+      final grants = <String, String>{};
+      for (final doc in grantSnap.docs) {
+        grants[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      }
+      
+      // Load location names (interventions)
+      final locSnap = await db.collection('interventions').get();
+      final locations = <String, String>{};
+      for (final doc in locSnap.docs) {
+        locations[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      }
+      
+      if (mounted) {
+        setState(() {
+          _grantNames = grants;
+          _locationNames = locations;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading lookups: $e');
+    }
   }
 
   Future<void> _loadUsageData() async {
@@ -219,7 +251,7 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
             const SizedBox(height: 16),
 
             // Item Metadata Card
-            _buildMetadataCard(data, context),
+            _buildMetadataCard(data, context, _grantNames, _locationNames),
 
             const SizedBox(height: 16),
 
@@ -592,13 +624,17 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
     );
   }
 
-  Widget _buildMetadataCard(Map<String, dynamic> data, BuildContext context) {
+  Widget _buildMetadataCard(Map<String, dynamic> data, BuildContext context, Map<String, String> grantNames, Map<String, String> locationNames) {
     final category = data['category'] as String?;
     final useType = data['useType'] as String?;
     final homeLocationId = data['homeLocationId'] as String?;
     final grantId = data['grantId'] as String?;
     final lastUsedTs = data['lastUsedAt'];
     final lastUsed = (lastUsedTs is Timestamp) ? lastUsedTs.toDate() : null;
+
+    // Look up display names
+    final locationDisplay = homeLocationId != null ? (locationNames[homeLocationId] ?? homeLocationId) : null;
+    final grantDisplay = grantId != null ? (grantNames[grantId] ?? grantId) : null;
 
     return Card(
       child: Padding(
@@ -624,10 +660,10 @@ class _ItemSummaryTabState extends State<_ItemSummaryTab> {
                   _buildMetadataItem(context, 'Category', category),
                 if (useType != null)
                   _buildMetadataItem(context, 'Use Type', useType),
-                if (homeLocationId != null)
-                  _buildMetadataItem(context, 'Location', homeLocationId),
-                if (grantId != null)
-                  _buildMetadataItem(context, 'Grant', grantId),
+                if (locationDisplay != null)
+                  _buildMetadataItem(context, 'Location', locationDisplay),
+                if (grantDisplay != null)
+                  _buildMetadataItem(context, 'Grant', grantDisplay),
                 if (lastUsed != null)
                   _buildMetadataItem(
                     context,

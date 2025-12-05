@@ -9,7 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-
+import '../../utils/operator_store.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
 import '../../widgets/usb_wedge_scanner.dart';
@@ -71,8 +71,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
   bool get _isClosed => _status == 'closed';
 
   /// Get the current user's display name for audit logs.
-  /// Falls back to email, then "System" for automated operations.
+  /// Prefers OperatorStore (user-set name), falls back to Firebase Auth displayName/email.
   String get _operatorName {
+    // First check OperatorStore (user manually set their name)
+    final storedName = OperatorStore.name.value;
+    if (storedName != null && storedName.isNotEmpty) return storedName;
+    
+    // Fall back to Firebase Auth
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return 'System';
     // Check displayName first (handle empty string as null)
