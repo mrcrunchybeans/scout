@@ -29,7 +29,7 @@ class CartPrintService {
     
     // Cast to Window to access document
     if (printWindow is! html.Window) return;
-    final htmlDoc = printWindow.document as html.HtmlDocument;
+    final doc = printWindow.document as html.HtmlDocument;
 
     final now = DateTime.now();
     final dateStr = DateFormat('EEEE, MMMM d, yyyy').format(now);
@@ -45,14 +45,9 @@ class CartPrintService {
         ? 'Expected to Load' 
         : 'Expected Leftover';
 
-    // Build HTML content
-    final htmlContent = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>$title</title>
-  <style>
+    // Create style tag
+    doc.head!.appendHtml('<title>$title</title>');
+    doc.head!.appendHtml('''<style>
     @page {
       margin: 0.75in;
       size: letter portrait;
@@ -235,9 +230,10 @@ class CartPrintService {
         display: none;
       }
     }
-  </style>
-</head>
-<body>
+  </style>''');
+
+    // Build body content
+    doc.body!.innerHtml = '''
   <div class="header">
     <div class="title">$title</div>
     <div class="subtitle">Inventory Preparation & Count Verification</div>
@@ -290,19 +286,10 @@ class CartPrintService {
   <div style="margin-top: 20pt; text-align: center; color: #5A6C71; font-size: 9pt;">
     SCOUT - Spiritual Care Operations & Usage Tracker
   </div>
-  
-  <script>
-    // Auto-print when page loads
-    window.onload = function() {
-      window.print();
-    };
-  </script>
-</body>
-</html>
 ''';
 
-    htmlDoc.write(htmlContent);
-    htmlDoc.close();
+    // Trigger print dialog
+    printWindow.print();
   }
 
   /// Generate HTML table rows for items.
