@@ -817,7 +817,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
   /// Print a checklist for counting items before starting the session.
   /// Useful for interns or staff to verify quantities.
-  void _printChecklist({ChecklistType type = ChecklistType.preparation}) {
+  void _printChecklist() {
     if (_lines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Add items to the cart before printing checklist')),
@@ -827,12 +827,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     // Convert cart lines to checklist items
     final checklistItems = _lines.map((line) {
-      // Use initialQty for preparation, endQty for leftover
-      final qty = type == ChecklistType.preparation ? line.initialQty : (line.endQty ?? 0);
-      
       return CartChecklistItem(
         name: line.itemName,
-        quantity: qty,
+        quantity: line.initialQty,
         unit: line.baseUnit,
         lotCode: line.lotCode,
         barcode: null, // Barcode not available in cart line
@@ -845,15 +842,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
       interventionName: _interventionName,
       location: _locationText.trim().isEmpty ? null : _locationText.trim(),
       notes: _notes.trim().isEmpty ? null : _notes.trim(),
-      type: type,
     );
 
     // Show confirmation
-    final typeLabel = type == ChecklistType.preparation ? 'preparation' : 'leftover';
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('📄 Printing $typeLabel checklist... Check your browser\'s print dialog'),
-        duration: const Duration(seconds: 3),
+      const SnackBar(
+        content: Text('Printing checklist... Check your browser\'s print dialog'),
+        duration: Duration(seconds: 3),
       ),
     );
   }
@@ -1890,26 +1885,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       label: const Text('Scan'),
                       onPressed: (_busy || _isClosed) ? null : _scanAndAdd,
                     ),
-                    if (_lines.isNotEmpty) ...[
+                    if (_lines.isNotEmpty)
                       OutlinedButton.icon(
                         icon: const Icon(Icons.print),
-                        label: const Text('Print Prep Checklist'),
-                        onPressed: _busy ? null : () => _printChecklist(type: ChecklistType.preparation),
+                        label: const Text('Print Checklist'),
+                        onPressed: _busy ? null : _printChecklist,
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Theme.of(context).colorScheme.tertiary,
                           side: BorderSide(color: Theme.of(context).colorScheme.tertiary),
                         ),
                       ),
-                      OutlinedButton.icon(
-                        icon: const Icon(Icons.inventory_2),
-                        label: const Text('Print Leftover Checklist'),
-                        onPressed: _busy ? null : () => _printChecklist(type: ChecklistType.leftover),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Theme.of(context).colorScheme.secondary,
-                          side: BorderSide(color: Theme.of(context).colorScheme.secondary),
-                        ),
-                      ),
-                    ],
                   ],
                 ),
 
