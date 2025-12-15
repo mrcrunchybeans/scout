@@ -848,6 +848,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
     // Show confirmation
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
+        content: Text('Printing checklist... Check your browser\'s print dialog'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
 
   /// Sort lines based on the current sort option
   List<CartLine> get _sortedLines {
@@ -874,11 +879,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
     }
     
     return lines;
-  }
-        content: Text('Printing checklist... Check your browser\'s print dialog'),
-        duration: Duration(seconds: 3),
-      ),
-    );
   }
 
   Future<void> _openTimeTrackingUrl(String rawUrl) async {
