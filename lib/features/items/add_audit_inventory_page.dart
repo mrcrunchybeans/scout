@@ -932,15 +932,15 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Amount to add',
-                  suffixText: baseUnit,
+                  suffixText: widget.baseUnit,
                   suffixIcon: IconButton(
                     icon: const Icon(Icons.calculate, size: 20),
                     tooltip: 'Calculate by weight',
                     onPressed: () async {
                       final calc = await showWeightCalculator(
                         context: context,
-                        itemName: '$itemName (Lot $lotCode)',
-                        unit: baseUnit,
+                        itemName: '${widget.itemName} (Lot $lotCode)',
+                        unit: widget.baseUnit,
                       );
                       if (calc != null) {
                         addController.text = calc.toString();
@@ -1039,7 +1039,7 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Amount to waste',
-                  suffixText: baseUnit,
+                  suffixText: widget.baseUnit,
                   suffixIcon: IconButton(
                     icon: const Icon(Icons.calculate, size: 20),
                     tooltip: 'Calculate by weight',
@@ -1047,7 +1047,7 @@ class _AuditOptionsState extends State<_AuditOptions> {
                       final calc = await showWeightCalculator(
                         context: context,
                         itemName: '${widget.itemName} (Lot $lotCode)',
-                        unit: baseUnit,
+                        unit: widget.baseUnit,
                       );
                       if (calc != null) {
                         wasteController.text = calc.toString();
@@ -1153,16 +1153,16 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   labelText: 'Remaining quantity',
-                  suffixText: baseUnit,
+                  suffixText: widget.baseUnit,
                   suffixIcon: IconButton(
                     icon: const Icon(Icons.calculate, size: 20),
                     tooltip: 'Calculate by weight',
                     onPressed: () async {
                       final calc = await showWeightCalculator(
                         context: context,
-                        itemName: '$itemName (Lot $lotCode)',
+                        itemName: '${widget.itemName} (Lot $lotCode)',
                         initialQty: qtyRemaining,
-                        unit: baseUnit,
+                        unit: widget.baseUnit,
                       );
                       if (calc != null) {
                         qtyController.text = calc.toString();

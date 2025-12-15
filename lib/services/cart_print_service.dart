@@ -24,11 +24,12 @@ class CartPrintService {
     String? notes,
     ChecklistType type = ChecklistType.preparation,
   }) {
-    final html.WindowBase? printWindow = html.window.open('', '_blank');
+    final printWindow = html.window.open('', '_blank');
     if (printWindow == null) return;
-
+    
+    // Cast to Window to access document
+    if (printWindow is! html.Window) return;
     final doc = printWindow.document;
-    if (doc == null) return;
 
     final now = DateTime.now();
     final dateStr = DateFormat('EEEE, MMMM d, yyyy').format(now);

@@ -827,8 +827,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     // Convert cart lines to checklist items
     final checklistItems = _lines.map((line) {
-      // Use initialQty for preparation, finalQty for leftover
-      final qty = type == ChecklistType.preparation ? line.initialQty : line.finalQty;
+      // Use initialQty for preparation, endQty for leftover
+      final qty = type == ChecklistType.preparation ? line.initialQty : (line.endQty ?? 0);
       
       return CartChecklistItem(
         name: line.itemName,
