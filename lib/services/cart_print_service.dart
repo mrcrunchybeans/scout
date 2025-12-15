@@ -229,15 +229,16 @@ class CartPrintService {
   
   <div class="instructions">
     <div class="instructions-title">Instructions:</div>
-    <p class="instructions-text">Count each item and write the quantity in the Count column. Check the box when verified.</p>
+    <p class="instructions-text">Before session: Count items going onto cart and write in "Before" column. After session: Count leftover items and write in "After" column. Check box when done.</p>
   </div>
   
   <table>
     <thead>
       <tr>
         <th class="checkbox-column">✓</th>
-        <th>Item Name</th>
-        <th class="count-column">Count</th>
+        <th>Item Name & Lot</th>
+        <th class="count-column">Before</th>
+        <th class="count-column">After</th>
       </tr>
     </thead>
     <tbody>
@@ -292,13 +293,15 @@ class CartPrintService {
       final item = items[i];
       final details = <String>[];
 
-      if (item.lotCode != null) {
-        details.add('Lot: ${item.lotCode}');
-      }
       if (item.barcode != null && item.barcode!.isNotEmpty) {
         details.add('Barcode: ${item.barcode}');
       }
       details.add('${_formatQty(item.quantity)} ${item.unit}');
+      
+      // Show lot code prominently in the item name if present
+      final displayName = item.lotCode != null 
+          ? '${_escapeHtml(item.name)} [Lot: ${item.lotCode}]'
+          : _escapeHtml(item.name);
 
       buffer.writeln('''
       <tr>
@@ -306,8 +309,11 @@ class CartPrintService {
           <span class="checkbox"></span>
         </td>
         <td>
-          <div class="item-name">${i + 1}. ${_escapeHtml(item.name)}</div>
+          <div class="item-name">${i + 1}. $displayName</div>
           ${details.isNotEmpty ? '<div class="item-details">${_escapeHtml(details.join(' • '))}</div>' : ''}
+        </td>
+        <td class="count-column">
+          _______
         </td>
         <td class="count-column">
           _______
