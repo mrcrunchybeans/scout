@@ -541,6 +541,209 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             ],
           ),
         ),
+        // Visual charts when searching
+        if (_searchQuery.isNotEmpty && sorted.isNotEmpty) ...[
+          // Bar Chart comparing items
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Quantity Comparison',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 200,
+                    child: BarChart(
+                      BarChartData(
+                        alignment: BarChartAlignment.spaceAround,
+                        maxY: sorted.first.value * 1.1,
+                        barTouchData: BarTouchData(
+                          touchTooltipData: BarTouchTooltipData(
+                            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                              final itemId = sorted[group.x.toInt()].key;
+                              final name = _itemNames[itemId] ?? 'Unknown';
+                              return BarTooltipItem(
+                                '$name\n${rod.toY.toStringAsFixed(0)}',
+                                const TextStyle(color: Colors.white, fontSize: 12),
+                              );
+                            },
+                          ),
+                        ),
+                        titlesData: FlTitlesData(
+                          show: true,
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              getTitlesWidget: (value, meta) {
+                                if (value.toInt() >= sorted.length) return const SizedBox.shrink();
+                                final itemId = sorted[value.toInt()].key;
+                                final name = _itemNames[itemId] ?? '';
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text(
+                                    name.length > 10 ? '${name.substring(0, 10)}...' : name,
+                                    style: const TextStyle(fontSize: 10),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          leftTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              reservedSize: 40,
+                              getTitlesWidget: (value, meta) {
+                                return Text(
+                                  value.toInt().toString(),
+                                  style: const TextStyle(fontSize: 10),
+                                );
+                              },
+                            ),
+                          ),
+                          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        ),
+                        borderData: FlBorderData(show: false),
+                        barGroups: List.generate(
+                          sorted.length,
+                          (index) => BarChartGroupData(
+                            x: index,
+                            barRods: [
+                              BarChartRodData(
+                                toY: sorted[index].value,
+                                color: Theme.of(context).colorScheme.primary,
+                                width: 16,
+                                borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Pie Chart showing distribution
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Distribution',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 200,
+                    child: PieChart(
+                      PieChartData(
+                        sections: List.generate(
+                          sorted.length,
+                          (index) {
+                            final entry = sorted[index];
+                            final pct = totalQty > 0 ? (entry.value / totalQty * 100) : 0;
+                            final colors = [
+                              Theme.of(context).colorScheme.primary,
+                              Theme.of(context).colorScheme.secondary,
+                              Theme.of(context).colorScheme.tertiary,
+                              Theme.of(context).colorScheme.primaryContainer,
+                              Theme.of(context).colorScheme.secondaryContainer,
+                              Theme.of(context).colorScheme.tertiaryContainer,
+                            ];
+                            return PieChartSectionData(
+                              value: entry.value,
+                              title: '${pct.toStringAsFixed(1)}%',
+                              color: colors[index % colors.length],
+                              radius: 80,
+                              titleStyle: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            );
+                          },
+                        ),
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 40,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Legend
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: List.generate(
+                      sorted.length,
+                      (index) {
+                        final colors = [
+                          Theme.of(context).colorScheme.primary,
+                          Theme.of(context).colorScheme.secondary,
+                          Theme.of(context).colorScheme.tertiary,
+                          Theme.of(context).colorScheme.primaryContainer,
+                          Theme.of(context).colorScheme.secondaryContainer,
+                          Theme.of(context).colorScheme.tertiaryContainer,
+                        ];
+                        final itemId = sorted[index].key;
+                        final name = _itemNames[itemId] ?? 'Unknown';
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 12,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                color: colors[index % colors.length],
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              name.length > 20 ? '${name.substring(0, 20)}...' : name,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Line Chart showing usage over time
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Usage Over Time',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 200,
+                    child: _buildUsageOverTimeChart(sorted.map((e) => e.key).toList()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
         // Items list
         Expanded(
           child: ListView.separated(
@@ -617,6 +820,151 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           ),
         ),
       ],
+    );
+  }
+
+  /// Build a line chart showing usage over time for the specified items
+  Widget _buildUsageOverTimeChart(List<String> itemIds) {
+    // Group usage logs by date for each item
+    final Map<String, Map<DateTime, double>> itemDateTotals = {};
+    
+    for (final itemId in itemIds) {
+      itemDateTotals[itemId] = {};
+    }
+    
+    for (final doc in _usageLogs) {
+      final itemId = _getField(doc, 'itemId') as String?;
+      if (itemId == null || !itemIds.contains(itemId)) continue;
+      
+      final usedAt = _getField(doc, 'usedAt') as Timestamp?;
+      if (usedAt == null) continue;
+      
+      final date = DateTime(usedAt.toDate().year, usedAt.toDate().month, usedAt.toDate().day);
+      final qty = (_getField(doc, 'qtyUsed') as num?)?.toDouble() ?? 0;
+      
+      itemDateTotals[itemId]![date] = (itemDateTotals[itemId]![date] ?? 0) + qty;
+    }
+    
+    // Get all unique dates and sort them
+    final allDates = <DateTime>{};
+    for (final dateTotals in itemDateTotals.values) {
+      allDates.addAll(dateTotals.keys);
+    }
+    final sortedDates = allDates.toList()..sort();
+    
+    if (sortedDates.isEmpty) {
+      return const Center(
+        child: Text('No usage data available', style: TextStyle(color: Colors.grey)),
+      );
+    }
+    
+    // Create line chart data
+    final colors = [
+      Theme.of(context).colorScheme.primary,
+      Theme.of(context).colorScheme.secondary,
+      Theme.of(context).colorScheme.tertiary,
+      Colors.orange,
+      Colors.purple,
+      Colors.teal,
+    ];
+    
+    final lines = <LineChartBarData>[];
+    var colorIndex = 0;
+    
+    for (final itemId in itemIds) {
+      final spots = <FlSpot>[];
+      for (var i = 0; i < sortedDates.length; i++) {
+        final date = sortedDates[i];
+        final qty = itemDateTotals[itemId]![date] ?? 0;
+        spots.add(FlSpot(i.toDouble(), qty));
+      }
+      
+      lines.add(
+        LineChartBarData(
+          spots: spots,
+          color: colors[colorIndex % colors.length],
+          barWidth: 2,
+          isStrokeCapRound: true,
+          dotData: const FlDotData(show: true),
+          belowBarData: BarAreaData(show: false),
+        ),
+      );
+      colorIndex++;
+    }
+    
+    // Find max Y value
+    double maxY = 0;
+    for (final dateTotals in itemDateTotals.values) {
+      for (final qty in dateTotals.values) {
+        if (qty > maxY) maxY = qty;
+      }
+    }
+    
+    return LineChart(
+      LineChartData(
+        lineBarsData: lines,
+        minY: 0,
+        maxY: maxY * 1.1,
+        titlesData: FlTitlesData(
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 30,
+              getTitlesWidget: (value, meta) {
+                final index = value.toInt();
+                if (index < 0 || index >= sortedDates.length) return const SizedBox.shrink();
+                final date = sortedDates[index];
+                // Show date every few points to avoid crowding
+                if (sortedDates.length > 10 && index % (sortedDates.length ~/ 5) != 0) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    DateFormat('M/d').format(date),
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                );
+              },
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toInt().toString(),
+                  style: const TextStyle(fontSize: 10),
+                );
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: maxY > 0 ? maxY / 5 : 1,
+        ),
+        borderData: FlBorderData(show: false),
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            getTooltipItems: (touchedSpots) {
+              return touchedSpots.map((spot) {
+                final itemId = itemIds[touchedSpots.indexOf(spot)];
+                final name = _itemNames[itemId] ?? 'Unknown';
+                final date = sortedDates[spot.x.toInt()];
+                return LineTooltipItem(
+                  '$name\n${DateFormat('M/d').format(date)}\n${spot.y.toStringAsFixed(0)}',
+                  const TextStyle(color: Colors.white, fontSize: 12),
+                );
+              }).toList();
+            },
+          ),
+        ),
+      ),
     );
   }
 
