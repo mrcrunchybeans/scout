@@ -24,13 +24,6 @@ class CartPrintService {
     String? notes,
     ChecklistType type = ChecklistType.preparation,
   }) {
-    final printWindow = html.window.open('', '_blank');
-    if (printWindow == null) return;
-    
-    // Cast to Window to access document
-    if (printWindow is! html.Window) return;
-    final doc = printWindow.document as html.HtmlDocument;
-
     final now = DateTime.now();
     final dateStr = DateFormat('EEEE, MMMM d, yyyy').format(now);
     final timeStr = DateFormat('h:mm a').format(now);
@@ -300,8 +293,15 @@ class CartPrintService {
 </html>
 ''';
 
-    // Set the HTML content
-    doc.documentElement!.innerHtml = htmlContent;
+    // Create a blob URL and open it
+    final blob = html.Blob([htmlContent], 'text/html');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    html.window.open(url, '_blank');
+    
+    // Clean up the URL after a short delay
+    Future.delayed(const Duration(seconds: 2), () {
+      html.Url.revokeObjectUrl(url);
+    });
   }
 
   /// Generate HTML table rows for items.
