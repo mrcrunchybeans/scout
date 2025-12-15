@@ -28,19 +28,16 @@ class AddAuditInventoryPage extends StatefulWidget {
 
 class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
   final _db = FirebaseFirestore.instance;
-  final _barcodeController = TextEditingController();
-  final _barcodeFocus = FocusNode();
-  final _nameController = TextEditingController();
-  final _nameFocus = FocusNode();
+  final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
 
   String? _scannedBarcode;
   Map<String, dynamic>? _existingItem;
   Map<String, dynamic>? _productInfo;
   InventoryAction? _action;
   bool _isLoading = false;
-  bool _searchByName = false; // Toggle between barcode and name search
-  List<Map<String, dynamic>> _nameSearchResults = [];
-  Timer? _nameSearchDebounceTimer;
+  List<Map<String, dynamic>> _searchResults = [];
+  Timer? _searchDebounceTimer;
   
   // Mobile scanner session
   late final String _sessionId;
@@ -55,11 +52,9 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
 
   @override
   void dispose() {
-    _barcodeController.dispose();
-    _barcodeFocus.dispose();
-    _nameController.dispose();
-    _nameFocus.dispose();
-    _nameSearchDebounceTimer?.cancel();
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _searchDebounceTimer?.cancel();
     _scannerSubscription?.cancel();
     // Clean up scanner session
     _db.collection('scanner_sessions').doc(_sessionId).delete().catchError((_) {});
@@ -148,23 +143,18 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
 
   Future<void> _handleNameSearch(String name) async {
     // Cancel any existing timer
-    _nameSearchDebounceTimer?.cancel();
+    _searchDebounceTimer?.cancel();
     
     if (name.isEmpty) {
       setState(() {
-        _nameSearchResults = [];
+        _searchResults = [];
         _isLoading = false;
       });
       return;
     }
 
-    // Show minimal loading state without blocking
-    if (!_isLoading && name.length >= 2) {
-      setState(() => _isLoading = true);
-    }
-
     // Start a new timer with 400ms delay for better UX
-    _nameSearchDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 400), () {
       if (mounted) {
         _performNameSearch(name);
       }
@@ -173,6 +163,9 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
 
   Future<void> _performNameSearch(String name) async {
     if (!mounted) return;
+    
+    // Show loading state only when actually searching
+    setState(() => _isLoading = true);
 
     try {
       // Search items by name (case-insensitive partial match)
@@ -202,7 +195,7 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
 
       if (mounted) {
         setState(() {
-          _nameSearchResults = results;
+          _searchResults = results;
           _isLoading = false;
         });
       }
@@ -213,6 +206,28 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
           SnackBar(content: Text('Error searching by name: $e')),
         );
       }
+    }
+  }
+
+  /// Unified search handler that accepts both barcode and name
+  Future<void> _handleUnifiedSearch(String query) async {
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _isLoading = false;
+      });
+      return;
+    }
+
+    // Detect if input looks like a barcode (all digits, or typical barcode format)
+    final looksLikeBarcode = RegExp(r'^[\d\-]+$').hasMatch(query.trim());
+    
+    if (looksLikeBarcode) {
+      // Try barcode search first
+      await _handleBarcode(query.trim());
+    } else {
+      // Fallback to name search with debouncing
+      _handleNameSearch(query);
     }
   }
 
@@ -282,90 +297,55 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
           ),
           const SizedBox(height: 32),
 
-          // Search mode toggle
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment<bool>(
-                value: false,
-                label: Text('Barcode'),
-                icon: Icon(Icons.qr_code),
-              ),
-              ButtonSegment<bool>(
-                value: true,
-                label: Text('Name'),
-                icon: Icon(Icons.search),
-              ),
-            ],
-            selected: {_searchByName},
-            onSelectionChanged: (Set<bool> selected) {
-              setState(() {
-                _searchByName = selected.first;
-                _nameSearchResults = [];
-                _barcodeController.clear();
-                _nameController.clear();
-              });
+          // Unified search input
+          TextField(
+            controller: _searchController,
+            focusNode: _searchFocus,
+            decoration: const InputDecoration(
+              labelText: 'Search by barcode or item name',
+              hintText: 'Enter barcode or start typing item name...',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.search),
+              helperText: 'Automatically detects barcode or searches by name',
+            ),
+            onChanged: _handleUnifiedSearch,
+            onSubmitted: (value) {
+              if (value.trim().isNotEmpty) {
+                _handleUnifiedSearch(value);
+              }
             },
           ),
-
-          const SizedBox(height: 24),
-
-          // Search input based on mode
-          if (_searchByName) ...[
-            TextField(
-              controller: _nameController,
-              focusNode: _nameFocus,
-              decoration: const InputDecoration(
-                labelText: 'Search by item name',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.search),
+          const SizedBox(height: 16),
+          
+          // Search results
+          if (_searchResults.isNotEmpty) ...[
+            Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
               ),
-              onChanged: _handleNameSearch,
-            ),
-            const SizedBox(height: 16),
-            // Name search results
-            if (_nameSearchResults.isNotEmpty) ...[
-              Container(
-                constraints: const BoxConstraints(maxHeight: 200),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: _nameSearchResults.length,
-                  itemBuilder: (context, index) {
-                    final item = _nameSearchResults[index];
-                    return ListTile(
-                      title: Text(item['name'] ?? 'Unknown'),
-                      subtitle: Text('Barcode: ${item['barcode'] ?? 'N/A'}'),
-                      onTap: () => _selectItemFromSearch(item),
-                    );
-                  },
-                ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _searchResults.length,
+                itemBuilder: (context, index) {
+                  final item = _searchResults[index];
+                  return ListTile(
+                    title: Text(item['name'] ?? 'Unknown'),
+                    subtitle: Text('Barcode: ${item['barcode'] ?? 'N/A'}'),
+                    onTap: () => _selectItemFromSearch(item),
+                  );
+                },
               ),
-            ],
-          ] else ...[
-            TextField(
-              controller: _barcodeController,
-              focusNode: _barcodeFocus,
-              decoration: InputDecoration(
-                labelText: 'Scan or enter barcode',
-                border: const OutlineInputBorder(),
-                prefixIcon: IconButton(
-                  icon: const Icon(Icons.qr_code),
-                  onPressed: _showScannerSheet,
-                  tooltip: 'Scan barcode',
-                ),
-              ),
-              onSubmitted: _handleBarcode,
-            ),
-            const SizedBox(height: 16),
-            UsbWedgeScanner(
-              enabled: true,
-              allow: (_) => _barcodeFocus.hasFocus || _barcodeController.text.isEmpty,
-              onCode: _handleBarcode,
             ),
           ],
+
+          const SizedBox(height: 16),
+          UsbWedgeScanner(
+            enabled: true,
+            allow: (_) => _searchFocus.hasFocus || _searchController.text.isEmpty,
+            onCode: (code) => _handleUnifiedSearch(code),
+          ),
 
           const SizedBox(height: 24),
           FilledButton.icon(

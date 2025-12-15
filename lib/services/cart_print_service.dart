@@ -45,9 +45,14 @@ class CartPrintService {
         ? 'Expected to Load' 
         : 'Expected Leftover';
 
-    // Create style tag
-    doc.head!.appendHtml('<title>$title</title>');
-    doc.head!.appendHtml('''<style>
+    // Build complete HTML document as string
+    final htmlContent = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>$title</title>
+  <style>
     @page {
       margin: 0.75in;
       size: letter portrait;
@@ -230,10 +235,9 @@ class CartPrintService {
         display: none;
       }
     }
-  </style>''');
-
-    // Build body content
-    doc.body!.innerHtml = '''
+  </style>
+</head>
+<body>
   <div class="header">
     <div class="title">$title</div>
     <div class="subtitle">Inventory Preparation & Count Verification</div>
@@ -286,10 +290,20 @@ class CartPrintService {
   <div style="margin-top: 20pt; text-align: center; color: #5A6C71; font-size: 9pt;">
     SCOUT - Spiritual Care Operations & Usage Tracker
   </div>
+  
+  <script>
+    window.onload = function() {
+      window.print();
+    };
+  </script>
+</body>
+</html>
 ''';
 
-    // Trigger print dialog
-    printWindow.print();
+    // Write the HTML content to the document
+    doc.open();
+    doc.write(htmlContent);
+    doc.close();
   }
 
   /// Generate HTML table rows for items.

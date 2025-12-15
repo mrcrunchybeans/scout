@@ -28,6 +28,7 @@ class _WeightCalculatorDialogState extends State<WeightCalculatorDialog> {
   final _unitWeightFocus = FocusNode();
   
   String _weightUnit = 'g'; // g, kg, oz, lb
+  String _roundingMode = 'none'; // none, up, down
   num? _calculatedQty;
   
   @override
@@ -59,7 +60,16 @@ class _WeightCalculatorDialogState extends State<WeightCalculatorDialog> {
     final unit = num.tryParse(unitStr);
     
     if (total != null && unit != null && unit > 0) {
-      setState(() => _calculatedQty = total / unit);
+      num result = total / unit;
+      
+      // Apply rounding
+      if (_roundingMode == 'up') {
+        result = result.ceil();
+      } else if (_roundingMode == 'down') {
+        result = result.floor();
+      }
+      
+      setState(() => _calculatedQty = result);
     } else {
       setState(() => _calculatedQty = null);
     }
@@ -152,6 +162,33 @@ class _WeightCalculatorDialogState extends State<WeightCalculatorDialog> {
                     },
                   ),
                 ],
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // Rounding options
+              Text(
+                'Rounding',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'none', label: Text('Exact'), icon: Icon(Icons.straighten, size: 16)),
+                  ButtonSegment(value: 'down', label: Text('Round Down'), icon: Icon(Icons.arrow_downward, size: 16)),
+                  ButtonSegment(value: 'up', label: Text('Round Up'), icon: Icon(Icons.arrow_upward, size: 16)),
+                ],
+                selected: {_roundingMode},
+                onSelectionChanged: (Set<String> selection) {
+                  setState(() {
+                    _roundingMode = selection.first;
+                    _recalculate();
+                  });
+                },
               ),
               
               const SizedBox(height: 16),
