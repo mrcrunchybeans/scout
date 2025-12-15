@@ -300,10 +300,8 @@ class CartPrintService {
 </html>
 ''';
 
-    // Write the HTML content to the document
-    doc.open();
-    doc.write(htmlContent);
-    doc.close();
+    // Set the HTML content
+    doc.documentElement!.innerHtml = htmlContent;
   }
 
   /// Generate HTML table rows for items.

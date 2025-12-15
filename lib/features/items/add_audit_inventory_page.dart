@@ -236,8 +236,8 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     setState(() {
       _existingItem = item;
       _action = InventoryAction.auditExisting;
-      _nameSearchResults = [];
-      _searchByName = false;
+      _searchResults = [];
+      _searchController.clear();
     });
   }
 
