@@ -29,7 +29,7 @@ class CartPrintService {
     
     // Cast to Window to access document
     if (printWindow is! html.Window) return;
-    final doc = printWindow.document;
+    final htmlDoc = printWindow.document as html.HtmlDocument;
 
     final now = DateTime.now();
     final dateStr = DateFormat('EEEE, MMMM d, yyyy').format(now);
@@ -301,8 +301,8 @@ class CartPrintService {
 </html>
 ''';
 
-    doc.write(htmlContent);
-    doc.close();
+    htmlDoc.write(htmlContent);
+    htmlDoc.close();
   }
 
   /// Generate HTML table rows for items.
