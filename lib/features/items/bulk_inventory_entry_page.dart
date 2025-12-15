@@ -8,6 +8,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
+import '../../widgets/weight_calculator_dialog.dart';
 import 'package:scout/utils/audit.dart';
 import '../../utils/lot_code.dart';
 import '../../data/product_enrichment_service.dart';
@@ -1355,9 +1356,23 @@ class _QuickAddNewItemDialogState extends State<QuickAddNewItemDialog> {
                 child: TextField(
                   controller: _quantityController,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Quantity',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.calculate, size: 20),
+                      tooltip: 'Calculate by weight',
+                      onPressed: () async {
+                        final calc = await showWeightCalculator(
+                          context: context,
+                          itemName: _nameController.text.trim(),
+                          unit: _baseUnit,
+                        );
+                        if (calc != null) {
+                          _quantityController.text = calc.toString();
+                        }
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -2694,6 +2709,21 @@ class _EditLotDialogState extends State<EditLotDialog> {
             decoration: InputDecoration(
               labelText: 'Quantity (${widget.baseUnit})',
               border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.calculate, size: 20),
+                tooltip: 'Calculate by weight',
+                onPressed: () async {
+                  final calc = await showWeightCalculator(
+                    context: context,
+                    itemName: widget.productName,
+                    initialQty: widget.lot.quantity,
+                    unit: widget.baseUnit,
+                  );
+                  if (calc != null) {
+                    _quantityController.text = calc.toString();
+                  }
+                },
+              ),
             ),
             keyboardType: TextInputType.number,
           ),

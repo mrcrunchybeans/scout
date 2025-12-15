@@ -10,6 +10,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
+import '../../widgets/weight_calculator_dialog.dart';
 import 'package:scout/utils/audit.dart';
 import '../../utils/lot_code.dart';
 import '../../utils/deep_link_parser.dart';
@@ -150,18 +151,28 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
     _nameSearchDebounceTimer?.cancel();
     
     if (name.isEmpty) {
-      setState(() => _nameSearchResults = []);
+      setState(() {
+        _nameSearchResults = [];
+        _isLoading = false;
+      });
       return;
     }
 
-    // Start a new timer with 300ms delay
-    _nameSearchDebounceTimer = Timer(const Duration(milliseconds: 300), () {
-      _performNameSearch(name);
+    // Show minimal loading state without blocking
+    if (!_isLoading && name.length >= 2) {
+      setState(() => _isLoading = true);
+    }
+
+    // Start a new timer with 400ms delay for better UX
+    _nameSearchDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) {
+        _performNameSearch(name);
+      }
     });
   }
 
   Future<void> _performNameSearch(String name) async {
-    setState(() => _isLoading = true);
+    if (!mounted) return;
 
     try {
       // Search items by name (case-insensitive partial match)
@@ -170,6 +181,8 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
           .collection('items')
           .limit(100) // Fetch more items to filter client-side
           .get();
+
+      if (!mounted) return;
 
       final nameLower = name.toLowerCase();
       final results = query.docs
@@ -187,13 +200,15 @@ class _AddAuditInventoryPageState extends State<AddAuditInventoryPage> {
           })
           .toList();
 
-      setState(() {
-        _nameSearchResults = results;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
       if (mounted) {
+        setState(() {
+          _nameSearchResults = results;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error searching by name: $e')),
         );
@@ -918,6 +933,20 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 decoration: InputDecoration(
                   labelText: 'Amount to add',
                   suffixText: baseUnit,
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.calculate, size: 20),
+                    tooltip: 'Calculate by weight',
+                    onPressed: () async {
+                      final calc = await showWeightCalculator(
+                        context: context,
+                        itemName: '$itemName (Lot $lotCode)',
+                        unit: baseUnit,
+                      );
+                      if (calc != null) {
+                        addController.text = calc.toString();
+                      }
+                    },
+                  ),
                 ),
               ),
             ],
@@ -1011,6 +1040,20 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 decoration: InputDecoration(
                   labelText: 'Amount to waste',
                   suffixText: baseUnit,
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.calculate, size: 20),
+                    tooltip: 'Calculate by weight',
+                    onPressed: () async {
+                      final calc = await showWeightCalculator(
+                        context: context,
+                        itemName: '${widget.itemName} (Lot $lotCode)',
+                        unit: baseUnit,
+                      );
+                      if (calc != null) {
+                        wasteController.text = calc.toString();
+                      }
+                    },
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1111,6 +1154,21 @@ class _AuditOptionsState extends State<_AuditOptions> {
                 decoration: InputDecoration(
                   labelText: 'Remaining quantity',
                   suffixText: baseUnit,
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.calculate, size: 20),
+                    tooltip: 'Calculate by weight',
+                    onPressed: () async {
+                      final calc = await showWeightCalculator(
+                        context: context,
+                        itemName: '$itemName (Lot $lotCode)',
+                        initialQty: qtyRemaining,
+                        unit: baseUnit,
+                      );
+                      if (calc != null) {
+                        qtyController.text = calc.toString();
+                      }
+                    },
+                  ),
                 ),
               ),
               const SizedBox(height: 16),

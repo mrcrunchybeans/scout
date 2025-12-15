@@ -13,10 +13,12 @@ import '../../utils/operator_store.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
 import '../../widgets/usb_wedge_scanner.dart';
+import '../../widgets/weight_calculator_dialog.dart';
 import 'cart_models.dart';
 import '../../data/product_enrichment_service.dart';
 import '../../data/lookups_service.dart';
 import '../../services/time_tracking_service.dart';
+import '../../services/cart_print_service.dart';
 
 
 
@@ -811,6 +813,49 @@ class _CartSessionPageState extends State<CartSessionPage> {
         _isSaving = false;
       });
     }
+  }
+
+  /// Print a checklist for counting items before starting the session.
+  /// Useful for interns or staff to verify quantities.
+  void _printChecklist({ChecklistType type = ChecklistType.preparation}) {
+    if (_lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add items to the cart before printing checklist')),
+      );
+      return;
+    }
+
+    // Convert cart lines to checklist items
+    final checklistItems = _lines.map((line) {
+      // Use initialQty for preparation, finalQty for leftover
+      final qty = type == ChecklistType.preparation ? line.initialQty : line.finalQty;
+      
+      return CartChecklistItem(
+        name: line.itemName,
+        quantity: qty,
+        unit: line.baseUnit,
+        lotCode: line.lotCode,
+        barcode: null, // Barcode not available in cart line
+      );
+    }).toList();
+
+    // Print the checklist
+    CartPrintService.printCartChecklist(
+      items: checklistItems,
+      interventionName: _interventionName,
+      location: _locationText.trim().isEmpty ? null : _locationText.trim(),
+      notes: _notes.trim().isEmpty ? null : _notes.trim(),
+      type: type,
+    );
+
+    // Show confirmation
+    final typeLabel = type == ChecklistType.preparation ? 'preparation' : 'leftover';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('📄 Printing $typeLabel checklist... Check your browser\'s print dialog'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   Future<void> _openTimeTrackingUrl(String rawUrl) async {
@@ -1826,25 +1871,45 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 ),
                 const SizedBox(height: 16),
 
-                Row(
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
                   children: [
                     FilledButton.icon(
                       icon: const Icon(Icons.playlist_add),
                       label: const Text('Add items'),
                       onPressed: (_busy || _isClosed) ? null : _addItems,
                     ),
-                    const SizedBox(width: 12),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.history),
                       label: Text(_interventionName != null ? 'Use last for $_interventionName' : 'Copy from last'),
                       onPressed: (_busy || _isClosed) ? null : _copyFromLast,
                     ),
-                    const SizedBox(width: 12),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.qr_code_scanner),
                       label: const Text('Scan'),
                       onPressed: (_busy || _isClosed) ? null : _scanAndAdd,
                     ),
+                    if (_lines.isNotEmpty) ...[
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.print),
+                        label: const Text('Print Prep Checklist'),
+                        onPressed: _busy ? null : () => _printChecklist(type: ChecklistType.preparation),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Theme.of(context).colorScheme.tertiary,
+                          side: BorderSide(color: Theme.of(context).colorScheme.tertiary),
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.inventory_2),
+                        label: const Text('Print Leftover Checklist'),
+                        onPressed: _busy ? null : () => _printChecklist(type: ChecklistType.leftover),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Theme.of(context).colorScheme.secondary,
+                          side: BorderSide(color: Theme.of(context).colorScheme.secondary),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
 
@@ -2236,7 +2301,25 @@ class _LineRowState extends State<_LineRow> {
                     controller: _cInit,
                     focusNode: _initFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Loaded'),
+                    decoration: InputDecoration(
+                      labelText: 'Loaded',
+                      suffixIcon: widget.isClosed ? null : IconButton(
+                        icon: const Icon(Icons.calculate, size: 20),
+                        tooltip: 'Calculate by weight',
+                        onPressed: () async {
+                          final result = await showWeightCalculator(
+                            context: context,
+                            itemName: widget.line.itemName,
+                            initialQty: widget.line.initialQty,
+                            unit: widget.line.baseUnit,
+                          );
+                          if (result != null) {
+                            _cInit.text = result.toString();
+                            _commitInitialQty();
+                          }
+                        },
+                      ),
+                    ),
                     enabled: !widget.isClosed,
                     onSubmitted: (_) => _commitInitialQty(),
                     onTapOutside: (_) => _commitInitialQty(),
@@ -2248,7 +2331,25 @@ class _LineRowState extends State<_LineRow> {
                     controller: _cEnd,
                     focusNode: _endFocus,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Leftover (at close)'),
+                    decoration: InputDecoration(
+                      labelText: 'Leftover (at close)',
+                      suffixIcon: widget.isClosed ? null : IconButton(
+                        icon: const Icon(Icons.calculate, size: 20),
+                        tooltip: 'Calculate by weight',
+                        onPressed: () async {
+                          final result = await showWeightCalculator(
+                            context: context,
+                            itemName: widget.line.itemName,
+                            initialQty: widget.line.endQty,
+                            unit: widget.line.baseUnit,
+                          );
+                          if (result != null) {
+                            _cEnd.text = result.toString();
+                            _commitEndQty();
+                          }
+                        },
+                      ),
+                    ),
                     enabled: !widget.isClosed,
                     onSubmitted: (_) => _commitEndQty(),
                     onTapOutside: (_) => _commitEndQty(),
