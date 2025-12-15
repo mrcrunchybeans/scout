@@ -33,6 +33,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Map<String, String> _grantNames = {};
   Map<String, String> _operatorNames = {};
   bool _loading = true;
+  
+  // Search for items by name
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
 
   // Helper to safely get field from document
   dynamic _getField(QueryDocumentSnapshot doc, String field) {
@@ -54,6 +58,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   @override
   void dispose() {
     _tabController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -439,7 +444,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       }
     }
     
-    final sorted = itemTotals.entries.toList()
+    // Filter by search query if present
+    var filteredItems = itemTotals.entries.toList();
+    if (_searchQuery.isNotEmpty) {
+      filteredItems = filteredItems.where((entry) {
+        final itemName = _itemNames[entry.key] ?? '';
+        return itemName.toLowerCase().contains(_searchQuery.toLowerCase());
+      }).toList();
+    }
+    
+    final sorted = filteredItems
       ..sort((a, b) => b.value.compareTo(a.value));
 
     final totalQty = itemTotals.values.fold<double>(0, (s, v) => s + v);
@@ -462,6 +476,34 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     return Column(
       children: [
+        // Search bar
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search items by name (e.g., "Lindor")...',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        setState(() {
+                          _searchController.clear();
+                          _searchQuery = '';
+                        });
+                      },
+                    )
+                  : null,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (value) {
+              setState(() {
+                _searchQuery = value;
+              });
+            },
+          ),
+        ),
         // Summary header
         Container(
           width: double.infinity,
@@ -471,11 +513,30 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             children: [
               Icon(Icons.inventory_2, size: 28, color: Theme.of(context).colorScheme.onPrimaryContainer),
               const SizedBox(width: 12),
-              Text(
-                '${sorted.length} items used  •  ${totalQty.toStringAsFixed(0)} total',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${sorted.length} item${sorted.length == 1 ? '' : 's'} ${_searchQuery.isNotEmpty ? 'matching' : 'used'}',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  if (_searchQuery.isNotEmpty)
+                    Text(
+                      '"$_searchQuery" • ${totalQty.toStringAsFixed(0)} total quantity',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    )
+                  else
+                    Text(
+                      '${totalQty.toStringAsFixed(0)} total quantity',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      ),
+                    ),
+                ],
               ),
             ],
           ),

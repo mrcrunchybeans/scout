@@ -56,6 +56,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   bool _usbCaptureOn = false;
   final List<CartLine> _lines = [];
   final Map<String, bool> _overAllocatedLines = {};
+  String _sortBy = 'order'; // order, name, lot
   
   // Track line IDs that exist in Firestore (for deletion sync)
   final Set<String> _savedLineIds = {};
@@ -847,6 +848,33 @@ class _CartSessionPageState extends State<CartSessionPage> {
     // Show confirmation
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
+
+  /// Sort lines based on the current sort option
+  List<CartLine> get _sortedLines {
+    final lines = List<CartLine>.from(_lines);
+    
+    switch (_sortBy) {
+      case 'name':
+        lines.sort((a, b) => a.itemName.toLowerCase().compareTo(b.itemName.toLowerCase()));
+        break;
+      case 'lot':
+        lines.sort((a, b) {
+          final aLot = a.lotCode ?? '';
+          final bLot = b.lotCode ?? '';
+          if (aLot.isEmpty && bLot.isEmpty) return a.itemName.compareTo(b.itemName);
+          if (aLot.isEmpty) return 1;
+          if (bLot.isEmpty) return -1;
+          return aLot.compareTo(bLot);
+        });
+        break;
+      case 'order':
+      default:
+        // Keep original order
+        break;
+    }
+    
+    return lines;
+  }
         content: Text('Printing checklist... Check your browser\'s print dialog'),
         duration: Duration(seconds: 3),
       ),
@@ -1913,8 +1941,34 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 ],
 
                 const SizedBox(height: 16),
+                
+                // Sort options
+                if (_lines.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8.0),
+                    child: Row(
+                      children: [
+                        Text('Sort by: ', style: Theme.of(context).textTheme.bodySmall),
+                        const SizedBox(width: 8),
+                        SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(value: 'order', label: Text('Added Order')),
+                            ButtonSegment(value: 'name', label: Text('Name')),
+                            ButtonSegment(value: 'lot', label: Text('Lot Code')),
+                          ],
+                          selected: {_sortBy},
+                          onSelectionChanged: (Set<String> selected) {
+                            setState(() {
+                              _sortBy = selected.first;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                
                 if (_lines.isEmpty) const ListTile(title: Text('No items in this session yet')),
-                for (final line in _lines)
+                for (final line in _sortedLines)
                                 _LineRow(
                                   key: ValueKey(_lineId(line)),
                                   lineId: _lineId(line),
