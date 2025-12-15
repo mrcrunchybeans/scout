@@ -25,7 +25,7 @@ class CartPrintService {
 <html>
 <head>
   <meta charset="utf-8">
-  <title>$title</title>
+  <title>Cart Session Checklist</title>
   <style>
     @page {
       margin: 0.5in;
