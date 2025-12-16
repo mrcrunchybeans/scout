@@ -587,21 +587,6 @@ class LabelExportService {
                     ),
                   ),
                   
-                  // Variety (if present) - bold and smaller, directly below lot code
-                  if (variety != null && variety.isNotEmpty) ...[
-                    pw.SizedBox(height: 1),
-                    pw.Text(
-                      variety,
-                      style: pw.TextStyle(
-                        font: t.fontBold ?? pw.Font.helveticaBold(),
-                        fontSize: (t.expirationFontSize * 1.1).clamp(6, 9),
-                        color: t.textColor,
-                      ),
-                      maxLines: 1,
-                      overflow: pw.TextOverflow.clip,
-                    ),
-                  ],
-
                   // Grant (if present)
                   if (grantName != null) ...[
                     pw.SizedBox(height: 1),
@@ -619,9 +604,9 @@ class LabelExportService {
 
                   pw.SizedBox(height: 2),
 
-                  // Item name (allow two lines)
+                  // Item name with variety (if present) in parentheses
                   pw.Text(
-                    itemName,
+                    variety != null && variety.isNotEmpty ? '$itemName ($variety)' : itemName,
                     maxLines: 2,
                     style: pw.TextStyle(
                       font: t.fontRegular ?? pw.Font.helvetica(),
@@ -696,40 +681,14 @@ class LabelExportService {
       ),
     ));
 
-    // Variety (if present and no custom design)
-    if (variety != null && variety.isNotEmpty && designRect('variety') == null) {
-      // Place variety below lot ID
-      final lotRect = designRect('lotId');
-      if (lotRect != null) {
-        elements.add(pw.Positioned(
-          left: lotRect.left,
-          top: lotRect.bottom + 1,
-          child: pw.Container(
-            width: lotRect.width,
-            child: pw.Text(
-              variety,
-              style: pw.TextStyle(
-                font: t.fontBold ?? pw.Font.helveticaBold(),
-                fontSize: (t.expirationFontSize * 1.1).clamp(6, 9),
-                color: t.textColor,
-              ),
-              maxLines: 1,
-              overflow: pw.TextOverflow.clip,
-            ),
-          ),
-        ));
-      }
-    }
-
     // Grant (if present and no custom design)
     if (grantName != null && designRect('grant') == null) {
-      // Place grant below variety (if present) or lot ID
+      // Place grant below lot ID
       final lotRect = designRect('lotId');
       if (lotRect != null) {
-        final topOffset = (variety != null && variety.isNotEmpty) ? lotRect.bottom + 11 : lotRect.bottom + 2;
         elements.add(pw.Positioned(
           left: lotRect.left,
-          top: topOffset,
+          top: lotRect.bottom + 2,
           child: pw.Container(
             width: lotRect.width,
             child: pw.Text(
@@ -747,12 +706,13 @@ class LabelExportService {
       }
     }
 
-    // Item name
+    // Item name with variety (if present)
     final itemFontSize = designFontSize('itemName') ?? t.itemNameFontSize + 1;
     final itemBold = designBold('itemName');
+    final itemText = variety != null && variety.isNotEmpty ? '$itemName ($variety)' : itemName;
     elements.add(placed(
       'itemName',
-      pw.Text(itemName, maxLines: 2, textAlign: designAlign('itemName', pw.TextAlign.left), style: pw.TextStyle(font: itemBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()), fontSize: itemFontSize, color: t.textColor)),
+      pw.Text(itemText, maxLines: 2, textAlign: designAlign('itemName', pw.TextAlign.left), style: pw.TextStyle(font: itemBold ? (t.fontBold ?? pw.Font.helveticaBold()) : (t.fontRegular ?? pw.Font.helvetica()), fontSize: itemFontSize, color: t.textColor)),
     ));
 
     // Expiration
