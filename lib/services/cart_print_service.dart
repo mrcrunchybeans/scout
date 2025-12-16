@@ -14,6 +14,7 @@ class CartPrintService {
     String? interventionName,
     String? location,
     String? notes,
+    bool isClosed = false,
   }) {
     final now = DateTime.now();
     final dateStr = DateFormat('EEEE, MMMM d, yyyy').format(now);
@@ -229,7 +230,7 @@ class CartPrintService {
   
   <div class="instructions">
     <div class="instructions-title">Instructions:</div>
-    <p class="instructions-text">Before session: Count items going onto cart and write in "Before" column. After session: Count leftover items and write in "After" column. Check box when done.</p>
+    <p class="instructions-text">${isClosed ? 'Session complete. Review quantities used below.' : 'Before session: Count items going onto cart and write in "Before" column. After session: Count leftover items and write in "After" column. Check box when done.'}</p>
   </div>
   
   <table>
@@ -239,10 +240,11 @@ class CartPrintService {
         <th>Item Name & Lot</th>
         <th class="count-column">Before</th>
         <th class="count-column">After</th>
+        ${isClosed ? '<th class="count-column">Used</th>' : ''}
       </tr>
     </thead>
     <tbody>
-      ${_generateItemRows(items)}
+      ${_generateItemRows(items, isClosed)}
     </tbody>
   </table>
   
@@ -286,7 +288,7 @@ class CartPrintService {
   }
 
   /// Generate HTML table rows for items.
-  static String _generateItemRows(List<CartChecklistItem> items) {
+  static String _generateItemRows(List<CartChecklistItem> items, bool isClosed) {
     final buffer = StringBuffer();
 
     for (int i = 0; i < items.length; i++) {
@@ -303,6 +305,11 @@ class CartPrintService {
           ? '${_escapeHtml(item.name)} [Lot: ${item.lotCode}]'
           : _escapeHtml(item.name);
 
+      // For closed sessions, show actual data; for open, show blanks
+      final beforeValue = isClosed ? _formatQty(item.quantity) : '_______';
+      final afterValue = isClosed && item.endQty != null ? _formatQty(item.endQty!) : '_______';
+      final usedValue = isClosed && item.usedQty != null ? _formatQty(item.usedQty!) : '';
+
       buffer.writeln('''
       <tr>
         <td class="checkbox-column">
@@ -313,10 +320,15 @@ class CartPrintService {
           ${details.isNotEmpty ? '<div class="item-details">${_escapeHtml(details.join(' • '))}</div>' : ''}
         </td>
         <td class="count-column">
-          _______
+          $beforeValue
         </td>
         <td class="count-column">
-          _______
+          $afterValue
+        </td>
+        ${isClosed ? '<td class="count-column">$usedValue</td>' : ''}
+      </tr>
+      ''');
+    }
         </td>
       </tr>
       ''');
@@ -354,6 +366,8 @@ class CartChecklistItem {
   final String unit;
   final String? lotCode;
   final String? barcode;
+  final num? endQty;    // For closed sessions
+  final num? usedQty;   // For closed sessions
 
   const CartChecklistItem({
     required this.name,
@@ -361,5 +375,7 @@ class CartChecklistItem {
     required this.unit,
     this.lotCode,
     this.barcode,
+    this.endQty,
+    this.usedQty,
   });
 }

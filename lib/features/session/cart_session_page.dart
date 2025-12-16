@@ -834,15 +834,19 @@ class _CartSessionPageState extends State<CartSessionPage> {
         unit: line.baseUnit,
         lotCode: line.lotCode,
         barcode: null, // Barcode not available in cart line
+        // Add closed session data
+        endQty: _isClosed ? line.endQty : null,
+        usedQty: _isClosed ? line.usedQty : null,
       );
     }).toList();
 
-    // Print the checklist
+    // Print the checklist (with usage data if closed)
     CartPrintService.printCartChecklist(
       items: checklistItems,
       interventionName: _interventionName,
       location: _locationText.trim().isEmpty ? null : _locationText.trim(),
       notes: _notes.trim().isEmpty ? null : _notes.trim(),
+      isClosed: _isClosed,
     );
 
     // Show confirmation

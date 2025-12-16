@@ -1184,13 +1184,13 @@ class _LotRowState extends State<_LotRow> {
               case 'adjust': await showAdjustSheet(context, widget.itemId, widget.lotDoc.id, qtyRemaining, opened); break;
               case 'edit':   await _showEditLotSheet(context, widget.itemId, widget.lotDoc.id, d); break;
               case 'archive': await _showArchiveLotDialog(context, widget.itemId, widget.lotDoc.id, d); break;
-              case 'unarchive': await _showUnarchiveLotDialog(context, itemId, lotDoc.id, d); break;
-              case 'delete': await _showDeleteLotDialog(context, itemId, lotDoc.id, d); break;
-              case 'qr':     _showQrScan(context, itemId, lotDoc.id); break;
+              case 'unarchive': await _showUnarchiveLotDialog(context, widget.itemId, widget.lotDoc.id, d); break;
+              case 'delete': await _showDeleteLotDialog(context, widget.itemId, widget.lotDoc.id, d); break;
+              case 'qr':     _showQrScan(context, widget.itemId, widget.lotDoc.id); break;
             }
           },
           itemBuilder: (_) => [
-            if (!isArchived) ...[
+            if (!widget.isArchived) ...[
               const PopupMenuItem(value: 'adjust', child: Text('Adjust remaining')),
               const PopupMenuItem(value: 'edit',   child: Text('Edit dates/rules')),
               const PopupMenuItem(value: 'archive', child: Text('Archive lot')),
