@@ -1420,6 +1420,9 @@ Future<void> _showEditLotSheet(
   String? selectedGrantId = d['grantId'] as String?;
   String? storageLocation = d['storageLocation'] as String?;
   
+  // Add lot code editing
+  final lotCodeController = TextEditingController(text: d['lotCode'] as String? ?? '');
+  
   // Load grants for dropdown
   final grantsSnap = await db.collection('grants').orderBy('name').get();
   final grants = grantsSnap.docs;
@@ -1454,6 +1457,33 @@ Future<void> _showEditLotSheet(
               children: [
                 Text('Edit lot', style: Theme.of(bottomSheetContext).textTheme.titleLarge),
                 const SizedBox(height: 12),
+                
+                // Lot code editing
+                TextField(
+                  controller: lotCodeController,
+                  decoration: const InputDecoration(
+                    labelText: 'Lot Code / Batch Number',
+                    helperText: 'Rename this lot (e.g., add flavor: "Dark Chocolate")',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                
+                // Move lot to another item button
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.move_up),
+                  label: const Text('Move to Another Item'),
+                  onPressed: () async {
+                    Navigator.pop(bottomSheetContext);
+                    if (context.mounted) {
+                      await _showMoveToItemDialog(context, itemId, lotId, d);
+                    }
+                  },
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 8),
+                
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Expiration'),
@@ -1525,9 +1555,18 @@ Future<void> _showEditLotSheet(
                   icon: const Icon(Icons.save),
                   label: const Text('Save'),
                   onPressed: () async {
+                    final newLotCode = lotCodeController.text.trim();
+                    if (newLotCode.isEmpty) {
+                      ScaffoldMessenger.of(bottomSheetContext).showSnackBar(
+                        const SnackBar(content: Text('Lot code cannot be empty')),
+                      );
+                      return;
+                    }
+                    
                     final ref = db.collection('items').doc(itemId).collection('lots').doc(lotId);
                     await ref.set(
                       Audit.updateOnly({
+                        'lotCode': newLotCode,
                         'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                         'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                         'expiresAfterOpenDays': afterOpenDays,
@@ -1539,6 +1578,7 @@ Future<void> _showEditLotSheet(
                     await Audit.log('lot.update', {
                       'itemId': itemId,
                       'lotId': lotId,
+                      'lotCode': newLotCode,
                       'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                       'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                       'expiresAfterOpenDays': afterOpenDays,
@@ -1557,6 +1597,195 @@ Future<void> _showEditLotSheet(
       );
     },
   );
+}
+
+Future<void> _showMoveToItemDialog(
+  BuildContext context, String currentItemId, String lotId, Map<String, dynamic> lotData
+) async {
+  final db = FirebaseFirestore.instance;
+  final searchController = TextEditingController();
+  String searchQuery = '';
+  
+  await showDialog(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (dialogContext, dialogSetState) {
+          return AlertDialog(
+            title: const Text('Move Lot to Another Item'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 400,
+              child: Column(
+                children: [
+                  TextField(
+                    controller: searchController,
+                    decoration: const InputDecoration(
+                      labelText: 'Search for item',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (value) {
+                      dialogSetState(() => searchQuery = value.toLowerCase());
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: db.collection('items')
+                        .where('archived', isEqualTo: false)
+                        .orderBy('name')
+                        .snapshots(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+                        
+                        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                          return const Center(child: Text('No items found'));
+                        }
+                        
+                        // Filter out current item and apply search
+                        final items = snapshot.data!.docs.where((doc) {
+                          if (doc.id == currentItemId) return false;
+                          if (searchQuery.isEmpty) return true;
+                          final name = (doc.data()['name'] as String? ?? '').toLowerCase();
+                          return name.contains(searchQuery);
+                        }).toList();
+                        
+                        if (items.isEmpty) {
+                          return Center(
+                            child: Text(
+                              searchQuery.isEmpty 
+                                ? 'No other items available'
+                                : 'No items match "$searchQuery"'
+                            ),
+                          );
+                        }
+                        
+                        return ListView.builder(
+                          itemCount: items.length,
+                          itemBuilder: (context, index) {
+                            final item = items[index];
+                            final data = item.data();
+                            final name = data['name'] as String? ?? 'Unknown';
+                            final category = data['category'] as String? ?? '';
+                            
+                            return ListTile(
+                              title: Text(name),
+                              subtitle: category.isNotEmpty ? Text(category) : null,
+                              onTap: () async {
+                                Navigator.pop(dialogContext);
+                                await _moveLotToItem(
+                                  context,
+                                  currentItemId,
+                                  item.id,
+                                  lotId,
+                                  lotData,
+                                  name,
+                                );
+                              },
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+  
+  searchController.dispose();
+}
+
+Future<void> _moveLotToItem(
+  BuildContext context,
+  String fromItemId,
+  String toItemId,
+  String lotId,
+  Map<String, dynamic> lotData,
+  String toItemName,
+) async {
+  final db = FirebaseFirestore.instance;
+  
+  try {
+    // Show confirmation
+    final lotCode = lotData['lotCode'] as String? ?? lotId.substring(0, 6);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm Move'),
+        content: Text(
+          'Move lot "$lotCode" to item "$toItemName"?\n\n'
+          'This will transfer the lot with all its data (quantity, expiration, grant, etc.).'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Move'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true || !context.mounted) return;
+    
+    // Create lot under new item with same data
+    final newLotRef = db.collection('items').doc(toItemId).collection('lots').doc(lotId);
+    await newLotRef.set(Audit.updateOnly(lotData));
+    
+    // Delete lot from old item
+    final oldLotRef = db.collection('items').doc(fromItemId).collection('lots').doc(lotId);
+    await oldLotRef.delete();
+    
+    // Log the move
+    await Audit.log('lot.move', {
+      'fromItemId': fromItemId,
+      'toItemId': toItemId,
+      'lotId': lotId,
+      'lotCode': lotCode,
+    });
+    
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Lot "$lotCode" moved to "$toItemName"'),
+          action: SnackBarAction(
+            label: 'View',
+            onPressed: () {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ItemDetailPage(itemId: toItemId),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error moving lot: $e')),
+      );
+    }
+  }
 }
 
 Future<void> showAdjustSheet(

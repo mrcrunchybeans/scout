@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_typeahead/flutter_typeahead.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/lookups_service.dart';
 import '../../models/option_item.dart';
@@ -19,6 +21,9 @@ import '../../data/product_enrichment_service.dart';
 
 // Image picker widget
 import '../../widgets/image_picker_widget.dart';
+
+// Bulk inventory entry for switching to add lot
+import 'bulk_inventory_entry_page.dart';
 
 enum UseType { staff, patient, both }
 
@@ -89,6 +94,11 @@ class _NewItemPageState extends State<NewItemPage> {
   List<String> _imageUrls = [];
 
   bool _saving = false;
+  
+  // Duplicate detection
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _similarItems = [];
+  Timer? _nameSearchTimer;
+  bool _checkingSimilar = false;
 
   void _addBarcodeField({String? initialValue}) {
     final controller = TextEditingController(text: initialValue ?? '');
@@ -114,6 +124,11 @@ class _NewItemPageState extends State<NewItemPage> {
       if (_initializingLotCode) return;
       _lotCodeEdited = true;
     });
+    
+    // Add listener for duplicate detection (only for new items)
+    if (widget.itemId == null) {
+      _name.addListener(_onNameChanged);
+    }
     
     // Initialize with at least one barcode field
     _addBarcodeField();
@@ -183,6 +198,13 @@ class _NewItemPageState extends State<NewItemPage> {
   // Initialize lot code preview (actual code generated on save unless user overrides)
   _lotCode.text = previewLotCode();
   _initializingLotCode = false;
+  
+  // Show instructional dialog on first visit
+  if (widget.itemId == null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showInstructionalDialogIfNeeded();
+    });
+  }
   }
 
   Future<void> _loadLookups() async {
@@ -241,6 +263,202 @@ class _NewItemPageState extends State<NewItemPage> {
       debugPrint('Failed to load categories lookup: $e');
       return <String>[];
     }
+  }
+
+  void _onNameChanged() {
+    // Debounce the search
+    _nameSearchTimer?.cancel();
+    _nameSearchTimer = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        _searchSimilarItems();
+      }
+    });
+  }
+
+  Future<void> _searchSimilarItems() async {
+    final query = _name.text.trim();
+    if (query.length < 3) {
+      if (_similarItems.isNotEmpty) {
+        setState(() {
+          _similarItems = [];
+        });
+      }
+      return;
+    }
+
+    setState(() {
+      _checkingSimilar = true;
+    });
+
+    try {
+      // Search for items with similar names (case-insensitive contains)
+      final queryLower = query.toLowerCase();
+      final snapshot = await _db
+          .collection('items')
+          .orderBy('name')
+          .limit(50)
+          .get();
+
+      // Filter client-side for case-insensitive contains
+      final matches = snapshot.docs.where((doc) {
+        final name = (doc.data()['name'] as String? ?? '').toLowerCase();
+        return name.contains(queryLower) && doc.id != widget.itemId;
+      }).toList();
+
+      if (mounted) {
+        setState(() {
+          _similarItems = matches.take(3).toList(); // Show top 3 matches
+          _checkingSimilar = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error searching similar items: $e');
+      if (mounted) {
+        setState(() {
+          _checkingSimilar = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showInstructionalDialogIfNeeded() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final hideInstructions = prefs.getBool('hideNewItemInstructions') ?? false;
+      
+      if (!hideInstructions && mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.info_outline, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                const Text('How to Add New Items'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildInstructionStep('1', 'Enter item name', 'The system will check for similar items to prevent duplicates'),
+                  const SizedBox(height: 12),
+                  _buildInstructionStep('2', 'Scan or enter barcodes', 'You can add multiple barcodes per item'),
+                  const SizedBox(height: 12),
+                  _buildInstructionStep('3', 'Select category & unit', 'Category suggestions help organize your inventory'),
+                  const SizedBox(height: 12),
+                  _buildInstructionStep('4', 'Add lot details', 'Include batch code, expiration date, and quantity'),
+                  const SizedBox(height: 12),
+                  _buildInstructionStep('5', 'Assign grant & location', 'Optional but helps with tracking and reporting'),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.lightbulb_outline, 
+                          size: 20,
+                          color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Tip: If a similar item exists, click it to add a new lot instead of creating a duplicate!',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context).colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setBool('hideNewItemInstructions', true);
+                  if (context.mounted) Navigator.pop(context);
+                },
+                child: const Text("Don't show again"),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Got it!'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error showing instructional dialog: $e');
+    }
+  }
+
+  Widget _buildInstructionStep(String number, String title, String description) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primary,
+            shape: BoxShape.circle,
+          ),
+          child: Center(
+            child: Text(
+              number,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onPrimary,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                description,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _switchToAddLot(QueryDocumentSnapshot<Map<String, dynamic>> itemDoc) {
+    // Navigate to bulk inventory entry page with this item pre-selected
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => BulkInventoryEntryPage(preSelectedItemId: itemDoc.id),
+      ),
+    );
   }
 
   UnitType _suggestUnitTypeForCategory(String category) {
@@ -594,6 +812,105 @@ class _NewItemPageState extends State<NewItemPage> {
                     validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                   ),
                   const SizedBox(height: 8),
+
+                  // Similar items warning
+                  if (widget.itemId == null && _checkingSimilar)
+                    Card(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      child: const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: 12),
+                            Text('Checking for duplicates...'),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (widget.itemId == null && _similarItems.isNotEmpty)
+                    Card(
+                      color: Theme.of(context).colorScheme.warningContainer,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.warning_amber, 
+                                  color: Theme.of(context).colorScheme.onWarningContainer,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Similar items found',
+                                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                    color: Theme.of(context).colorScheme.onWarningContainer,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Did you mean one of these existing items?',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.onWarningContainer,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ..._similarItems.map((doc) {
+                              final data = doc.data();
+                              final name = data['name'] ?? 'Unknown';
+                              final category = data['category'] ?? '';
+                              final baseUnit = data['baseUnit'] ?? 'each';
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: OutlinedButton(
+                                  onPressed: () => _switchToAddLot(doc),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Theme.of(context).colorScheme.onWarningContainer,
+                                    side: BorderSide(
+                                      color: Theme.of(context).colorScheme.onWarningContainer.withValues(alpha: 0.5),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              name,
+                                              style: const TextStyle(fontWeight: FontWeight.w600),
+                                            ),
+                                            if (category.isNotEmpty)
+                                              Text(
+                                                '$category • $baseUnit',
+                                                style: const TextStyle(fontSize: 11),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      const Icon(Icons.arrow_forward, size: 16),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (widget.itemId == null && _similarItems.isNotEmpty)
+                    const SizedBox(height: 8),
 
                   TypeAheadField<String>(
                     controller: _categoryController,
@@ -1015,6 +1332,7 @@ class _NewItemPageState extends State<NewItemPage> {
     _barcode.dispose();
     _barcodeFocus.dispose();
     _lotCode.dispose();
+    _nameSearchTimer?.cancel();
     // Dispose barcode controllers and focus nodes
     for (final controller in _barcodeControllers) {
       controller.dispose();

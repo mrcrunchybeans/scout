@@ -20,7 +20,9 @@ import '../../services/label_export_service.dart';
 enum UseType { staff, patient, both }
 
 class BulkInventoryEntryPage extends StatefulWidget {
-  const BulkInventoryEntryPage({super.key});
+  final String? preSelectedItemId;
+  
+  const BulkInventoryEntryPage({super.key, this.preSelectedItemId});
 
   @override
   State<BulkInventoryEntryPage> createState() => _BulkInventoryEntryPageState();
@@ -54,6 +56,13 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
     super.initState();
     _sessionId = _uuid.v4();
     _listenForMobileScans();
+    
+    // If we have a preselected item, load it immediately
+    if (widget.preSelectedItemId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadPreselectedItem(widget.preSelectedItemId!);
+      });
+    }
   }
 
   @override
@@ -1072,6 +1081,54 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         }
       }
     });
+  }
+
+  Future<void> _loadPreselectedItem(String itemId) async {
+    try {
+      setState(() => _isProcessing = true);
+      
+      final itemDoc = await _db.collection('items').doc(itemId).get();
+      if (!itemDoc.exists || !mounted) {
+        setState(() => _isProcessing = false);
+        return;
+      }
+      
+      final itemData = itemDoc.data()!;
+      final itemName = itemData['name'] ?? 'Unknown Item';
+      final baseUnit = itemData['baseUnit'] ?? 'each';
+      
+      // Create a product entry for this item
+      final product = BulkProductEntry(
+        itemId: itemId,
+        itemName: itemName,
+        baseUnit: baseUnit,
+        barcodes: [],
+      );
+      
+      setState(() {
+        _pendingProducts[itemId] = product;
+        _isProcessing = false;
+      });
+      
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ready to add lot for: $itemName'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading preselected item: $e');
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading item: $e')),
+        );
+      }
+    }
   }
 
   void _showMobileScannerQR() {

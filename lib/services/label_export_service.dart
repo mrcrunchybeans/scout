@@ -436,6 +436,7 @@ class LabelExportService {
     final expirationDate = _formatExpirationDate(lot['expiresAt']);
     final itemId = (lot['itemId'] ?? '').toString();
     final lotDocId = (lot['id'] ?? '').toString();
+    final grantName = lot['grantName'] as String?;
 
     final todayDate = _formatTodayDate();
 
@@ -585,6 +586,21 @@ class LabelExportService {
                     ),
                   ),
 
+                  // Grant (if present)
+                  if (grantName != null) ..[
+                    pw.SizedBox(height: 1),
+                    pw.Text(
+                      'Grant: $grantName',
+                      style: pw.TextStyle(
+                        font: t.fontRegular ?? pw.Font.helvetica(),
+                        fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
+                        color: t.textColor,
+                      ),
+                      maxLines: 1,
+                      overflow: pw.TextOverflow.clip,
+                    ),
+                  ],
+
                   pw.SizedBox(height: 2),
 
                   // Item name (allow two lines)
@@ -648,8 +664,8 @@ class LabelExportService {
       return pw.Positioned(left: r.left + t.padding, top: r.top + t.padding, child: pw.Container(width: r.width, height: r.height, child: child));
     }
 
-    // LotId
-    final lotFontSize = designFontSize('lotId') ?? t.lotIdFontSize;
+    // Lot ID
+    final lotFontSize = designFontSize('lotId') ?? t.lotIdFontSize + 2;
     final lotBold = designBold('lotId');
     elements.add(placed(
       'lotId',
@@ -663,6 +679,29 @@ class LabelExportService {
         ),
       ),
     ));
+
+    // Grant (if present and no custom design)
+    if (grantName != null && designRect('grant') == null) {
+      // Place grant below lot ID if using default layout
+      final lotRect = designRect('lotId');
+      if (lotRect != null) {
+        elements.add(pw.Positioned(
+          left: lotRect.left,
+          top: lotRect.bottom + 2,
+          width: lotRect.width,
+          child: pw.Text(
+            'Grant: $grantName',
+            style: pw.TextStyle(
+              font: t.fontRegular ?? pw.Font.helvetica(),
+              fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
+              color: t.textColor,
+            ),
+            maxLines: 1,
+            overflow: pw.TextOverflow.clip,
+          ),
+        ));
+      }
+    }
 
     // Item name
     final itemFontSize = designFontSize('itemName') ?? t.itemNameFontSize + 1;
@@ -719,6 +758,13 @@ class LabelExportService {
   /// Get lots data for the given item IDs
   static Future<List<Map<String, dynamic>>> getLotsForItems(List<String> itemIds) async {
     final lots = <Map<String, dynamic>>[];
+    
+    // Load all grant names once
+    final grantsSnapshot = await FirebaseFirestore.instance.collection('grants').get();
+    final grantNames = <String, String>{};
+    for (final doc in grantsSnapshot.docs) {
+      grantNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
+    }
 
     for (final itemId in itemIds) {
       final itemDoc = await FirebaseFirestore.instance.collection('items').doc(itemId).get();
@@ -736,11 +782,15 @@ class LabelExportService {
 
       for (final lotDoc in lotsSnapshot.docs) {
         final lotData = lotDoc.data();
+        final grantId = lotData['grantId'] as String?;
+        final grantName = grantId != null ? grantNames[grantId] : null;
+        
         lots.add({
           ...lotData,
           'id': lotDoc.id,
           'itemId': itemId,
           'itemName': itemName,
+          'grantName': grantName,
         });
       }
     }
