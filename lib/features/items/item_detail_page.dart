@@ -1746,9 +1746,16 @@ Future<void> _moveLotToItem(
     
     if (confirmed != true || !context.mounted) return;
     
-    // Create lot under new item with same data
+    // Create lot under new item with same data (excluding audit fields)
     final newLotRef = db.collection('items').doc(toItemId).collection('lots').doc(lotId);
-    await newLotRef.set(Audit.updateOnly(lotData));
+    final lotDataToMove = Map<String, dynamic>.from(lotData);
+    // Remove audit fields - they'll be added by Audit.updateOnly
+    lotDataToMove.remove('createdAt');
+    lotDataToMove.remove('updatedAt');
+    lotDataToMove.remove('createdBy');
+    lotDataToMove.remove('updatedBy');
+    
+    await newLotRef.set(Audit.updateOnly(lotDataToMove));
     
     // Delete lot from old item
     final oldLotRef = db.collection('items').doc(fromItemId).collection('lots').doc(lotId);
