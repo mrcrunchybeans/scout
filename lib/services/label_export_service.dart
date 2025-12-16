@@ -438,6 +438,9 @@ class LabelExportService {
     final itemId = (lot['itemId'] ?? '').toString();
     final lotDocId = (lot['id'] ?? '').toString();
     final grantName = lot['grantName'] as String?;
+    
+    // Debug output
+    debugPrint('Label data - lotId: $lotId, variety: $variety, grantName: $grantName, itemName: $itemName');
 
     final todayDate = _formatTodayDate();
 
@@ -587,9 +590,37 @@ class LabelExportService {
                     ),
                   ),
                   
+                  pw.SizedBox(height: 3),
+
+                  // Item name
+                  pw.Text(
+                    itemName,
+                    maxLines: 2,
+                    style: pw.TextStyle(
+                      font: t.fontRegular ?? pw.Font.helvetica(),
+                      fontSize: t.itemNameFontSize + 1,
+                      color: t.textColor,
+                    ),
+                  ),
+
+                  // Variety (if present) - shown below item name
+                  if (variety != null && variety.isNotEmpty) ...[
+                    pw.SizedBox(height: 1),
+                    pw.Text(
+                      variety,
+                      style: pw.TextStyle(
+                        font: t.fontBold ?? pw.Font.helveticaBold(),
+                        fontSize: t.itemNameFontSize,
+                        color: t.textColor,
+                      ),
+                      maxLines: 1,
+                      overflow: pw.TextOverflow.clip,
+                    ),
+                  ],
+                  
                   // Grant (if present)
                   if (grantName != null) ...[
-                    pw.SizedBox(height: 1),
+                    pw.SizedBox(height: 2),
                     pw.Text(
                       'Grant: $grantName',
                       style: pw.TextStyle(
@@ -601,24 +632,6 @@ class LabelExportService {
                       overflow: pw.TextOverflow.clip,
                     ),
                   ],
-
-                  pw.SizedBox(height: 2),
-
-                  // Item name with variety (if present) in parentheses
-                  pw.Text(
-                    variety != null && variety.isNotEmpty ? '$itemName ($variety)' : itemName,
-                    maxLines: 2,
-                    style: pw.TextStyle(
-                      font: t.fontRegular ?? pw.Font.helvetica(),
-                      fontSize: t.itemNameFontSize + 1,
-                      color: t.textColor,
-                    ),
-                  ),
-
-                  pw.SizedBox(height: 3),
-
-                  // Expiration chip
-                  expirationChip(expirationDate),
                 ],
               ),
             ),
