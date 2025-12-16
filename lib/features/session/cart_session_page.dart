@@ -2539,11 +2539,17 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                           ? (lotData['expiresAt'] as Timestamp).toDate()
                           : null;
                       final lotCode = lotData['lotCode'] ?? lot.id;
+                      final variety = lotData['variety'] as String?;
+                      
+                      // Build display with variety if present
+                      final lotDisplay = variety != null && variety.isNotEmpty
+                          ? '$lotCode - $variety • $qtyRemaining $baseUnit'
+                          : '$lotCode • $qtyRemaining $baseUnit';
 
                       // ignore: deprecated_member_use
                       final isSelected = selectedLots.contains(lot.id);
                       return CheckboxListTile(
-                        title: Text('$lotCode • $qtyRemaining $baseUnit'),
+                        title: Text(lotDisplay),
                         subtitle: expiresAt != null
                             ? Text('Expires: ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}')
                             : null,
@@ -2628,6 +2634,7 @@ class _AddItemsSheet extends StatefulWidget {
 class _AddItemsSheetState extends State<_AddItemsSheet> {
   final _searchController = TextEditingController();
   String _searchText = '';
+  String _sortBy = 'name'; // 'name', 'category', 'quantity'
   final Set<String> _selectedItemIds = {};
 
   @override
@@ -2647,11 +2654,53 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
   }
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> get _filteredItems {
-    if (_searchText.isEmpty) return widget.items;
-    return widget.items.where((item) {
-      final name = (item.data()['name'] ?? 'Unnamed') as String;
-      return name.toLowerCase().contains(_searchText);
-    }).toList();
+    var items = widget.items;
+    
+    // Filter by search
+    if (_searchText.isNotEmpty) {
+      items = items.where((item) {
+        final name = (item.data()['name'] ?? 'Unnamed') as String;
+        return name.toLowerCase().contains(_searchText);
+      }).toList();
+    }
+    
+    // Sort
+    switch (_sortBy) {
+      case 'name':
+        items.sort((a, b) {
+          final nameA = (a.data()['name'] ?? 'Unnamed') as String;
+          final nameB = (b.data()['name'] ?? 'Unnamed') as String;
+          return nameA.toLowerCase().compareTo(nameB.toLowerCase());
+        });
+        break;
+      case 'category':
+        items.sort((a, b) {
+          final catA = (a.data()['category'] ?? '') as String;
+          final catB = (b.data()['category'] ?? '') as String;
+          if (catA.isEmpty && catB.isEmpty) {
+            final nameA = (a.data()['name'] ?? 'Unnamed') as String;
+            final nameB = (b.data()['name'] ?? 'Unnamed') as String;
+            return nameA.toLowerCase().compareTo(nameB.toLowerCase());
+          }
+          if (catA.isEmpty) return 1;
+          if (catB.isEmpty) return -1;
+          final catCompare = catA.toLowerCase().compareTo(catB.toLowerCase());
+          if (catCompare != 0) return catCompare;
+          final nameA = (a.data()['name'] ?? 'Unnamed') as String;
+          final nameB = (b.data()['name'] ?? 'Unnamed') as String;
+          return nameA.toLowerCase().compareTo(nameB.toLowerCase());
+        });
+        break;
+      case 'quantity':
+        items.sort((a, b) {
+          final qtyA = (a.data()['qtyOnHand'] ?? 0) as num;
+          final qtyB = (b.data()['qtyOnHand'] ?? 0) as num;
+          return qtyB.compareTo(qtyA); // Descending (highest first)
+        });
+        break;
+    }
+    
+    return items;
   }
 
   void _toggleSelection(String itemId) {
@@ -2763,6 +2812,27 @@ class _AddItemsSheetState extends State<_AddItemsSheet> {
                   hintText: 'Search items...',
                   prefixIcon: Icon(Icons.search),
                 ),
+              ),
+              const SizedBox(height: 8),
+              // Sort dropdown
+              Row(
+                children: [
+                  const Text('Sort by: '),
+                  const SizedBox(width: 8),
+                  DropdownButton<String>(
+                    value: _sortBy,
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _sortBy = value);
+                      }
+                    },
+                    items: const [
+                      DropdownMenuItem(value: 'name', child: Text('Name')),
+                      DropdownMenuItem(value: 'category', child: Text('Category')),
+                      DropdownMenuItem(value: 'quantity', child: Text('Quantity')),
+                    ],
+                  ),
+                ],
               ),
             ],
           ),
