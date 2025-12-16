@@ -552,6 +552,7 @@ class LabelExportService {
             pw.Expanded(
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisSize: pw.MainAxisSize.min,
                 children: [
                   // logo + expiration (top row)
                   pw.Row(
@@ -575,63 +576,53 @@ class LabelExportService {
                     ],
                   ),
 
-                  pw.SizedBox(height: 2),
+                  pw.SizedBox(height: 1),
 
-                  // Lot ID (auto-fit, shrinks more if needed)
+                  // Lot ID (auto-fit, can shrink to make room)
                   _autoFitOneLine(
                     lotId,
-                    maxSize: t.lotIdFontSize + 2,
-                    minSize: 8, // Allow shrinking to 8pt to make room for other fields
+                    maxSize: t.lotIdFontSize,
+                    minSize: 9,
                     style: pw.TextStyle(
                       font: t.fontBold ?? pw.Font.helveticaBold(),
                       color: t.textColor,
                     ),
                   ),
                   
-                  pw.SizedBox(height: 1),
-
-                  // Item name - always show
+                  // Item name - regular font
                   pw.Text(
                     itemName,
                     maxLines: 1,
                     style: pw.TextStyle(
                       font: t.fontRegular ?? pw.Font.helvetica(),
-                      fontSize: (t.itemNameFontSize).clamp(6, 9),
+                      fontSize: 7,
                       color: t.textColor,
                     ),
-                    overflow: pw.TextOverflow.clip,
                   ),
 
-                  // Variety (if present) - show in bold below item name
-                  if (variety != null && variety.isNotEmpty) ...[
+                  // Variety (if present) - bold, no extra spacing
+                  if (variety != null && variety.isNotEmpty)
                     pw.Text(
                       variety,
                       style: pw.TextStyle(
                         font: t.fontBold ?? pw.Font.helveticaBold(),
-                        fontSize: (t.itemNameFontSize).clamp(6, 9),
+                        fontSize: 7,
                         color: t.textColor,
                       ),
                       maxLines: 1,
-                      overflow: pw.TextOverflow.clip,
                     ),
-                  ],
                   
-                  // Grant (if present)
-                  if (grantName != null) ...[
-                    pw.SizedBox(height: 1),
+                  // Grant (if present) - smallest font
+                  if (grantName != null && grantName.isNotEmpty)
                     pw.Text(
                       'Grant: $grantName',
                       style: pw.TextStyle(
                         font: t.fontRegular ?? pw.Font.helvetica(),
-                        fontSize: 6,
+                        fontSize: 5,
                         color: t.textColor,
                       ),
                       maxLines: 1,
-                      overflow: pw.TextOverflow.clip,
                     ),
-                  ],
-                  
-                  pw.Spacer(), // Push everything to top, leaving space at bottom
                 ],
               ),
             ),
