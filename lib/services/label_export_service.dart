@@ -552,9 +552,8 @@ class LabelExportService {
             pw.Expanded(
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
-                mainAxisAlignment: pw.MainAxisAlignment.center,
                 children: [
-                  // logo + expiration + date (expiration pill next to date)
+                  // logo + expiration (top row)
                   pw.Row(
                     children: [
                       pw.Container(
@@ -572,38 +571,40 @@ class LabelExportService {
                               ),
                       ),
                       pw.Spacer(),
-                      // show expiration pill (date moved under QR to reduce clutter)
                       expirationChip(expirationDate),
                     ],
                   ),
 
                   pw.SizedBox(height: 2),
 
-                  // Lot ID (prominent, auto-fit to ensure full visibility)
+                  // Lot ID (auto-fit, shrinks more if needed)
                   _autoFitOneLine(
                     lotId,
                     maxSize: t.lotIdFontSize + 2,
-                    minSize: (t.lotIdFontSize * 0.7).clamp(7, t.lotIdFontSize),
+                    minSize: 8, // Allow shrinking to 8pt to make room for other fields
                     style: pw.TextStyle(
                       font: t.fontBold ?? pw.Font.helveticaBold(),
                       color: t.textColor,
                     ),
                   ),
                   
-                  pw.SizedBox(height: 3),
+                  pw.SizedBox(height: 2),
 
-                  // Item name
-                  pw.Text(
-                    itemName,
-                    maxLines: 2,
-                    style: pw.TextStyle(
-                      font: t.fontRegular ?? pw.Font.helvetica(),
-                      fontSize: t.itemNameFontSize + 1,
-                      color: t.textColor,
+                  // Item name (flexible, takes remaining space)
+                  pw.Flexible(
+                    child: pw.Text(
+                      itemName,
+                      maxLines: 2,
+                      style: pw.TextStyle(
+                        font: t.fontRegular ?? pw.Font.helvetica(),
+                        fontSize: t.itemNameFontSize + 1,
+                        color: t.textColor,
+                      ),
+                      overflow: pw.TextOverflow.clip,
                     ),
                   ),
 
-                  // Variety (if present) - shown below item name
+                  // Variety (if present)
                   if (variety != null && variety.isNotEmpty) ...[
                     pw.SizedBox(height: 1),
                     pw.Text(
@@ -620,18 +621,20 @@ class LabelExportService {
                   
                   // Grant (if present)
                   if (grantName != null) ...[
-                    pw.SizedBox(height: 2),
+                    pw.SizedBox(height: 1),
                     pw.Text(
                       'Grant: $grantName',
                       style: pw.TextStyle(
                         font: t.fontRegular ?? pw.Font.helvetica(),
-                        fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
+                        fontSize: (t.expirationFontSize * 0.9).clamp(6, 7),
                         color: t.textColor,
                       ),
                       maxLines: 1,
                       overflow: pw.TextOverflow.clip,
                     ),
                   ],
+                  
+                  pw.Spacer(), // Push everything to top, leaving space at bottom
                 ],
               ),
             ),
