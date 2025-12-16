@@ -19,7 +19,7 @@ import 'features/session/sessions_list_page.dart';
 import 'dev/label_qr_test_page.dart';
 import 'dev/debug_dashboard_stats.dart';
 import 'features/admin/algolia_config_page.dart';
-import 'features/admin/label_config_page.dart';
+import 'features/admin/unified_label_editor_page.dart';
 import 'features/admin/recalculate_lot_codes_page.dart';
 import 'services/search_service.dart';
 import 'features/budget/budget_page.dart';
@@ -345,7 +345,7 @@ void _initRouter() {
     GoRoute(
       path: '/admin/labels',
       name: 'labelConfig',
-      builder: (context, state) => const LabelConfigPage(),
+      builder: (context, state) => const UnifiedLabelEditorPage(),
     ),
     GoRoute(
       path: '/admin/recalculate-lot-codes',
