@@ -554,9 +554,10 @@ class LabelExportService {
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 mainAxisSize: pw.MainAxisSize.min,
                 children: [
-                  // logo + expiration (top row)
+                  // Top row: logo, lot ID, expiration
                   pw.Row(
                     children: [
+                      // Logo
                       pw.Container(
                         width: t.logoHeight,
                         height: t.logoHeight,
@@ -571,23 +572,26 @@ class LabelExportService {
                                 ),
                               ),
                       ),
-                      pw.Spacer(),
+                      pw.SizedBox(width: 3),
+                      // Lot ID next to logo
+                      pw.Expanded(
+                        child: _autoFitOneLine(
+                          lotId,
+                          maxSize: t.lotIdFontSize,
+                          minSize: 9,
+                          style: pw.TextStyle(
+                            font: t.fontBold ?? pw.Font.helveticaBold(),
+                            color: t.textColor,
+                          ),
+                        ),
+                      ),
+                      pw.SizedBox(width: 3),
+                      // Expiration on the right
                       expirationChip(expirationDate),
                     ],
                   ),
 
-                  pw.SizedBox(height: 1),
-
-                  // Lot ID (auto-fit, can shrink to make room)
-                  _autoFitOneLine(
-                    lotId,
-                    maxSize: t.lotIdFontSize,
-                    minSize: 9,
-                    style: pw.TextStyle(
-                      font: t.fontBold ?? pw.Font.helveticaBold(),
-                      color: t.textColor,
-                    ),
-                  ),
+                  pw.SizedBox(height: 2),
                   
                   // Item name - regular font
                   pw.Text(
@@ -612,13 +616,13 @@ class LabelExportService {
                       maxLines: 1,
                     ),
                   
-                  // Grant (if present) - smallest font
+                  // Grant (if present) - always visible with adequate space
                   if (grantName != null && grantName.isNotEmpty)
                     pw.Text(
                       'Grant: $grantName',
                       style: pw.TextStyle(
                         font: t.fontRegular ?? pw.Font.helvetica(),
-                        fontSize: 5,
+                        fontSize: 6,
                         color: t.textColor,
                       ),
                       maxLines: 1,
