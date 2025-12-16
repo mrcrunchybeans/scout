@@ -1099,9 +1099,11 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
       
       // Create a product entry for this item
       final product = BulkProductEntry(
+        productKey: itemId,
         itemId: itemId,
         itemName: itemName,
         baseUnit: baseUnit,
+        isNew: false,
         barcodes: [],
       );
       

@@ -1771,7 +1771,10 @@ Future<void> _moveLotToItem(
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ItemDetailPage(itemId: toItemId),
+                  builder: (context) => ItemDetailPage(
+                    itemId: toItemId,
+                    itemName: toItemName,
+                  ),
                 ),
               );
             },

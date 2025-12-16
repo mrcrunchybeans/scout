@@ -587,7 +587,7 @@ class LabelExportService {
                   ),
 
                   // Grant (if present)
-                  if (grantName != null) ..[
+                  if (grantName != null) ...[
                     pw.SizedBox(height: 1),
                     pw.Text(
                       'Grant: $grantName',
@@ -688,16 +688,18 @@ class LabelExportService {
         elements.add(pw.Positioned(
           left: lotRect.left,
           top: lotRect.bottom + 2,
-          width: lotRect.width,
-          child: pw.Text(
-            'Grant: $grantName',
-            style: pw.TextStyle(
-              font: t.fontRegular ?? pw.Font.helvetica(),
-              fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
-              color: t.textColor,
+          child: pw.Container(
+            width: lotRect.width,
+            child: pw.Text(
+              'Grant: $grantName',
+              style: pw.TextStyle(
+                font: t.fontRegular ?? pw.Font.helvetica(),
+                fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
+                color: t.textColor,
+              ),
+              maxLines: 1,
+              overflow: pw.TextOverflow.clip,
             ),
-            maxLines: 1,
-            overflow: pw.TextOverflow.clip,
           ),
         ));
       }

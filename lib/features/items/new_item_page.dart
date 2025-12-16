@@ -834,7 +834,7 @@ class _NewItemPageState extends State<NewItemPage> {
                     ),
                   if (widget.itemId == null && _similarItems.isNotEmpty)
                     Card(
-                      color: Theme.of(context).colorScheme.warningContainer,
+                      color: Theme.of(context).colorScheme.errorContainer,
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(
@@ -843,14 +843,14 @@ class _NewItemPageState extends State<NewItemPage> {
                             Row(
                               children: [
                                 Icon(Icons.warning_amber, 
-                                  color: Theme.of(context).colorScheme.onWarningContainer,
+                                  color: Theme.of(context).colorScheme.onErrorContainer,
                                   size: 20,
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
                                   'Similar items found',
                                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                    color: Theme.of(context).colorScheme.onWarningContainer,
+                                    color: Theme.of(context).colorScheme.onErrorContainer,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
@@ -860,7 +860,7 @@ class _NewItemPageState extends State<NewItemPage> {
                             Text(
                               'Did you mean one of these existing items?',
                               style: TextStyle(
-                                color: Theme.of(context).colorScheme.onWarningContainer,
+                                color: Theme.of(context).colorScheme.onErrorContainer,
                                 fontSize: 12,
                               ),
                             ),
@@ -875,9 +875,9 @@ class _NewItemPageState extends State<NewItemPage> {
                                 child: OutlinedButton(
                                   onPressed: () => _switchToAddLot(doc),
                                   style: OutlinedButton.styleFrom(
-                                    foregroundColor: Theme.of(context).colorScheme.onWarningContainer,
+                                    foregroundColor: Theme.of(context).colorScheme.onErrorContainer,
                                     side: BorderSide(
-                                      color: Theme.of(context).colorScheme.onWarningContainer.withValues(alpha: 0.5),
+                                      color: Theme.of(context).colorScheme.onErrorContainer.withValues(alpha: 0.5),
                                     ),
                                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                   ),
