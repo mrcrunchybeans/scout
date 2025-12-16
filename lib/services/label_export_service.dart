@@ -438,6 +438,10 @@ class LabelExportService {
     final itemId = (lot['itemId'] ?? '').toString();
     final lotDocId = (lot['id'] ?? '').toString();
     final grantName = lot['grantName'] as String?;
+    final grantAbbr = lot['grantAbbreviation'] as String?;
+    
+    // Use abbreviation if available, otherwise use full name
+    final grantDisplay = (grantAbbr != null && grantAbbr.isNotEmpty) ? grantAbbr : grantName;
     
     // Debug output
     debugPrint('Label data - lotId: $lotId, variety: $variety, grantName: $grantName, itemName: $itemName');
@@ -573,12 +577,12 @@ class LabelExportService {
                               ),
                       ),
                       pw.SizedBox(width: 3),
-                      // Lot ID next to logo
+                      // Lot ID - flexible, can shrink
                       pw.Expanded(
                         child: _autoFitOneLine(
                           lotId,
                           maxSize: t.lotIdFontSize,
-                          minSize: 9,
+                          minSize: 8,
                           style: pw.TextStyle(
                             font: t.fontBold ?? pw.Font.helveticaBold(),
                             color: t.textColor,
@@ -586,8 +590,11 @@ class LabelExportService {
                         ),
                       ),
                       pw.SizedBox(width: 3),
-                      // Expiration on the right
-                      expirationChip(expirationDate),
+                      // Expiration - fixed width, always visible
+                      pw.Container(
+                        constraints: const pw.BoxConstraints(minWidth: 45),
+                        child: expirationChip(expirationDate),
+                      ),
                     ],
                   ),
 
@@ -617,9 +624,9 @@ class LabelExportService {
                     ),
                   
                   // Grant (if present) - always visible with adequate space
-                  if (grantName != null && grantName.isNotEmpty)
+                  if (grantDisplay != null && grantDisplay.isNotEmpty)
                     pw.Text(
-                      'Grant: $grantName',
+                      'Grant: $grantDisplay',
                       style: pw.TextStyle(
                         font: t.fontRegular ?? pw.Font.helvetica(),
                         fontSize: 6,
@@ -690,7 +697,7 @@ class LabelExportService {
     ));
 
     // Grant (if present and no custom design)
-    if (grantName != null && designRect('grant') == null) {
+    if (grantDisplay != null && designRect('grant') == null) {
       // Place grant below lot ID
       final lotRect = designRect('lotId');
       if (lotRect != null) {
@@ -700,7 +707,7 @@ class LabelExportService {
           child: pw.Container(
             width: lotRect.width,
             child: pw.Text(
-              'Grant: $grantName',
+              'Grant: $grantDisplay',
               style: pw.TextStyle(
                 font: t.fontRegular ?? pw.Font.helvetica(),
                 fontSize: (t.expirationFontSize * 0.9).clamp(6, 8),
@@ -771,11 +778,14 @@ class LabelExportService {
   static Future<List<Map<String, dynamic>>> getLotsForItems(List<String> itemIds) async {
     final lots = <Map<String, dynamic>>[];
     
-    // Load all grant names once
+    // Load all grant names and abbreviations once
     final grantsSnapshot = await FirebaseFirestore.instance.collection('grants').get();
     final grantNames = <String, String>{};
+    final grantAbbreviations = <String, String>{};
     for (final doc in grantsSnapshot.docs) {
-      grantNames[doc.id] = doc.data()['name'] as String? ?? doc.id;
+      final data = doc.data();
+      grantNames[doc.id] = data['name'] as String? ?? doc.id;
+      grantAbbreviations[doc.id] = data['abbreviation'] as String? ?? '';
     }
 
     for (final itemId in itemIds) {
@@ -796,6 +806,7 @@ class LabelExportService {
         final lotData = lotDoc.data();
         final grantId = lotData['grantId'] as String?;
         final grantName = grantId != null ? grantNames[grantId] : null;
+        final grantAbbr = grantId != null ? grantAbbreviations[grantId] : null;
         
         lots.add({
           ...lotData,
@@ -803,6 +814,7 @@ class LabelExportService {
           'itemId': itemId,
           'itemName': itemName,
           'grantName': grantName,
+          'grantAbbreviation': grantAbbr,
         });
       }
     }
