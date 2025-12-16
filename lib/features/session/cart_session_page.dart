@@ -2095,6 +2095,7 @@ class _LineRowState extends State<_LineRow> {
   late final FocusNode _initFocus;
   late final FocusNode _endFocus;
   String? _lotCode;
+  String? _variety;
   num? _lotRemaining;
   bool _overAllocated = false;
   bool? _lastReportedOverAllocation;
@@ -2131,9 +2132,10 @@ class _LineRowState extends State<_LineRow> {
   Future<void> _loadLotCode() async {
     final lotId = widget.line.lotId;
     if (lotId == null) {
-      if (_lotCode != null || _lotRemaining != null || _overAllocated) {
+      if (_lotCode != null || _variety != null || _lotRemaining != null || _overAllocated) {
         setState(() {
           _lotCode = null;
+          _variety = null;
           _lotRemaining = null;
           _overAllocated = false;
         });
@@ -2153,16 +2155,19 @@ class _LineRowState extends State<_LineRow> {
       if (lotDoc.exists) {
         final data = lotDoc.data();
         final lotCode = data?['lotCode'] as String?;
+        final variety = data?['variety'] as String?;
         final qtyRemainingRaw = data?['qtyRemaining'];
         final qtyRemaining = qtyRemainingRaw is num ? qtyRemainingRaw : null;
         setState(() {
           _lotCode = lotCode ?? lotId.substring(0, 6);
+          _variety = variety;
           _lotRemaining = qtyRemaining;
           _overAllocated = qtyRemaining != null && widget.line.initialQty > qtyRemaining;
         });
       } else {
         setState(() {
           _lotCode = lotId.substring(0, 6);
+          _variety = null;
           _lotRemaining = null;
           _overAllocated = false;
         });
@@ -2171,6 +2176,7 @@ class _LineRowState extends State<_LineRow> {
       if (!mounted) return;
       setState(() {
         _lotCode = lotId.substring(0, 6);
+        _variety = null;
         _lotRemaining = null;
         _overAllocated = false;
       });
@@ -2322,7 +2328,10 @@ class _LineRowState extends State<_LineRow> {
     final unitText = <String>['Unit: ${widget.line.baseUnit}'];
     if (widget.line.lotId != null) {
       final lotPieces = <String>[];
-      lotPieces.add('lot ${_lotCode ?? 'Loading...'}');
+      final lotDisplay = _variety != null && _variety!.isNotEmpty
+          ? '${_lotCode ?? 'Loading...'} - $_variety'
+          : _lotCode ?? 'Loading...';
+      lotPieces.add('lot $lotDisplay');
       if (_lotRemaining != null) {
         lotPieces.add('${_formatQty(_lotRemaining!)} ${widget.line.baseUnit} available');
       }
