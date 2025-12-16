@@ -588,30 +588,27 @@ class LabelExportService {
                     ),
                   ),
                   
-                  pw.SizedBox(height: 2),
+                  pw.SizedBox(height: 1),
 
-                  // Item name (flexible, takes remaining space)
-                  pw.Flexible(
-                    child: pw.Text(
-                      itemName,
-                      maxLines: 2,
-                      style: pw.TextStyle(
-                        font: t.fontRegular ?? pw.Font.helvetica(),
-                        fontSize: t.itemNameFontSize + 1,
-                        color: t.textColor,
-                      ),
-                      overflow: pw.TextOverflow.clip,
+                  // Item name - always show
+                  pw.Text(
+                    itemName,
+                    maxLines: 1,
+                    style: pw.TextStyle(
+                      font: t.fontRegular ?? pw.Font.helvetica(),
+                      fontSize: (t.itemNameFontSize).clamp(6, 9),
+                      color: t.textColor,
                     ),
+                    overflow: pw.TextOverflow.clip,
                   ),
 
-                  // Variety (if present)
+                  // Variety (if present) - show in bold below item name
                   if (variety != null && variety.isNotEmpty) ...[
-                    pw.SizedBox(height: 1),
                     pw.Text(
                       variety,
                       style: pw.TextStyle(
                         font: t.fontBold ?? pw.Font.helveticaBold(),
-                        fontSize: t.itemNameFontSize,
+                        fontSize: (t.itemNameFontSize).clamp(6, 9),
                         color: t.textColor,
                       ),
                       maxLines: 1,
@@ -626,7 +623,7 @@ class LabelExportService {
                       'Grant: $grantName',
                       style: pw.TextStyle(
                         font: t.fontRegular ?? pw.Font.helvetica(),
-                        fontSize: (t.expirationFontSize * 0.9).clamp(6, 7),
+                        fontSize: 6,
                         color: t.textColor,
                       ),
                       maxLines: 1,
