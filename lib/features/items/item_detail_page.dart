@@ -1088,7 +1088,7 @@ class _LotsTabContentState extends State<_LotsTabContent> {
   }
 }
 
-class _LotRow extends StatelessWidget {
+class _LotRow extends StatefulWidget {
   final String itemId;
   final QueryDocumentSnapshot<Map<String, dynamic>> lotDoc;
   final bool isArchived;
@@ -1096,8 +1096,37 @@ class _LotRow extends StatelessWidget {
   const _LotRow({required this.itemId, required this.lotDoc, this.isArchived = false, this.isHighlighted = false});
 
   @override
+  State<_LotRow> createState() => _LotRowState();
+}
+
+class _LotRowState extends State<_LotRow> {
+  String? _grantName;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGrantName();
+  }
+
+  Future<void> _loadGrantName() async {
+    final grantId = widget.lotDoc.data()['grantId'] as String?;
+    if (grantId == null || grantId.isEmpty) return;
+    
+    try {
+      final grantDoc = await FirebaseFirestore.instance.collection('grants').doc(grantId).get();
+      if (grantDoc.exists && mounted) {
+        setState(() {
+          _grantName = grantDoc.data()?['name'] as String?;
+        });
+      }
+    } catch (_) {
+      // Ignore errors
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final d = lotDoc.data();
+    final d = widget.lotDoc.data();
     final baseUnit = (d['baseUnit'] ?? 'each') as String;
     final qtyInitial = (d['qtyInitial'] ?? 0) as num;
     final qtyRemaining = (d['qtyRemaining'] ?? 0) as num;
@@ -1117,23 +1146,24 @@ class _LotRow extends StatelessWidget {
 
     final sub = <String>[
       remainingText,
+      if (_grantName != null) 'Grant: $_grantName',
       if (exp != null) 'Exp: ${MaterialLocalizations.of(context).formatFullDate(exp)}',
       if (opened) 'Opened',
       if (afterOpen != null && afterOpen > 0) 'Use within $afterOpen days after open',
       if (received != null) 'Received: ${MaterialLocalizations.of(context).formatFullDate(received)}',
     ].join(' • ');
 
-    final lotCode = (d['lotCode'] ?? lotDoc.id.substring(0, 6)) as String;
+    final lotCode = (d['lotCode'] ?? widget.lotDoc.id.substring(0, 6)) as String;
     final variety = d['variety'] as String?;
     
     // Build title with variety if present
     final titleText = variety != null && variety.isNotEmpty
-        ? '${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode - $variety'
-        : '${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode';
+        ? '${widget.isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode - $variety'
+        : '${widget.isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode';
     
     // Determine background color based on expiration status
     Color? backgroundColor;
-    if (isHighlighted) {
+    if (widget.isHighlighted) {
       backgroundColor = Theme.of(context).colorScheme.primaryContainer.withAlpha((0.3 * 255).round());
     } else if (isExpired) {
       backgroundColor = Colors.red.withAlpha((0.15 * 255).round());
@@ -1146,14 +1176,14 @@ class _LotRow extends StatelessWidget {
       child: ListTile(
         title: Text(titleText),
         subtitle: Text(sub),
-        onTap: () => _showEditLotSheet(context, itemId, lotDoc.id, d),
+        onTap: () => _showEditLotSheet(context, widget.itemId, widget.lotDoc.id, d),
         trailing: PopupMenuButton<String>(
           onSelected: (key) async {
             if (!context.mounted) return;
             switch (key) {
-              case 'adjust': await showAdjustSheet(context, itemId, lotDoc.id, qtyRemaining, opened); break;
-              case 'edit':   await _showEditLotSheet(context, itemId, lotDoc.id, d); break;
-              case 'archive': await _showArchiveLotDialog(context, itemId, lotDoc.id, d); break;
+              case 'adjust': await showAdjustSheet(context, widget.itemId, widget.lotDoc.id, qtyRemaining, opened); break;
+              case 'edit':   await _showEditLotSheet(context, widget.itemId, widget.lotDoc.id, d); break;
+              case 'archive': await _showArchiveLotDialog(context, widget.itemId, widget.lotDoc.id, d); break;
               case 'unarchive': await _showUnarchiveLotDialog(context, itemId, lotDoc.id, d); break;
               case 'delete': await _showDeleteLotDialog(context, itemId, lotDoc.id, d); break;
               case 'qr':     _showQrScan(context, itemId, lotDoc.id); break;
