@@ -1633,7 +1633,6 @@ Future<void> _showMoveToItemDialog(
                   Expanded(
                     child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                       stream: db.collection('items')
-                        .where('archived', isEqualTo: false)
                         .orderBy('name')
                         .snapshots(),
                       builder: (context, snapshot) {
@@ -1645,9 +1644,11 @@ Future<void> _showMoveToItemDialog(
                           return const Center(child: Text('No items found'));
                         }
                         
-                        // Filter out current item and apply search
+                        // Filter out current item, archived items, and apply search
                         final items = snapshot.data!.docs.where((doc) {
                           if (doc.id == currentItemId) return false;
+                          final data = doc.data();
+                          if (data['archived'] == true) return false;
                           if (searchQuery.isEmpty) return true;
                           final name = (doc.data()['name'] as String? ?? '').toLowerCase();
                           return name.contains(searchQuery);
