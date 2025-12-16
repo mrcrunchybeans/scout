@@ -432,6 +432,7 @@ class LabelExportService {
     bool debugMarkQr = false,
   }) {
     final lotId = (lot['lotCode'] ?? lot['id'] ?? 'Unknown').toString();
+    final variety = lot['variety'] as String?;
     final itemName = (lot['itemName'] ?? 'Unknown Item').toString();
     final expirationDate = _formatExpirationDate(lot['expiresAt']);
     final itemId = (lot['itemId'] ?? '').toString();
@@ -575,7 +576,7 @@ class LabelExportService {
 
                   pw.SizedBox(height: 2),
 
-                  // Lot ID (prominent)
+                  // Lot ID (prominent, auto-fit to ensure full visibility)
                   _autoFitOneLine(
                     lotId,
                     maxSize: t.lotIdFontSize + 2,
@@ -585,6 +586,21 @@ class LabelExportService {
                       color: t.textColor,
                     ),
                   ),
+                  
+                  // Variety (if present) - bold and smaller, directly below lot code
+                  if (variety != null && variety.isNotEmpty) ...[
+                    pw.SizedBox(height: 1),
+                    pw.Text(
+                      variety,
+                      style: pw.TextStyle(
+                        font: t.fontBold ?? pw.Font.helveticaBold(),
+                        fontSize: (t.expirationFontSize * 1.1).clamp(6, 9),
+                        color: t.textColor,
+                      ),
+                      maxLines: 1,
+                      overflow: pw.TextOverflow.clip,
+                    ),
+                  ],
 
                   // Grant (if present)
                   if (grantName != null) ...[
@@ -680,14 +696,40 @@ class LabelExportService {
       ),
     ));
 
-    // Grant (if present and no custom design)
-    if (grantName != null && designRect('grant') == null) {
-      // Place grant below lot ID if using default layout
+    // Variety (if present and no custom design)
+    if (variety != null && variety.isNotEmpty && designRect('variety') == null) {
+      // Place variety below lot ID
       final lotRect = designRect('lotId');
       if (lotRect != null) {
         elements.add(pw.Positioned(
           left: lotRect.left,
-          top: lotRect.bottom + 2,
+          top: lotRect.bottom + 1,
+          child: pw.Container(
+            width: lotRect.width,
+            child: pw.Text(
+              variety,
+              style: pw.TextStyle(
+                font: t.fontBold ?? pw.Font.helveticaBold(),
+                fontSize: (t.expirationFontSize * 1.1).clamp(6, 9),
+                color: t.textColor,
+              ),
+              maxLines: 1,
+              overflow: pw.TextOverflow.clip,
+            ),
+          ),
+        ));
+      }
+    }
+
+    // Grant (if present and no custom design)
+    if (grantName != null && designRect('grant') == null) {
+      // Place grant below variety (if present) or lot ID
+      final lotRect = designRect('lotId');
+      if (lotRect != null) {
+        final topOffset = (variety != null && variety.isNotEmpty) ? lotRect.bottom + 11 : lotRect.bottom + 2;
+        elements.add(pw.Positioned(
+          left: lotRect.left,
+          top: topOffset,
           child: pw.Container(
             width: lotRect.width,
             child: pw.Text(

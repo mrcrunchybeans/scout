@@ -1269,6 +1269,7 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
   final cQtyInit = TextEditingController();
   final cQtyRemain = TextEditingController();
   final cLotCode = TextEditingController(text: suggestedLotCode);
+  final cVariety = TextEditingController();
   DateTime? receivedAt = DateTime.now();
   DateTime? expiresAt;
   int? expiresAfterOpenDays;
@@ -1339,6 +1340,14 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                     labelText: 'Lot code',
                     hintText: suggestedLotCode,
                     helperText: 'Auto-generated in YYMM-XXX format (e.g., 2509-001)',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: cVariety,
+                  decoration: const InputDecoration(
+                    labelText: 'Variety (optional)',
+                    helperText: 'e.g., Dark Chocolate, Strawberry, etc.',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -1425,6 +1434,7 @@ Future<void> _showAddLotSheet(BuildContext context, String itemId) async {
                     await ref.set(
                       Audit.attach({
                         'lotCode': cLotCode.text.trim().isEmpty ? null : cLotCode.text.trim(),
+                        'variety': cVariety.text.trim().isEmpty ? null : cVariety.text.trim(),
                         'baseUnit': baseUnit,
                         'qtyInitial': qi,
                         'qtyRemaining': qr,
@@ -1470,8 +1480,9 @@ Future<void> _showEditLotSheet(
   String? selectedGrantId = d['grantId'] as String?;
   String? storageLocation = d['storageLocation'] as String?;
   
-  // Add lot code editing
+  // Add lot code and variety editing
   final lotCodeController = TextEditingController(text: d['lotCode'] as String? ?? '');
+  final varietyController = TextEditingController(text: d['variety'] as String? ?? '');
   
   // Load grants for dropdown
   final grantsSnap = await db.collection('grants').orderBy('name').get();
@@ -1513,7 +1524,17 @@ Future<void> _showEditLotSheet(
                   controller: lotCodeController,
                   decoration: const InputDecoration(
                     labelText: 'Lot Code / Batch Number',
-                    helperText: 'Rename this lot (e.g., add flavor: "Dark Chocolate")',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                
+                // Variety editing
+                TextField(
+                  controller: varietyController,
+                  decoration: const InputDecoration(
+                    labelText: 'Variety (optional)',
+                    helperText: 'e.g., Dark Chocolate, Strawberry, etc.',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -1613,10 +1634,13 @@ Future<void> _showEditLotSheet(
                       return;
                     }
                     
+                    final newVariety = varietyController.text.trim();
+                    
                     final ref = db.collection('items').doc(itemId).collection('lots').doc(lotId);
                     await ref.set(
                       Audit.updateOnly({
                         'lotCode': newLotCode,
+                        'variety': newVariety.isEmpty ? null : newVariety,
                         'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                         'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                         'expiresAfterOpenDays': afterOpenDays,
@@ -1629,6 +1653,7 @@ Future<void> _showEditLotSheet(
                       'itemId': itemId,
                       'lotId': lotId,
                       'lotCode': newLotCode,
+                      'variety': newVariety.isEmpty ? null : newVariety,
                       'expiresAt':  expiresAt != null ? Timestamp.fromDate(expiresAt!) : null,
                       'openAt':     openAt   != null ? Timestamp.fromDate(openAt!)   : null,
                       'expiresAfterOpenDays': afterOpenDays,
