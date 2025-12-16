@@ -329,10 +329,6 @@ class CartPrintService {
       </tr>
       ''');
     }
-        </td>
-      </tr>
-      ''');
-    }
 
     return buffer.toString();
   }
