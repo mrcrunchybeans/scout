@@ -1124,6 +1124,12 @@ class _LotRow extends StatelessWidget {
     ].join(' • ');
 
     final lotCode = (d['lotCode'] ?? lotDoc.id.substring(0, 6)) as String;
+    final variety = d['variety'] as String?;
+    
+    // Build title with variety if present
+    final titleText = variety != null && variety.isNotEmpty
+        ? '${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode - $variety'
+        : '${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode';
     
     // Determine background color based on expiration status
     Color? backgroundColor;
@@ -1138,7 +1144,7 @@ class _LotRow extends StatelessWidget {
     return Container(
       color: backgroundColor,
       child: ListTile(
-        title: Text('${isArchived ? '[ARCHIVED] ' : ''}Lot $lotCode'),
+        title: Text(titleText),
         subtitle: Text(sub),
         onTap: () => _showEditLotSheet(context, itemId, lotDoc.id, d),
         trailing: PopupMenuButton<String>(
