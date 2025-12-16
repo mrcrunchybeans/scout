@@ -99,8 +99,7 @@ service cloud.firestore {
       }
 
       match /lines/{lineId} {
-        allow create, update: if isAuthed();
-        allow delete: if isAdmin();
+        allow create, update, delete: if isAuthed();
 
         function validLine(d) {
           return strMax(d.itemId, 64)
@@ -244,7 +243,7 @@ service cloud.firestore {
     // ---------- Backups (admin only for writes, public for reads) ----------
     match /backups/{document=**} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAuthed(); // Allow authenticated users to create backups
     }
 
     // ---------- Scanner Sessions (for mobile barcode scanner) ----------

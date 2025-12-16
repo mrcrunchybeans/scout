@@ -883,6 +883,7 @@ class _LotsTabContent extends StatefulWidget {
 
 class _LotsTabContentState extends State<_LotsTabContent> {
   bool _showArchived = false;
+  String _sortBy = 'expiration'; // 'expiration', 'received', 'quantity', 'lotCode'
   final ScrollController _scrollController = ScrollController();
   bool _hasScrolledToHighlight = false;
 
@@ -942,10 +943,26 @@ class _LotsTabContentState extends State<_LotsTabContent> {
             children: [
               Expanded(
                 child: Text(
-                  _showArchived ? 'Archived Lots' : 'Lots (FEFO)',
+                  _showArchived ? 'Archived Lots' : 'Lots',
                   style: Theme.of(context).textTheme.titleMedium
                 )
               ),
+              // Sort dropdown
+              DropdownButton<String>(
+                value: _sortBy,
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _sortBy = value);
+                  }
+                },
+                items: const [
+                  DropdownMenuItem(value: 'expiration', child: Text('Expiration')),
+                  DropdownMenuItem(value: 'received', child: Text('Received')),
+                  DropdownMenuItem(value: 'quantity', child: Text('Quantity')),
+                  DropdownMenuItem(value: 'lotCode', child: Text('Lot Code')),
+                ],
+              ),
+              const SizedBox(width: 8),
               TextButton.icon(
                 icon: Icon(_showArchived ? Icons.visibility_off : Icons.archive),
                 label: Text(_showArchived ? 'Show Active' : 'Show Archived'),
@@ -982,16 +999,49 @@ class _LotsTabContentState extends State<_LotsTabContent> {
                 }
               }).toList();
               
-              // Push null-expiry lots to the end for FEFO UX
+              // Sort lots based on selected sort option
               docs.sort((a, b) {
-                DateTime? ea, eb;
-                final ta = a.data()['expiresAt'], tb = b.data()['expiresAt'];
-                ea = (ta is Timestamp) ? ta.toDate() : null;
-                eb = (tb is Timestamp) ? tb.toDate() : null;
-                if (ea == null && eb == null) return 0;
-                if (ea == null) return 1; // nulls last
-                if (eb == null) return -1;
-                return ea.compareTo(eb); // soonest first
+                final dataA = a.data();
+                final dataB = b.data();
+                
+                switch (_sortBy) {
+                  case 'expiration':
+                    // FEFO - earliest expiration first, nulls last
+                    DateTime? ea, eb;
+                    final ta = dataA['expiresAt'], tb = dataB['expiresAt'];
+                    ea = (ta is Timestamp) ? ta.toDate() : null;
+                    eb = (tb is Timestamp) ? tb.toDate() : null;
+                    if (ea == null && eb == null) return 0;
+                    if (ea == null) return 1; // nulls last
+                    if (eb == null) return -1;
+                    return ea.compareTo(eb); // soonest first
+                    
+                  case 'received':
+                    // Most recently received first
+                    DateTime? ra, rb;
+                    final tra = dataA['receivedAt'], trb = dataB['receivedAt'];
+                    ra = (tra is Timestamp) ? tra.toDate() : null;
+                    rb = (trb is Timestamp) ? trb.toDate() : null;
+                    if (ra == null && rb == null) return 0;
+                    if (ra == null) return 1; // nulls last
+                    if (rb == null) return -1;
+                    return rb.compareTo(ra); // most recent first
+                    
+                  case 'quantity':
+                    // Lowest quantity first
+                    final qa = (dataA['qtyRemaining'] ?? 0) as num;
+                    final qb = (dataB['qtyRemaining'] ?? 0) as num;
+                    return qa.compareTo(qb);
+                    
+                  case 'lotCode':
+                    // Alphabetical by lot code
+                    final la = (dataA['lotCode'] ?? a.id.substring(0, 6)) as String;
+                    final lb = (dataB['lotCode'] ?? b.id.substring(0, 6)) as String;
+                    return la.compareTo(lb);
+                    
+                  default:
+                    return 0;
+                }
               });
 
               // Scroll to highlighted lot after data loads
