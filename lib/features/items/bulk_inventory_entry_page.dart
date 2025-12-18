@@ -40,6 +40,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
   final Map<String, BulkProductEntry> _pendingProducts = {};
   bool _isProcessing = false;
   final List<String> _createdBatchCodes = [];
+  final List<String> _createdItemIds = []; // Store item IDs for label export
   bool _searchByName = false; // Toggle between barcode and name search
   List<Map<String, dynamic>> _nameSearchResults = [];
   Timer? _nameSearchDebounceTimer;
@@ -686,6 +687,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
 
     setState(() => _isProcessing = true);
     _createdBatchCodes.clear();
+    _createdItemIds.clear();
 
     try {
       // Process each product
@@ -693,6 +695,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
         if (product.isNew) {
           // Create new item first
           final itemRef = _db.collection('items').doc();
+          _createdItemIds.add(itemRef.id); // Store for label export
           final newItemData = product.newItemData!;
           await itemRef.set({
             'name': product.itemName,
@@ -761,6 +764,7 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
           });
         } else {
           // Add to existing item
+          _createdItemIds.add(product.itemId); // Store for label export
           final totalQuantity = product.lots.fold(0.0, (total, lot) => total + lot.quantity);
 
           // Fetch existing item data for grant/location defaults
@@ -998,24 +1002,19 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
     if (startLabel == null) return; // User cancelled
 
     try {
-      // Get all created items and their lots
-      final itemIds = <String>[];
-      for (final product in _pendingProducts.values) {
-        itemIds.add(product.itemId);
-            }
-
-      if (itemIds.isEmpty) {
-          final rootCtx = context;
-          if (rootCtx.mounted) {
-            ScaffoldMessenger.of(rootCtx).showSnackBar(
-              const SnackBar(content: Text('No items found to export labels for')),
-            );
-          }
-          return;
+      // Use the stored item IDs from processing
+      if (_createdItemIds.isEmpty) {
+        final rootCtx = context;
+        if (rootCtx.mounted) {
+          ScaffoldMessenger.of(rootCtx).showSnackBar(
+            const SnackBar(content: Text('No items found to export labels for')),
+          );
         }
+        return;
+      }
 
       // Get lots data for the created items
-      final lotsData = await LabelExportService.getLotsForItems(itemIds);
+      final lotsData = await LabelExportService.getLotsForItems(_createdItemIds);
 
       if (lotsData.isEmpty) {
         final rootCtx = context;
