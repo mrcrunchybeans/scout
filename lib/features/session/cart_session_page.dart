@@ -12,6 +12,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../utils/operator_store.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
+import '../../utils/deep_link_parser.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../widgets/weight_calculator_dialog.dart';
 import 'cart_models.dart';
@@ -268,7 +269,32 @@ class _CartSessionPageState extends State<CartSessionPage> {
     SoundFeedback.ok();
 
     try {
-      // 1) SCOUT lot QR: SCOUT:LOT:item={ITEM_ID};lot={LOT_ID}
+      // 1) Try parsing as a lot deep link (new URL format)
+      final lotDeepLink = DeepLinkParser.parseLotDeepLink(code);
+      if (lotDeepLink != null) {
+        final itemId = lotDeepLink['itemId']!;
+        final lotId = lotDeepLink['lotId'];
+        
+        final itemSnap = await _db.collection('items').doc(itemId).get();
+        if (!ctx.mounted) return;
+        if (!itemSnap.exists) throw Exception('Item not found');
+        final m = itemSnap.data()!;
+        final name = (m['name'] ?? 'Unnamed') as String;
+        final baseUnit = (m['baseUnit'] ?? m['unit'] ?? 'each') as String;
+
+        _addOrBumpLine(
+          itemId: itemId,
+          itemName: name,
+          baseUnit: baseUnit,
+          lotId: lotId,
+        );
+        if (!ctx.mounted) return;
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
+        _refocusQuickAdd();
+        return;
+      }
+
+      // 2) Legacy SCOUT lot QR: SCOUT:LOT:item={ITEM_ID};lot={LOT_ID}
       if (code.startsWith('SCOUT:LOT:')) {
         String? itemId, lotId;
         for (final p in code.substring('SCOUT:LOT:'.length).split(';')) {
@@ -299,7 +325,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
       }
 
-      // 2) Item barcode search (support 'barcode' and 'barcodes' array)
+      // 3) Item barcode search (support 'barcode' and 'barcodes' array)
       QueryDocumentSnapshot<Map<String, dynamic>>? d;
       var q = await _db.collection('items').where('barcode', isEqualTo: code).limit(1).get();
       if (q.docs.isNotEmpty) {
