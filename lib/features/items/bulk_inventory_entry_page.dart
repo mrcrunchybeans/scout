@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../widgets/scanner_sheet.dart';
 import '../../widgets/usb_wedge_scanner.dart';
@@ -930,6 +931,37 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
                   },
                 ),
               ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colorScheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      color: colorScheme.onSecondaryContainer,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: InkWell(
+                        onTap: () => _launchReimbursementPortal(),
+                        child: Text(
+                          'Request reimbursement through Wells Fargo',
+                          style: TextStyle(
+                            color: colorScheme.primary,
+                            decoration: TextDecoration.underline,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -1040,6 +1072,27 @@ class _BulkInventoryEntryPageState extends State<BulkInventoryEntryPage> {
       if (rootCtx.mounted) {
         ScaffoldMessenger.of(rootCtx).showSnackBar(
           SnackBar(content: Text('Failed to export labels: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _launchReimbursementPortal() async {
+    const reimbursementUrl = 'https://wellsoffice.ceo.wellsfargo.com/portal/signon/index.jsp#/';
+    try {
+      if (await canLaunchUrl(Uri.parse(reimbursementUrl))) {
+        await launchUrl(Uri.parse(reimbursementUrl), mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open Wells Fargo portal')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error opening portal: $e')),
         );
       }
     }
