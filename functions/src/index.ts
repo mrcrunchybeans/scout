@@ -1140,3 +1140,259 @@ function escapeXml(str: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 }
+// ==================== ADVANCED ANALYTICS ====================
+
+/**
+ * Pre-compute daily analytics and cache in Firestore
+ * Runs on a daily schedule to aggregate metrics
+ */
+export const precomputeAnalytics = onSchedule(
+  "every day 03:00",
+  async (context) => {
+    console.log("Starting daily analytics precomputation");
+
+    try {
+      const now = new Date();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      yesterday.setHours(0, 0, 0, 0);
+
+      const tomorrowStart = new Date(yesterday);
+      tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+      // Get all usage logs for yesterday
+      const usageSnapshot = await db
+        .collection("usage_logs")
+        .where("usedAt", ">=", admin.firestore.Timestamp.fromDate(yesterday))
+        .where("usedAt", "<", admin.firestore.Timestamp.fromDate(tomorrowStart))
+        .get();
+
+      const analytics = {
+        date: yesterday.toISOString().split("T")[0],
+        totalUsage: 0,
+        usageCount: 0,
+        byIntervention: {} as Record<string, {total: number; count: number}>,
+        byGrant: {} as Record<string, {total: number; count: number}>,
+        byOperator: {} as Record<string, {total: number; count: number}>,
+        byItem: {} as Record<string, {total: number; count: number}>,
+        uniqueItems: new Set<string>(),
+        uniqueOperators: new Set<string>(),
+        topItems: [] as Array<{id: string; total: number}>,
+        computedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // Aggregate data
+      for (const doc of usageSnapshot.docs) {
+        const data = doc.data();
+        const qty = (data.qtyUsed as number) || 0;
+        const interventionId = data.interventionId as string | undefined;
+        const grantId = data.grantId as string | undefined;
+        const operatorName = data.operatorName as string | undefined;
+        const itemId = data.itemId as string | undefined;
+
+        analytics.totalUsage += qty;
+        analytics.usageCount++;
+
+        if (itemId) {
+          analytics.uniqueItems.add(itemId);
+          analytics.byItem[itemId] = analytics.byItem[itemId] || {total: 0, count: 0};
+          analytics.byItem[itemId].total += qty;
+          analytics.byItem[itemId].count++;
+        }
+
+        if (interventionId) {
+          analytics.byIntervention[interventionId] = analytics.byIntervention[interventionId] || {total: 0, count: 0};
+          analytics.byIntervention[interventionId].total += qty;
+          analytics.byIntervention[interventionId].count++;
+        }
+
+        if (grantId) {
+          analytics.byGrant[grantId] = analytics.byGrant[grantId] || {total: 0, count: 0};
+          analytics.byGrant[grantId].total += qty;
+          analytics.byGrant[grantId].count++;
+        }
+
+        if (operatorName) {
+          analytics.uniqueOperators.add(operatorName);
+          analytics.byOperator[operatorName] = analytics.byOperator[operatorName] || {total: 0, count: 0};
+          analytics.byOperator[operatorName].total += qty;
+          analytics.byOperator[operatorName].count++;
+        }
+      }
+
+      // Calculate top items
+      const topItems = Object.entries(analytics.byItem)
+        .map(([id, data]) => ({id, total: data.total}))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 10);
+
+      // Store analytics
+      const analyticsData = {
+        date: analytics.date,
+        totalUsage: analytics.totalUsage,
+        usageCount: analytics.usageCount,
+        byIntervention: analytics.byIntervention,
+        byGrant: analytics.byGrant,
+        byOperator: analytics.byOperator,
+        topItems: topItems,
+        uniqueItemsCount: analytics.uniqueItems.size,
+        uniqueOperatorsCount: analytics.uniqueOperators.size,
+        computedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await db.collection("analytics").doc(`daily_${analytics.date}`).set(analyticsData);
+
+      console.log(`Analytics precomputed for ${analytics.date}`);
+      return {success: true, date: analytics.date};
+    } catch (error) {
+      console.error("Error precomputing analytics:", error);
+      throw error;
+    }
+  }
+);
+
+/**
+ * Get pre-computed analytics for a date range
+ */
+export const getPrecomputedAnalytics = functions.https.onCall(async (req, context) => {
+  const {startDate, endDate} = req.data;
+
+  if (!startDate || !endDate) {
+    throw new functions.https.HttpsError("invalid-argument", "startDate and endDate required");
+  }
+
+  try {
+    const query = db
+      .collection("analytics")
+      .where("date", ">=", startDate)
+      .where("date", "<=", endDate)
+      .orderBy("date", "asc");
+
+    const snapshot = await query.get();
+    const results: Record<string, any> = {
+      totalUsage: 0,
+      totalUsageCount: 0,
+      byIntervention: {} as Record<string, {total: number; count: number}>,
+      byGrant: {} as Record<string, {total: number; count: number}>,
+      byOperator: {} as Record<string, {total: number; count: number}>,
+      daily: [] as Record<string, any>[],
+    };
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      results.totalUsage += data.totalUsage || 0;
+      results.totalUsageCount += data.usageCount || 0;
+
+      // Aggregate dimensions
+      Object.entries(data.byIntervention || {}).forEach(([key, val]: [string, any]) => {
+        results.byIntervention[key] = results.byIntervention[key] || {total: 0, count: 0};
+        results.byIntervention[key].total += val.total;
+        results.byIntervention[key].count += val.count;
+      });
+
+      Object.entries(data.byGrant || {}).forEach(([key, val]: [string, any]) => {
+        results.byGrant[key] = results.byGrant[key] || {total: 0, count: 0};
+        results.byGrant[key].total += val.total;
+        results.byGrant[key].count += val.count;
+      });
+
+      Object.entries(data.byOperator || {}).forEach(([key, val]: [string, any]) => {
+        results.byOperator[key] = results.byOperator[key] || {total: 0, count: 0};
+        results.byOperator[key].total += val.total;
+        results.byOperator[key].count += val.count;
+      });
+
+      results.daily.push({
+        date: data.date,
+        usage: data.totalUsage,
+        count: data.usageCount,
+      });
+    }
+
+    return results;
+  } catch (error) {
+    console.error("Error fetching precomputed analytics:", error);
+    throw new functions.https.HttpsError("internal", "Error fetching analytics");
+  }
+});
+
+/**
+ * Get operator efficiency metrics
+ */
+export const getOperatorMetrics = functions.https.onCall(async (req, context) => {
+  const {operatorName, daysBack = 30} = req.data;
+
+  if (!operatorName) {
+    throw new functions.https.HttpsError("invalid-argument", "operatorName required");
+  }
+
+  try {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysBack);
+
+    const usageSnapshot = await db
+      .collection("usage_logs")
+      .where("operatorName", "==", operatorName)
+      .where("usedAt", ">=", admin.firestore.Timestamp.fromDate(startDate))
+      .get();
+
+    const auditSnapshot = await db
+      .collection("audit_logs")
+      .where("operatorName", "==", operatorName)
+      .where("createdAt", ">=", admin.firestore.Timestamp.fromDate(startDate))
+      .get();
+
+    const metrics = {
+      operatorName: operatorName,
+      period: `${daysBack} days`,
+      totalUsage: 0,
+      usageCount: usageSnapshot.docs.length,
+      uniqueItems: new Set<string>(),
+      actionsPerformed: auditSnapshot.docs.length,
+      avgUsagePerDay: 0,
+      avgActionsPerDay: 0,
+      topItems: [] as Array<{id: string; usage: number}>,
+      byIntervention: {} as Record<string, number>,
+      byGrant: {} as Record<string, number>,
+    };
+
+    // Aggregate usage data
+    const itemUsage: Record<string, number> = {};
+    for (const doc of usageSnapshot.docs) {
+      const data = doc.data();
+      const qty = (data.qtyUsed as number) || 0;
+      const itemId = data.itemId as string | undefined;
+      const interventionId = data.interventionId as string | undefined;
+      const grantId = data.grantId as string | undefined;
+
+      metrics.totalUsage += qty;
+
+      if (itemId) {
+        metrics.uniqueItems.add(itemId);
+        itemUsage[itemId] = (itemUsage[itemId] || 0) + qty;
+      }
+
+      if (interventionId) {
+        metrics.byIntervention[interventionId] = (metrics.byIntervention[interventionId] || 0) + qty;
+      }
+
+      if (grantId) {
+        metrics.byGrant[grantId] = (metrics.byGrant[grantId] || 0) + qty;
+      }
+    }
+
+    // Calculate top items
+    metrics.topItems = Object.entries(itemUsage)
+      .map(([id, usage]) => ({id, usage}))
+      .sort((a, b) => b.usage - a.usage)
+      .slice(0, 5);
+
+    metrics.avgUsagePerDay = metrics.totalUsage / daysBack;
+    metrics.avgActionsPerDay = metrics.actionsPerformed / daysBack;
+
+    return metrics;
+  } catch (error) {
+    console.error("Error fetching operator metrics:", error);
+    throw new functions.https.HttpsError("internal", "Error fetching metrics");
+  }
+});

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'package:scout/utils/operator_store.dart';
+import 'custom_analytics_dashboard.dart';
 
 /// Redesigned Reports page with tabs for different user needs:
 /// - Overview: Quick summary dashboard
@@ -215,6 +216,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           ],
         ),
         actions: [
+          // Advanced Analytics button
+          IconButton(
+            icon: const Icon(Icons.dashboard_customize),
+            tooltip: 'Advanced Analytics',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CustomAnalyticsDashboard()),
+              );
+            },
+          ),
           // Time period selector
           PopupMenuButton<String>(
             icon: const Icon(Icons.date_range),
