@@ -499,8 +499,6 @@ class AdvancedAnalyticsService {
     }
     return DateFormat('MMM dd').format(date);
   }
-}
-
 
   // ==================== Usage Analytics ====================
 
