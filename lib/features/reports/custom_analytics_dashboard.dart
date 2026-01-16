@@ -18,16 +18,16 @@ class _CustomAnalyticsDashboardState extends State<CustomAnalyticsDashboard> {
   DateTime _endDate = DateTime.now();
 
   // Metric selection
-  Set<AdvancedAnalyticsService.MetricType> _selectedMetrics = {
-    AdvancedAnalyticsService.MetricType.totalUsage,
-    AdvancedAnalyticsService.MetricType.usageFrequency,
-    AdvancedAnalyticsService.MetricType.velocity,
+  Set<MetricType> _selectedMetrics = {
+    MetricType.totalUsage,
+    MetricType.usageFrequency,
+    MetricType.velocity,
   };
 
   // Dimension selection
-  Set<AdvancedAnalyticsService.DimensionType> _selectedDimensions = {
-    AdvancedAnalyticsService.DimensionType.intervention,
-    AdvancedAnalyticsService.DimensionType.grant,
+  Set<DimensionType> _selectedDimensions = {
+    DimensionType.intervention,
+    DimensionType.grant,
   };
 
   // Filters
@@ -112,7 +112,7 @@ class _CustomAnalyticsDashboardState extends State<CustomAnalyticsDashboard> {
   Future<void> _runAnalysis() async {
     setState(() => _loading = true);
     try {
-      final query = AdvancedAnalyticsService.AnalyticsQuery(
+      final query = AnalyticsQuery(
         startDate: _startDate,
         endDate: _endDate,
         metrics: _selectedMetrics.toList(),
@@ -213,7 +213,7 @@ class _CustomAnalyticsDashboardState extends State<CustomAnalyticsDashboard> {
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 8,
-                      children: AdvancedAnalyticsService.MetricType.values
+                      children: MetricType.values
                           .map((metric) => FilterChip(
                                 label: Text(_formatMetricName(metric)),
                                 selected: _selectedMetrics.contains(metric),
@@ -246,7 +246,7 @@ class _CustomAnalyticsDashboardState extends State<CustomAnalyticsDashboard> {
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 8,
-                      children: AdvancedAnalyticsService.DimensionType.values
+                      children: DimensionType.values
                           .map((dimension) => FilterChip(
                                 label: Text(_formatDimensionName(dimension)),
                                 selected: _selectedDimensions.contains(dimension),
@@ -696,31 +696,31 @@ class _CustomAnalyticsDashboardState extends State<CustomAnalyticsDashboard> {
     );
   }
 
-  String _formatMetricName(AdvancedAnalyticsService.MetricType metric) {
+  String _formatMetricName(MetricType metric) {
     return metric.toString().split('.').last.replaceAllMapped(
           RegExp(r'([A-Z])'),
           (m) => ' ${m.group(1)}',
         ).trim();
   }
 
-  String _formatDimensionName(AdvancedAnalyticsService.DimensionType dimension) {
+  String _formatDimensionName(DimensionType dimension) {
     return dimension.toString().split('.').last.replaceAllMapped(
           RegExp(r'([A-Z])'),
           (m) => ' ${m.group(1)}',
         ).trim();
   }
 
-  AdvancedAnalyticsService.MetricType _formatMetricFromString(String str) {
-    return AdvancedAnalyticsService.MetricType.values.firstWhere(
-      (m) => m.toString() == 'AdvancedAnalyticsService.MetricType.$str',
-      orElse: () => AdvancedAnalyticsService.MetricType.totalUsage,
+  MetricType _formatMetricFromString(String str) {
+    return MetricType.values.firstWhere(
+      (m) => m.toString() == 'MetricType.$str',
+      orElse: () => MetricType.totalUsage,
     );
   }
 
-  AdvancedAnalyticsService.DimensionType _formatDimensionFromString(String str) {
-    return AdvancedAnalyticsService.DimensionType.values.firstWhere(
-      (d) => d.toString() == 'AdvancedAnalyticsService.DimensionType.$str',
-      orElse: () => AdvancedAnalyticsService.DimensionType.intervention,
+  DimensionType _formatDimensionFromString(String str) {
+    return DimensionType.values.firstWhere(
+      (d) => d.toString() == 'DimensionType.$str',
+      orElse: () => DimensionType.intervention,
     );
   }
 }
