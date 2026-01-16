@@ -218,7 +218,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         actions: [
           // Advanced Analytics button
           IconButton(
-            icon: const Icon(Icons.dashboard_customize),
+            icon: const Icon(Icons.dashboard_customize, color: Colors.white),
             tooltip: 'Advanced Analytics',
             onPressed: () {
               Navigator.of(context).push(
