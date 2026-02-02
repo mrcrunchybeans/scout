@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:scout/features/session/cart_models.dart';
 
 // ==================== Enums ====================
 
@@ -71,6 +72,7 @@ class AnalyticsQuery {
   final List<String>? filterByOperators;
   final List<String>? filterByItems;
   final List<String>? filterByCategories;
+  final List<String>? filterBySession; // Session IDs to filter by
   final bool includeWaste;
   final bool includeArchived;
   final int? topN; // Top N items
@@ -87,6 +89,7 @@ class AnalyticsQuery {
     this.filterByOperators,
     this.filterByItems,
     this.filterByCategories,
+    this.filterBySession,
     this.includeWaste = true,
     this.includeArchived = false,
     this.topN,
@@ -498,5 +501,348 @@ class AdvancedAnalyticsService {
       return DateFormat('MMMM yyyy').format(date);
     }
     return DateFormat('MMM dd').format(date);
+  }
+
+  // ==================== Session Metrics ====================
+
+  /// Get session completion rate by intervention type
+  /// Returns percentage of sessions that were properly closed vs abandoned
+  static Future<double> getSessionCompletionRate({String? interventionId}) async {
+    try {
+      var query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final completedDocs = await query.count().get();
+      final totalCount = completedDocs.count ?? 0;
+
+      // Get total sessions (including those without closedAt)
+      var totalQuery = _db.collection('cart_session_metrics');
+      if (interventionId != null) {
+        totalQuery = totalQuery.where('interventionId', isEqualTo: interventionId);
+      }
+      final allDocs = await totalQuery.count().get();
+      final allCount = allDocs.count ?? 0;
+
+      return allCount > 0 ? (totalCount / allCount) * 100 : 0.0;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get average items per session
+  static Future<double> getAverageItemsPerSession({String? interventionId}) async {
+    try {
+      var query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+      if (docs.docs.isEmpty) return 0.0;
+
+      final totalItems = docs.docs.fold<int>(
+        0,
+        (sum, doc) => sum + ((doc['itemCount'] as num?)?.toInt() ?? 0),
+      );
+
+      return totalItems / docs.docs.length;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get most used items in sessions (popular items by usage percentage)
+  static Future<List<ItemUsageMetric>> getMostUsedItemsInSessions({
+    int limit = 10,
+    String? interventionId,
+  }) async {
+    try {
+      var query = _db
+          .collection('cart_session_metrics')
+          .where('closedAt', isNotEqualTo: null)
+          .limit(1000); // Reasonable limit for aggregation
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+
+      // Aggregate item usage from all sessions
+      final itemStats = <String, Map<String, dynamic>>{};
+
+      for (final doc in docs.docs) {
+        final breakdown = doc['itemBreakdown'] as List?;
+        if (breakdown == null) continue;
+
+        for (final item in breakdown) {
+          final itemData = item as Map<String, dynamic>;
+          final itemId = itemData['itemId'] as String;
+
+          if (!itemStats.containsKey(itemId)) {
+            itemStats[itemId] = {
+              'itemId': itemId,
+              'itemName': itemData['itemName'] as String?,
+              'totalUsagePct': 0.0,
+              'count': 0,
+              'totalQuantity': 0,
+            };
+          }
+
+          itemStats[itemId]!['totalUsagePct'] += (itemData['usagePercentage'] as num?)?.toDouble() ?? 0;
+          itemStats[itemId]!['count'] = (itemStats[itemId]!['count'] as int) + 1;
+          itemStats[itemId]!['totalQuantity'] += (itemData['initialQty'] as num?)?.toInt() ?? 0;
+        }
+      }
+
+      // Calculate average usage percentage and sort
+      final results = itemStats.values.map((stats) {
+        final count = stats['count'] as int;
+        return ItemUsageMetric(
+          itemId: stats['itemId'] as String,
+          itemName: stats['itemName'] as String?,
+          totalUsagePercentage: count > 0 ? (stats['totalUsagePct'] as double) / count : 0,
+          usageCount: count,
+          totalQuantity: stats['totalQuantity'] as int,
+        );
+      }).toList()
+        ..sort((a, b) => b.totalUsagePercentage.compareTo(a.totalUsagePercentage));
+
+      return results.take(limit).toList();
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get session frequency over time (sessions per day/week/month)
+  static Future<List<TimeSeriesMetric>> getSessionFrequency({
+    required DateTime startDate,
+    required DateTime endDate,
+    String? interventionId,
+  }) async {
+    try {
+      var query = _db
+          .collection('cart_session_metrics')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
+          .where('createdAt', isLessThan: Timestamp.fromDate(endDate.add(const Duration(days: 1))));
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+
+      // Group by date
+      final dailyCounts = <DateTime, int>{};
+      for (final doc in docs.docs) {
+        final createdAt = (doc['createdAt'] as Timestamp).toDate();
+        final day = DateTime(createdAt.year, createdAt.month, createdAt.day);
+        dailyCounts[day] = (dailyCounts[day] ?? 0) + 1;
+      }
+
+      // Convert to TimeSeriesMetric sorted by date
+      final results = dailyCounts.entries
+          .map((e) => TimeSeriesMetric(
+                date: e.key,
+                value: e.value.toDouble(),
+                label: DateFormat('yyyy-MM-dd').format(e.key),
+              ))
+          .toList()
+        ..sort((a, b) => a.date.compareTo(b.date));
+
+      return results;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get average session duration
+  static Future<Duration> getAverageSessionDuration({String? interventionId}) async {
+    try {
+      var query = _db
+          .collection('cart_session_metrics')
+          .where('closedAt', isNotEqualTo: null);
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+      if (docs.docs.isEmpty) return Duration.zero;
+
+      int totalSeconds = 0;
+      int validCount = 0;
+
+      for (final doc in docs.docs) {
+        final createdAt = (doc['createdAt'] as Timestamp).toDate();
+        final closedAt = (doc['closedAt'] as Timestamp).toDate();
+        final duration = closedAt.difference(createdAt).inSeconds;
+        if (duration >= 0) {
+          totalSeconds += duration;
+          validCount++;
+        }
+      }
+
+      if (validCount == 0) return Duration.zero;
+      return Duration(seconds: totalSeconds ~/ validCount);
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get items with most waste (sessions with low usage %)
+  static Future<List<ItemUsageMetric>> getItemsWithMostWaste({
+    int limit = 10,
+    String? interventionId,
+  }) async {
+    try {
+      var query = _db
+          .collection('cart_session_metrics')
+          .where('closedAt', isNotEqualTo: null)
+          .limit(1000);
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+
+      // Aggregate item waste from all sessions
+      final itemStats = <String, Map<String, dynamic>>{};
+
+      for (final doc in docs.docs) {
+        final breakdown = doc['itemBreakdown'] as List?;
+        if (breakdown == null) continue;
+
+        for (final item in breakdown) {
+          final itemData = item as Map<String, dynamic>;
+          final itemId = itemData['itemId'] as String;
+
+          if (!itemStats.containsKey(itemId)) {
+            itemStats[itemId] = {
+              'itemId': itemId,
+              'itemName': itemData['itemName'] as String?,
+              'totalWastePct': 0.0,
+              'count': 0,
+              'totalQuantity': 0,
+            };
+          }
+
+          final usagePct = (itemData['usagePercentage'] as num?)?.toDouble() ?? 0;
+          final wastePct = 1.0 - usagePct;
+
+          itemStats[itemId]!['totalWastePct'] += wastePct;
+          itemStats[itemId]!['count'] = (itemStats[itemId]!['count'] as int) + 1;
+          itemStats[itemId]!['totalQuantity'] += (itemData['initialQty'] as num?)?.toInt() ?? 0;
+        }
+      }
+
+      // Calculate average waste percentage and sort (highest waste first)
+      final results = itemStats.values.map((stats) {
+        final count = stats['count'] as int;
+        final avgWastePct = count > 0 ? (stats['totalWastePct'] as double) / count : 0;
+        return ItemUsageMetric(
+          itemId: stats['itemId'] as String,
+          itemName: stats['itemName'] as String?,
+          totalUsagePercentage: 1.0 - avgWastePct, // Convert back to usage for consistency
+          usageCount: count,
+          totalQuantity: stats['totalQuantity'] as int,
+        );
+      }).toList()
+        ..sort((a, b) => a.totalUsagePercentage.compareTo(b.totalUsagePercentage)); // Low usage = high waste
+
+      return results.take(limit).toList();
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  // ==================== Session Data Collection ====================
+
+  /// Record a cart session metric when closing a session
+  static Future<void> recordSessionMetric(CartSessionMetric metric) async {
+    try {
+      await _db.collection('cart_session_metrics').add(metric.toMap());
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get all session metrics for a date range
+  static Future<List<CartSessionMetric>> getSessionMetrics({
+    required DateTime startDate,
+    required DateTime endDate,
+    String? interventionId,
+  }) async {
+    try {
+      var query = _db
+          .collection('cart_session_metrics')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
+          .where('createdAt', isLessThan: Timestamp.fromDate(endDate.add(const Duration(days: 1))));
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final docs = await query.get();
+      return docs.docs.map((doc) => CartSessionMetric.fromMap(doc.data()!)).toList();
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  /// Get session summary statistics
+  static Future<Map<String, dynamic>> getSessionSummaryStats({String? interventionId}) async {
+    try {
+      var query = _db.collection('cart_session_metrics');
+
+      if (interventionId != null) {
+        query = query.where('interventionId', isEqualTo: interventionId);
+      }
+
+      final allDocs = await query.count().get();
+      final totalSessions = allDocs.count ?? 0;
+
+      // Get completed sessions
+      final completedQuery = query.where('closedAt', isNotEqualTo: null);
+      final completedDocs = await completedQuery.count().get();
+      final completedSessions = completedDocs.count ?? 0;
+
+      // Get average metrics
+      final completedData = await completedQuery.get();
+      int totalItems = 0;
+      int totalQuantity = 0;
+      int totalSeconds = 0;
+      int validDurations = 0;
+
+      for (final doc in completedData.docs) {
+        totalItems += (doc['itemCount'] as num?)?.toInt() ?? 0;
+        totalQuantity += (doc['totalQuantity'] as num?)?.toInt() ?? 0;
+
+        final createdAt = (doc['createdAt'] as Timestamp).toDate();
+        final closedAt = (doc['closedAt'] as Timestamp).toDate();
+        final duration = closedAt.difference(createdAt).inSeconds;
+        if (duration >= 0) {
+          totalSeconds += duration;
+          validDurations++;
+        }
+      }
+
+      return {
+        'totalSessions': totalSessions,
+        'completedSessions': completedSessions,
+        'completionRate': totalSessions > 0 ? (completedSessions / totalSessions) * 100 : 0.0,
+        'totalItems': totalItems,
+        'totalQuantity': totalQuantity,
+        'avgItemsPerSession': completedSessions > 0 ? totalItems / completedSessions : 0.0,
+        'avgSessionDuration': validDurations > 0 ? Duration(seconds: totalSeconds ~/ validDurations) : Duration.zero,
+      };
+    } catch (e) {
+      rethrow;
+    }
   }
 }

@@ -20,6 +20,9 @@ import '../../data/lookups_service.dart';
 import '../../services/time_tracking_service.dart';
 import '../../services/cart_print_service.dart';
 import '../../services/barcode_service.dart';
+import '../../services/cart_audit_service.dart';
+import '../../services/cart_template_service.dart';
+import 'cart_template.dart';
 
 
 
@@ -68,6 +71,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
   // Barcode service for unified barcode handling
   final _barcodeService = BarcodeService();
+  final _templateService = CartTemplateService();
   
   // Auto-save timer
   Timer? _autoSaveTimer;
@@ -472,6 +476,209 @@ class _CartSessionPageState extends State<CartSessionPage> {
     _barcodeC.clear();
   }
 
+  // ---------- Template Operations ----------
+
+  /// Show dialog to save current cart as a template.
+  Future<void> _showSaveTemplateDialog() async {
+    if (_lines.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add items to the cart before saving as a template')),
+      );
+      return;
+    }
+
+    final nameController = TextEditingController();
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save as Template'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Save this cart configuration for future use.'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: nameController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Template name',
+                hintText: 'e.g., Weekly Procedure Cart',
+              ),
+            ),
+            if (_interventionId != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                'This template will be linked to the current intervention.',
+                style: Theme.of(ctx).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final name = nameController.text.trim();
+              if (name.isNotEmpty) {
+                Navigator.pop(ctx, true);
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != true) return;
+
+    final name = nameController.text.trim();
+    setState(() => _busy = true);
+
+    try {
+      // Convert cart lines to template lines
+      final templateLines = _lines.map((line) => TemplateLine(
+        itemId: line.itemId,
+        itemName: line.itemName,
+        baseUnit: line.baseUnit,
+        lotCode: line.lotCode,
+        quantity: line.initialQty.toInt(),
+      )).toList();
+
+      final userId = FirebaseAuth.instance.currentUser?.uid ?? 'unknown';
+      await _templateService.saveTemplate(
+        name: name,
+        lines: templateLines,
+        createdBy: userId,
+        interventionId: _interventionId,
+      );
+
+      if (!mounted) return;
+      SoundFeedback.ok();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Template "$name" saved')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      SoundFeedback.error();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error saving template: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Show dialog to load a template.
+  Future<void> _showLoadTemplateDialog() async {
+    setState(() => _busy = true);
+    List<CartTemplate> templates;
+
+    try {
+      // Load templates - first try by intervention, then all templates
+      if (_interventionId != null) {
+        templates = await _templateService.loadTemplates(
+          interventionId: _interventionId,
+        );
+      } else {
+        templates = await _templateService.loadAllTemplates();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading templates: $e')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    if (templates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No templates found')),
+      );
+      return;
+    }
+
+    // Show template selection dialog
+    final selected = await showDialog<CartTemplate>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Load Template'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400, maxHeight: 400),
+          child: ListView(
+            children: templates.map((template) {
+              final lastUsed = template.lastUsedAt != null
+                  ? 'Last used: ${_formatDate(template.lastUsedAt!)}'
+                  : 'Created: ${_formatDate(template.createdAt)}';
+              return ListTile(
+                title: Text(template.name),
+                subtitle: Text(lastUsed),
+                onTap: () => Navigator.pop(ctx, template),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (selected == null) return;
+
+    // Load the selected template
+    await _loadTemplate(selected);
+  }
+
+  /// Load items from a template into the cart.
+  Future<void> _loadTemplate(CartTemplate template) async {
+    setState(() => _busy = true);
+
+    try {
+      // Record that this template was used
+      await _templateService.recordTemplateUse(template.id);
+
+      // Add each line from the template to the cart
+      for (final line in template.lines) {
+        _addOrBumpLine(
+          itemId: line.itemId,
+          itemName: line.itemName,
+          baseUnit: line.baseUnit,
+          lotId: null,  // Templates don't store lotId, just lotCode
+        );
+      }
+
+      if (!mounted) return;
+      SoundFeedback.ok();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded ${template.lines.length} items from "${template.name}"')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      SoundFeedback.error();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading template: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.month}/${date.day}/${date.year}';
+  }
+
   /// Merge-or-add a line
   void _addOrBumpLine({
     required String itemId,
@@ -479,16 +686,19 @@ class _CartSessionPageState extends State<CartSessionPage> {
     required String baseUnit,
     String? lotId,
   }) {
+    final candidate = CartLine(
+      itemId: itemId,
+      itemName: itemName,
+      baseUnit: baseUnit,
+      lotId: lotId,
+      initialQty: 1,
+    );
+    final id = _lineId(candidate);
+    final idx = _lines.indexWhere((x) => _lineId(x) == id);
+    final isBump = idx >= 0;
+    final oldQty = isBump ? _lines[idx].initialQty : null;
+
     setState(() {
-      final candidate = CartLine(
-        itemId: itemId,
-        itemName: itemName,
-        baseUnit: baseUnit,
-        lotId: lotId,
-        initialQty: 1,
-      );
-      final id = _lineId(candidate);
-      final idx = _lines.indexWhere((x) => _lineId(x) == id);
       if (idx >= 0) {
         final old = _lines[idx];
         _lines[idx] = CartLine(
@@ -504,6 +714,19 @@ class _CartSessionPageState extends State<CartSessionPage> {
         _overAllocatedLines[id] = false;
       }
     });
+
+    // Log audit entry
+    _logAudit(
+      action: isBump ? AuditAction.quantityChanged : AuditAction.itemAdded,
+      details: {
+        'itemId': itemId,
+        'itemName': itemName,
+        'lotCode': lotId?.substring(0, 6),
+        if (isBump && oldQty != null) 'oldQty': oldQty,
+        'newQty': (oldQty ?? 0) + 1,
+      },
+    );
+
     _triggerAutoSave();
   }
 
@@ -644,6 +867,18 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       await sref.set(payload, SetOptions(merge: true));
       _sessionId ??= sref.id;
+
+      // Log cart audit entry for session created
+      if (isNew) {
+        await _logAudit(
+          action: AuditAction.created,
+          details: {
+            'interventionId': _interventionId,
+            'interventionName': _interventionName,
+            'numLines': _lines.length,
+          },
+        );
+      }
 
       // Collect current line IDs
       final currentLineIds = <String>{};
@@ -1190,6 +1425,16 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       // High-level audit for the close (simplified)
       try {
+        // Log cart audit entry for session closed
+        await _logAudit(
+          action: AuditAction.closed,
+          details: {
+            'numLines': _lines.length,
+            'totalQtyUsed': totalQtyUsed,
+            'lotsArchived': lotsToArchive.length,
+          },
+        );
+
         await _db.collection('audit_logs').add({
           'type': 'session.close',
           'data': {
@@ -1389,6 +1634,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       // Add audit log
       try {
+        // Log cart audit entry for session reopened
+        await _logAudit(
+          action: AuditAction.reopened,
+          details: {
+            'numUsageLogsReversed': usageLogsQuery.docs.length,
+          },
+        );
+
         await _db.collection('audit_logs').add({
           'type': 'session.reopen',
           'data': {
@@ -1825,7 +2078,15 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
       });
 
+      // Log template loaded audit entry
       if (copiedCount > 0) {
+        _logAudit(
+          action: AuditAction.templateLoaded,
+          details: {
+            'sourceSessionId': lastId,
+            'count': copiedCount,
+          },
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Copied $copiedCount item${copiedCount == 1 ? '' : 's'} from previous cart')),
         );
@@ -1836,6 +2097,234 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // ---------- Audit Logging Helpers ----------
+
+  /// Get the current user ID for audit logs
+  String get _userId => FirebaseAuth.instance.currentUser?.uid ?? 'system';
+
+  /// Log an audit entry for the current session
+  Future<void> _logAudit({
+    required AuditAction action,
+    Map<String, dynamic>? details,
+  }) async {
+    if (_sessionId == null) return; // Can't log without a session ID
+    try {
+      await CartAuditService.log(
+        sessionId: _sessionId!,
+        userId: _userId,
+        userName: _operatorName,
+        action: action,
+        details: details,
+      );
+    } catch (e) {
+      if (kDebugMode) debugPrint('Failed to log audit entry: $e');
+    }
+  }
+
+  /// Show the audit history dialog for the current session
+  void _showAuditLog() {
+    if (_sessionId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Save the session first to view audit log')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Session History'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 500,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Activity log for this session',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: FutureBuilder<List<CartAuditEntry>>(
+                  future: CartAuditService.getAuditLog(_sessionId!),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Text('Error loading audit log: ${snapshot.error}'),
+                      );
+                    }
+
+                    final entries = snapshot.data ?? [];
+
+                    if (entries.isEmpty) {
+                      return const Center(
+                        child: Text('No audit entries yet'),
+                      );
+                    }
+
+                    return ListView.builder(
+                      itemCount: entries.length,
+                      itemBuilder: (context, index) {
+                        final entry = entries[index];
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            _getAuditIcon(entry.action),
+                            size: 20,
+                            color: _getAuditColor(entry.action),
+                          ),
+                          title: Text(_formatAuditAction(entry.action)),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${entry.userName} • ${_formatTimestamp(entry.timestamp)}',
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              if (entry.details != null && entry.details!.isNotEmpty)
+                                Text(
+                                  _formatAuditDetails(entry.details!),
+                                  style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _getAuditIcon(AuditAction action) {
+    switch (action) {
+      case AuditAction.created:
+        return Icons.add_circle_outline;
+      case AuditAction.itemAdded:
+        return Icons.add_shopping_cart;
+      case AuditAction.itemRemoved:
+        return Icons.remove_shopping_cart;
+      case AuditAction.quantityChanged:
+        return Icons.edit;
+      case AuditAction.lotChanged:
+        return Icons.swap_horiz;
+      case AuditAction.reopened:
+        return Icons.lock_open;
+      case AuditAction.closed:
+        return Icons.lock;
+      case AuditAction.deleted:
+        return Icons.delete;
+      case AuditAction.templateLoaded:
+        return Icons.content_copy;
+    }
+  }
+
+  Color _getAuditColor(AuditAction action) {
+    switch (action) {
+      case AuditAction.created:
+        return Colors.green;
+      case AuditAction.itemAdded:
+        return Colors.blue;
+      case AuditAction.itemRemoved:
+        return Colors.orange;
+      case AuditAction.quantityChanged:
+        return Colors.amber;
+      case AuditAction.lotChanged:
+        return Colors.purple;
+      case AuditAction.reopened:
+        return Colors.teal;
+      case AuditAction.closed:
+        return Colors.red;
+      case AuditAction.deleted:
+        return Colors.redAccent;
+      case AuditAction.templateLoaded:
+        return Colors.indigo;
+    }
+  }
+
+  String _formatAuditAction(AuditAction action) {
+    switch (action) {
+      case AuditAction.created:
+        return 'Session created';
+      case AuditAction.itemAdded:
+        return 'Item added';
+      case AuditAction.itemRemoved:
+        return 'Item removed';
+      case AuditAction.quantityChanged:
+        return 'Quantity changed';
+      case AuditAction.lotChanged:
+        return 'Lot changed';
+      case AuditAction.reopened:
+        return 'Session reopened';
+      case AuditAction.closed:
+        return 'Session closed';
+      case AuditAction.deleted:
+        return 'Session deleted';
+      case AuditAction.templateLoaded:
+        return 'Template loaded';
+    }
+  }
+
+  String _formatAuditDetails(Map<String, dynamic> details) {
+    final parts = <String>[];
+    if (details.containsKey('itemName')) {
+      parts.add('Item: ${details['itemName']}');
+    }
+    if (details.containsKey('itemId')) {
+      parts.add('ID: ${details['itemId']}');
+    }
+    if (details.containsKey('oldQty') || details.containsKey('newQty')) {
+      final oldQty = details['oldQty'] ?? '';
+      final newQty = details['newQty'] ?? '';
+      parts.add('Qty: $oldQty -> $newQty');
+    }
+    if (details.containsKey('oldLot') || details.containsKey('newLot')) {
+      final oldLot = details['oldLot'] ?? '';
+      final newLot = details['newLot'] ?? '';
+      parts.add('Lot: $oldLot -> $newLot');
+    }
+    if (details.containsKey('qty')) {
+      parts.add('Qty: ${details['qty']}');
+    }
+    if (details.containsKey('count')) {
+      parts.add('Count: ${details['count']}');
+    }
+    return parts.join(' | ');
+  }
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final diff = now.difference(timestamp);
+
+    if (diff.inMinutes < 1) {
+      return 'Just now';
+    } else if (diff.inMinutes < 60) {
+      return '${diff.inMinutes}m ago';
+    } else if (diff.inHours < 24) {
+      return '${diff.inHours}h ago';
+    } else if (diff.inDays < 7) {
+      return '${diff.inDays}d ago';
+    } else {
+      return '${timestamp.month}/${timestamp.day}/${timestamp.year}';
     }
   }
 
@@ -1884,6 +2373,21 @@ class _CartSessionPageState extends State<CartSessionPage> {
             tooltip: 'Import CSV',
             icon: const Icon(Icons.upload_file),
             onPressed: (_busy || _isClosed) ? null : _showCsvImportDialog,
+          ),
+          IconButton(
+            tooltip: 'Load Template',
+            icon: const Icon(Icons.folder_open),
+            onPressed: (_busy || _isClosed) ? null : _showLoadTemplateDialog,
+          ),
+          IconButton(
+            tooltip: 'Save as Template',
+            icon: const Icon(Icons.save_as),
+            onPressed: (_busy || _isClosed || _lines.isEmpty) ? null : _showSaveTemplateDialog,
+          ),
+          IconButton(
+            tooltip: 'Session History',
+            icon: const Icon(Icons.history),
+            onPressed: _sessionId == null ? null : _showAuditLog,
           ),
           IconButton(
             tooltip: _isSaving ? 'Saving...' : (_autoSavePending ? 'Auto-saving soon...' : 'Save draft'),
@@ -2137,11 +2641,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       setState(() {
                         final oldId = _lineId(line);
                         final newId = _lineId(updated);
-                        
+
                         // Check if changing to a lot that already exists in another line
                         final existingIdx = _lines.indexWhere((x) => _lineId(x) == newId);
                         final oldIdx = _lines.indexWhere((x) => _lineId(x) == oldId);
-                        
+
                         if (oldId != newId && existingIdx >= 0 && existingIdx != oldIdx) {
                           // Merge: add quantities to existing line, then remove the old line
                           final existing = _lines[existingIdx];
@@ -2170,7 +2674,29 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       });
                       _triggerAutoSave();
                     },
+                    onQuantityChanged: (lineId, oldQty, newQty) {
+                      // Log quantity change audit entry
+                      _logAudit(
+                        action: AuditAction.quantityChanged,
+                        details: {
+                          'itemId': line.itemId,
+                          'itemName': line.itemName,
+                          'oldQty': oldQty,
+                          'newQty': newQty,
+                        },
+                      );
+                    },
                     onRemove: () {
+                      // Log item removed audit entry
+                      _logAudit(
+                        action: AuditAction.itemRemoved,
+                        details: {
+                          'itemId': line.itemId,
+                          'itemName': line.itemName,
+                          'qty': line.initialQty,
+                          'lotCode': line.lotCode,
+                        },
+                      );
                       setState(() {
                                       final id = _lineId(line);
                                       _lines.removeWhere((x) => _lineId(x) == id);
@@ -2229,6 +2755,7 @@ class _LineRow extends StatefulWidget {
   final bool isClosed;
   final void Function(CartLine) onChanged;
   final VoidCallback onRemove;
+  final void Function(String lineId, num oldQty, num newQty)? onQuantityChanged;
   final void Function(String lineId, bool isOverAllocated)? onOverAllocationChanged;
   const _LineRow({
     super.key,
@@ -2237,6 +2764,7 @@ class _LineRow extends StatefulWidget {
     required this.isClosed,
     required this.onChanged,
     required this.onRemove,
+    this.onQuantityChanged,
     this.onOverAllocationChanged,
   });
 
@@ -2401,7 +2929,9 @@ class _LineRowState extends State<_LineRow> {
     final raw = _cInit.text.trim();
     if (raw.isEmpty) {
       if (widget.line.initialQty != 0) {
+        final oldQty = widget.line.initialQty;
         widget.onChanged(widget.line.copyWith(initialQty: 0));
+        widget.onQuantityChanged?.call(widget.lineId, oldQty, 0);
       }
       if (_cInit.text != '0') {
         _cInit.text = '0';
@@ -2417,7 +2947,9 @@ class _LineRowState extends State<_LineRow> {
     }
 
     if (parsed != widget.line.initialQty) {
+      final oldQty = widget.line.initialQty;
       widget.onChanged(widget.line.copyWith(initialQty: parsed));
+      widget.onQuantityChanged?.call(widget.lineId, oldQty, parsed);
     }
     final canonical = parsed.toString();
     if (_cInit.text != canonical) {
