@@ -509,7 +509,7 @@ class AdvancedAnalyticsService {
   /// Returns percentage of sessions that were properly closed vs abandoned
   static Future<double> getSessionCompletionRate({String? interventionId}) async {
     try {
-      var query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
+      Query<Map<String, dynamic>> query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
 
       if (interventionId != null) {
         query = query.where('interventionId', isEqualTo: interventionId);
@@ -519,7 +519,7 @@ class AdvancedAnalyticsService {
       final totalCount = completedDocs.count ?? 0;
 
       // Get total sessions (including those without closedAt)
-      var totalQuery = _db.collection('cart_session_metrics');
+      Query<Map<String, dynamic>> totalQuery = _db.collection('cart_session_metrics');
       if (interventionId != null) {
         totalQuery = totalQuery.where('interventionId', isEqualTo: interventionId);
       }
@@ -535,7 +535,7 @@ class AdvancedAnalyticsService {
   /// Get average items per session
   static Future<double> getAverageItemsPerSession({String? interventionId}) async {
     try {
-      var query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
+      Query<Map<String, dynamic>> query = _db.collection('cart_session_metrics').where('closedAt', isNotEqualTo: null);
 
       if (interventionId != null) {
         query = query.where('interventionId', isEqualTo: interventionId);
@@ -798,7 +798,7 @@ class AdvancedAnalyticsService {
   /// Get session summary statistics
   static Future<Map<String, dynamic>> getSessionSummaryStats({String? interventionId}) async {
     try {
-      var query = _db.collection('cart_session_metrics');
+      Query<Map<String, dynamic>> query = _db.collection('cart_session_metrics');
 
       if (interventionId != null) {
         query = query.where('interventionId', isEqualTo: interventionId);

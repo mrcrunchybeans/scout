@@ -302,7 +302,7 @@ class _SessionsBucketState extends State<_SessionsBucket> {
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete ${_selectedIds.length} Sessions?'),
+        title: Text('Delete ${_selectedIds.length} Sessions?'),
         content: Text(
           'This will permanently remove ${_selectedIds.length} session${_selectedIds.length == 1 ? '' : 's'} and all their items. This action cannot be undone.',
         ),
