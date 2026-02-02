@@ -1458,6 +1458,245 @@ class _CartSessionPageState extends State<CartSessionPage> {
     return (withQty ?? lots.first).id;
   }
 
+  // ---------- CSV Import ----------
+  void _showCsvImportDialog() {
+    final TextEditingController csvController = TextEditingController();
+    bool _hasHeader = true;
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Import Items from CSV'),
+          content: SizedBox(
+            width: 500,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'CSV Format:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'itemId, itemName, lotCode, qty',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '(Header row is optional - will be auto-detected)',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: _hasHeader,
+                        onChanged: (v) => setDialogState(() => _hasHeader = v ?? true),
+                      ),
+                      const Text('Has header row'),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: csvController,
+                    maxLines: 12,
+                    minLines: 8,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Paste CSV data here...\n\nExample:\nITEM001,Widget A,LOT123,5\nITEM002,Widget B,,3',
+                      contentPadding: EdgeInsets.all(12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final csvText = csvController.text.trim();
+                if (csvText.isEmpty) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(dialogCtx).showSnackBar(
+                    const SnackBar(content: Text('Please enter CSV data')),
+                  );
+                  return;
+                }
+
+                Navigator.of(dialogCtx).pop();
+                await _processCsvImport(csvText, hasHeader: _hasHeader);
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _processCsvImport(String csvText, {required bool hasHeader}) async {
+    final lines = csvText.split(RegExp(r'\r?\n')).where((l) => l.trim().isNotEmpty).toList();
+    if (lines.isEmpty) return;
+
+    final rows = _parseCsvLines(lines, hasHeader: hasHeader);
+
+    int addedCount = 0;
+    int skippedCount = 0;
+    int errorCount = 0;
+    final errors = <String>[];
+
+    for (final row in rows) {
+      if (row.length < 2) {
+        errorCount++;
+        errors.add('Invalid row: insufficient columns');
+        continue;
+      }
+
+      final itemId = row[0]!.trim();
+      final itemName = row[1]!.trim();
+      final lotCode = row.length > 2 ? row[2]?.trim() : null;
+      final qtyStr = row.length > 3 ? row[3]?.trim() : '1';
+
+      // Skip if looks like header
+      if (itemId.toLowerCase() == 'itemid' || itemName.toLowerCase() == 'itemname') {
+        continue;
+      }
+
+      // Validate quantity
+      final qty = int.tryParse(qtyStr ?? '1');
+      if (qty == null || qty <= 0) {
+        errorCount++;
+        errors.add('Invalid quantity for "$itemName": $qtyStr');
+        continue;
+      }
+
+      // Look up item by itemId to get baseUnit and validate
+      try {
+        final itemDoc = await _db.collection('items').doc(itemId).get();
+        if (!itemDoc.exists) {
+          skippedCount++;
+          errors.add('Item not found: $itemId');
+          continue;
+        }
+
+        final itemData = itemDoc.data()!;
+        final actualName = (itemData['name'] ?? itemName) as String;
+        final baseUnit = (itemData['baseUnit'] ?? itemData['unit'] ?? 'each') as String;
+
+        // If lotCode provided, validate it exists
+        String? lotId;
+        if (lotCode != null && lotCode.isNotEmpty) {
+          final lotsSnap = await _db
+              .collection('items')
+              .doc(itemId)
+              .collection('lots')
+              .where('code', isEqualTo: lotCode)
+              .limit(1)
+              .get();
+
+          if (lotsSnap.docs.isEmpty) {
+            skippedCount++;
+            errors.add('Lot not found: $lotCode for $itemId');
+            continue;
+          }
+          lotId = lotsSnap.docs.first.id;
+        }
+
+        // Add item(s) to cart based on quantity
+        for (int i = 0; i < qty; i++) {
+          _addOrBumpLine(
+            itemId: itemId,
+            itemName: actualName,
+            baseUnit: baseUnit,
+            lotId: lotId,
+          );
+        }
+        addedCount++;
+      } catch (e) {
+        errorCount++;
+        errors.add('Error processing "$itemName": $e');
+      }
+    }
+
+    // Show results summary
+    if (!mounted) return;
+
+    final summary = StringBuffer('Import complete:\n'
+        '- Added: $addedCount items\n'
+        '- Skipped: $skippedCount items\n'
+        '- Errors: $errorCount');
+
+    if (errors.length <= 5) {
+      summary.write('\n\nErrors:\n${errors.join('\n')}');
+    } else if (errors.isNotEmpty) {
+      summary.write('\n\nFirst 5 errors:\n${errors.take(5).join('\n')}');
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Import Results'),
+        content: Text(summary.toString()),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Parse CSV lines into a list of rows (each row is list of nullable strings)
+  /// Handles both comma and tab delimiters, optional headers, and whitespace trimming
+  List<List<String?>> _parseCsvLines(List<String> lines, {required bool hasHeader}) {
+    final result = <List<String?>>[];
+    final startIndex = hasHeader ? 1 : 0;
+    final delimiter = lines[0].contains('\t') ? '\t' : ',';
+
+    for (int i = startIndex; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (line.isEmpty) continue;
+
+      // Handle quoted values with commas
+      final row = <String?>[];
+      final regex = RegExp(
+        r'(?:^|,)((?:"[^"]*")|[^,]*)',
+        multiLine: true,
+      );
+
+      if (delimiter == ',') {
+        // Use regex for comma-separated
+        final matches = regex.allMatches(line).toList();
+        for (final match in matches) {
+          var value = match.group(1) ?? '';
+          // Remove surrounding quotes if present
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.substring(1, value.length - 1);
+          }
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.substring(1, value.length - 1);
+          }
+          row.add(value.replaceAll('""', '"').trim());
+        }
+      } else {
+        // Simple split for tab-separated
+        row.addAll(line.split(delimiter).map((v) => v.trim()));
+      }
+
+      result.add(row);
+    }
+
+    return result;
+  }
+
   bool _looksLikeItemName(String input) {
     final cleaned = input.trim();
     if (cleaned.length < 3) return false;
@@ -1640,6 +1879,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
             icon: const Icon(Icons.phone_android),
             tooltip: 'Scan with Phone',
             onPressed: (_busy || _isClosed) ? null : _showMobileScannerQR,
+          ),
+          IconButton(
+            tooltip: 'Import CSV',
+            icon: const Icon(Icons.upload_file),
+            onPressed: (_busy || _isClosed) ? null : _showCsvImportDialog,
           ),
           IconButton(
             tooltip: _isSaving ? 'Saving...' : (_autoSavePending ? 'Auto-saving soon...' : 'Save draft'),
