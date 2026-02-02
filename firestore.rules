@@ -249,10 +249,39 @@ service cloud.firestore {
     // ---------- Scanner Sessions (for mobile barcode scanner) ----------
     match /scanner_sessions/{sessionId} {
       allow read, write: if true; // Allow any device to read/write scanner sessions
-      
+
       match /scans/{scanId} {
         allow read, write: if true; // Allow any device to add scans to sessions
       }
+    }
+
+    // ---------- Cart Templates ----------
+    match /cart_templates/{templateId} {
+      allow read: if true; // Public read for template browsing
+      allow create: if isAuthed();
+      allow update, delete: if isAuthed() && resource.data.createdBy == request.auth.uid;
+
+      function validTemplate(d) {
+        return strMax(d.name, 120)
+          && optionalStrMax(d, 'interventionId', 64)
+          && d.lines is list
+          && d.lines.size() <= 100
+          && optionalStrMax(d, 'createdBy', 128);
+      }
+    }
+
+    // ---------- Cart Session Metrics (for analytics) ----------
+    match /cart_session_metrics/{metricId} {
+      allow read: if true;
+      allow create: if isAuthed();
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- Cart Audit Entries ----------
+    match /cart_sessions/{sessionId}/audit/{auditEntryId} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update, delete: if isAdmin();
     }
 
     // ---------- Feedback (bugs, feature requests, questions) ----------

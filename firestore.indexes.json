@@ -1299,6 +1299,96 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    // ---------- Cart Templates indexes ----------
+    {
+      "collectionGroup": "cart_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "lastUsedAt",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cart_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "interventionId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdBy",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cart_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "interventionId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdBy",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastUsedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cart_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "createdBy",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastUsedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    // ---------- Cart Session Metrics indexes ----------
+    {
+      "collectionGroup": "cart_session_metrics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "interventionId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "closedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cart_session_metrics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "interventionId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "usagePercentage",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
