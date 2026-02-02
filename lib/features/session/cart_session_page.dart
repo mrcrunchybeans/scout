@@ -1678,41 +1678,44 @@ class _CartSessionPageState extends State<CartSessionPage> {
       final lines = await _db.collection('cart_sessions').doc(lastId).collection('lines').get();
 
       if (!mounted) return;
+
+      int copiedCount = 0;
       setState(() {
         _lines.clear();
         _overAllocatedLines.clear();
         for (final d in lines.docs) {
           final m = d.data();
           final prev = CartLine.fromMap(m);
-          final leftover = (prev.endQty ?? 0);
-          if (leftover <= 0) continue; // Skip items that weren't used
+          final initialQty = (prev.initialQty ?? 0);
+          if (initialQty <= 0) continue; // Skip items with no quantity
 
-          // Re-resolve FEFO lot for this item instead of copying stale lot ID
-          _resolveAndAddLine(prev.itemId, prev.itemName, prev.baseUnit, leftover.toInt());
+          // Copy the original lot details, preserving lotId and lotCode
+          final line = CartLine(
+            itemId: prev.itemId,
+            itemName: prev.itemName,
+            baseUnit: prev.baseUnit,
+            lotId: prev.lotId,
+            lotCode: prev.lotCode,
+            initialQty: initialQty.toInt(),
+          );
+          _lines.add(line);
+          _overAllocatedLines[_lineId(line)] = false;
+          copiedCount++;
         }
       });
+
+      if (copiedCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Copied $copiedCount item${copiedCount == 1 ? '' : 's'} from previous cart')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No items found in previous cart')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  /// Resolve FEFO lot and add line (used by copy from last)
-  void _resolveAndAddLine(String itemId, String itemName, String baseUnit, int qty) {
-    _fefoLotIdForItem(itemId).then((lotId) {
-      if (!mounted) return;
-
-      setState(() {
-        final line = CartLine(
-          itemId: itemId,
-          itemName: itemName,
-          baseUnit: baseUnit,
-          lotId: lotId,
-          initialQty: qty,
-        );
-        _lines.add(line);
-        _overAllocatedLines[_lineId(line)] = false;
-      });
-    });
   }
 
   // ---------- Build ----------
