@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -117,7 +118,7 @@ class _SessionsListPageState extends State<SessionsListPage> {
   }
 }
 
-class _SessionsBucket extends StatelessWidget {
+class _SessionsBucket extends StatefulWidget {
   final Query<Map<String, dynamic>> query;
   final bool isOpenBucket;
   final bool showDeleted;
@@ -130,9 +131,17 @@ class _SessionsBucket extends StatelessWidget {
   });
 
   @override
+  State<_SessionsBucket> createState() => _SessionsBucketState();
+}
+
+class _SessionsBucketState extends State<_SessionsBucket> {
+  final Set<String> _selectedIds = {};
+  bool _isSelecting = false;
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: query.snapshots(),
+      stream: widget.query.snapshots(),
       builder: (ctx, snap) {
         if (snap.hasError) {
           return Center(
@@ -155,13 +164,13 @@ class _SessionsBucket extends StatelessWidget {
 
         final docs = snap.data!.docs;
 
-        final filteredDocs = searchQuery.isEmpty
+        final filteredDocs = widget.searchQuery.isEmpty
             ? docs
             : docs.where((d) {
                 final m = d.data();
                 final name = (m['interventionName'] ?? '').toString().toLowerCase();
                 final location = (m['locationText'] ?? '').toString().toLowerCase();
-                return name.contains(searchQuery) || location.contains(searchQuery);
+                return name.contains(widget.searchQuery) || location.contains(widget.searchQuery);
               }).toList();
 
         if (filteredDocs.isEmpty) {
@@ -170,21 +179,21 @@ class _SessionsBucket extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  isOpenBucket ? Icons.note_add : Icons.history,
+                  widget.isOpenBucket ? Icons.note_add : Icons.history,
                   size: 64,
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  searchQuery.isEmpty
-                      ? (isOpenBucket ? 'No draft sessions' : 'No completed sessions')
+                  widget.searchQuery.isEmpty
+                      ? (widget.isOpenBucket ? 'No draft sessions' : 'No completed sessions')
                       : 'No matching sessions',
                   style: Theme.of(ctx).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  searchQuery.isEmpty
-                      ? (isOpenBucket
+                  widget.searchQuery.isEmpty
+                      ? (widget.isOpenBucket
                           ? 'Create a new session to get started'
                           : 'Completed sessions will appear here')
                       : 'Try a different search term',
@@ -197,35 +206,173 @@ class _SessionsBucket extends StatelessWidget {
           );
         }
 
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: filteredDocs.length,
-          itemBuilder: (ctx, i) {
-            final d = filteredDocs[i];
-            final m = d.data();
-            return _SessionCard(
-              doc: d,
-              data: m,
-              isOpenBucket: isOpenBucket,
-              showDeleted: showDeleted,
-            );
-        
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: docs.length,
-          itemBuilder: (ctx, i) {
-            final d = docs[i];
-            final m = d.data();
-            return _SessionCard(
-              doc: d,
-              data: m,
-              isOpenBucket: isOpenBucket,
-              showDeleted: showDeleted,
-            );
-          },
+        return Column(
+          children: [
+            if (_isSelecting && widget.isOpenBucket) _buildSelectionBar(filteredDocs.length),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: filteredDocs.length,
+                itemBuilder: (ctx, i) {
+                  final d = filteredDocs[i];
+                  final m = d.data();
+                  final isSelected = _selectedIds.contains(d.id);
+                  return _SessionCard(
+                    doc: d,
+                    data: m,
+                    isOpenBucket: widget.isOpenBucket,
+                    showDeleted: widget.showDeleted,
+                    isSelecting: _isSelecting,
+                    isSelected: isSelected,
+                    onLongPress: () => _toggleSelection(d.id),
+                    onTap: _isSelecting ? () => _toggleSelection(d.id) : null,
+                  );
+                },
+              ),
+            ),
+          ],
         );
       },
     );
+  }
+
+  Widget _buildSelectionBar(int totalCount) {
+    final selectedCount = _selectedIds.length;
+    return Material(
+      color: Theme.of(context).colorScheme.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '$selectedCount selected',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: selectedCount == totalCount
+                  ? () => setState(() => _selectedIds.clear())
+                  : () => setState(() {
+                      _selectedIds.clear();
+                      final docs = (FirebaseFirestore.instance
+                          .collection('cart_sessions')
+                          .where('status', isEqualTo: 'open')
+                          .limit(50) as Query)
+                          .snapshots()
+                          .first
+                          .then((snap) {
+                        for (final doc in snap.docs) {
+                          _selectedIds.add(doc.id);
+                        }
+                      });
+                    }),
+              child: Text(selectedCount == totalCount ? 'Deselect All' : 'Select All'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
+              ),
+              icon: const Icon(Icons.delete),
+              label: const Text('Delete'),
+              onPressed: selectedCount > 0 ? _showBulkDeleteConfirmation : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _toggleSelection(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+        if (_selectedIds.isEmpty) _isSelecting = false;
+      } else {
+        _selectedIds.add(id);
+        _isSelecting = true;
+      }
+    });
+  }
+
+  void _showBulkDeleteConfirmation() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete ${_selectedIds.length} Sessions?'),
+        content: Text(
+          'This will permanently remove ${_selectedIds.length} session${_selectedIds.length == 1 ? '' : 's'} and all their items. This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && mounted) {
+      await _deleteSelectedSessions();
+    }
+  }
+
+  Future<void> _deleteSelectedSessions() async {
+    final db = FirebaseFirestore.instance;
+    try {
+      for (final sessionId in _selectedIds) {
+        await db.collection('cart_sessions').doc(sessionId).set({
+          'status': 'deleted',
+          'deletedAt': FieldValue.serverTimestamp(),
+          'deletedBy': 'user',
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        final linesQuery = await db.collection('cart_sessions').doc(sessionId).collection('lines').get();
+        final batch = db.batch();
+        for (final lineDoc in linesQuery.docs) {
+          batch.set(lineDoc.reference, {
+            'deleted': true,
+            'deletedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        }
+        await batch.commit();
+      }
+
+      if (mounted) {
+        setState(() {
+          _selectedIds.clear();
+          _isSelecting = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${_selectedIds.length} sessions deleted'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting sessions: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
   }
 }
 
@@ -234,12 +381,20 @@ class _SessionCard extends StatelessWidget {
   final Map<String, dynamic> data;
   final bool isOpenBucket;
   final bool showDeleted;
+  final bool isSelecting;
+  final bool isSelected;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onTap;
 
   const _SessionCard({
     required this.doc,
     required this.data,
     required this.isOpenBucket,
     required this.showDeleted,
+    this.isSelecting = false,
+    this.isSelected = false,
+    this.onLongPress,
+    this.onTap,
   });
 
   @override
@@ -249,22 +404,23 @@ class _SessionCard extends StatelessWidget {
     final notes = data['notes'] as String?;
     final status = ((data['status'] ?? 'open') as String).toUpperCase();
     final isDeleted = status == 'DELETED';
-    
+
     final tsStart = data['startedAt'];
     final tsUpdated = data['updatedAt'];
     final tsClosed = data['closedAt'];
-    
+
     DateTime? startDate, lastActivity, closedDate;
     if (tsStart is Timestamp) startDate = tsStart.toDate();
     if (tsUpdated is Timestamp) lastActivity = tsUpdated.toDate();
     if (tsClosed is Timestamp) closedDate = tsClosed.toDate();
-    
+
     final ml = MaterialLocalizations.of(context);
     final theme = Theme.of(context);
-    
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      elevation: isDeleted ? 0.5 : 1,
+      elevation: isDeleted ? 0.5 : (isSelected ? 4 : 1),
+      color: isSelected ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3) : null,
       child: Container(
         decoration: isDeleted ? BoxDecoration(
           borderRadius: BorderRadius.circular(12),
@@ -272,27 +428,43 @@ class _SessionCard extends StatelessWidget {
             color: Colors.red.shade300,
             width: 1,
           ),
-        ) : null,
+        ) : (isSelected ? BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.primary,
+            width: 2,
+          ),
+        ) : null),
         child: Opacity(
           opacity: isDeleted ? 0.6 : 1.0,
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: isDeleted ? null : () {
+            onTap: isDeleted ? null : onTap ?? () {
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => CartSessionPage(sessionId: doc.id),
                 ),
               );
             },
+            onLongPress: isDeleted ? null : onLongPress ?? (() {}),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-              // Header row with title and status
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (isSelecting)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12, top: 4),
+                      child: Icon(
+                        isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                        color: isSelected
+                            ? Theme.of(context).colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -337,7 +509,7 @@ class _SessionCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: isOpenBucket 
+                      color: isOpenBucket
                         ? theme.colorScheme.primaryContainer
                         : theme.colorScheme.secondaryContainer,
                       borderRadius: BorderRadius.circular(12),
@@ -611,7 +783,7 @@ class _SessionCard extends StatelessWidget {
     final db = FirebaseFirestore.instance;
     final sessionId = doc.id;
     
-    debugPrint('Starting deletion with inventory reversal for session: $sessionId');
+    if (kDebugMode) debugPrint('Starting deletion with inventory reversal for session: $sessionId');
     
     // First, reverse the inventory deductions
     await _reverseSessionInventory(sessionId, db);
@@ -641,7 +813,7 @@ class _SessionCard extends StatelessWidget {
     // Get the session document to access the lines and their quantities
     final sessionDoc = await db.collection('cart_sessions').doc(sessionId).get();
     if (!sessionDoc.exists) {
-      debugPrint('Session not found for reversal: $sessionId');
+      if (kDebugMode) debugPrint('Session not found for reversal: $sessionId');
       return;
     }
 
@@ -651,7 +823,7 @@ class _SessionCard extends StatelessWidget {
     // Only reverse inventory for completed sessions (not drafts)
     // Check for both 'closed' and 'deleted' since deleted sessions were originally closed
     if (sessionStatus != 'closed' && sessionStatus != 'deleted') {
-      debugPrint('Session is not closed/deleted, no inventory to reverse: $sessionStatus');
+      if (kDebugMode) debugPrint('Session is not closed/deleted, no inventory to reverse: $sessionStatus');
       return;
     }
 
@@ -661,7 +833,7 @@ class _SessionCard extends StatelessWidget {
         .where('isReversal', isEqualTo: false)
         .get();
     
-    debugPrint('Found ${usageLogsQuery.docs.length} usage logs for session $sessionId');
+    if (kDebugMode) debugPrint('Found ${usageLogsQuery.docs.length} usage logs for session $sessionId');
     
     // Group by lot/item to sum up total quantities to reverse
     final Map<String, Map<String, dynamic>> lotReversals = {};
@@ -672,7 +844,7 @@ class _SessionCard extends StatelessWidget {
       final lotId = usageData['lotId'] as String?;
       final qtyUsed = (usageData['qtyUsed'] as num?)?.toDouble() ?? 0.0;
       
-      debugPrint('Usage log: itemId=$itemId, lotId=$lotId, qtyUsed=$qtyUsed');
+      if (kDebugMode) debugPrint('Usage log: itemId=$itemId, lotId=$lotId, qtyUsed=$qtyUsed');
       
       if (itemId == null || qtyUsed <= 0) continue;
       
@@ -689,7 +861,7 @@ class _SessionCard extends StatelessWidget {
           (lotReversals[key]!['totalToReverse'] as double) + qtyUsed;
     }
 
-    debugPrint('Grouped reversals: ${lotReversals.length} items/lots to reverse');
+    if (kDebugMode) debugPrint('Grouped reversals: ${lotReversals.length} items/lots to reverse');
 
     // Process each lot/item reversal in separate transactions
     for (final reversal in lotReversals.values) {
@@ -697,7 +869,7 @@ class _SessionCard extends StatelessWidget {
       final lotId = reversal['lotId'] as String?;
       final totalToReverse = reversal['totalToReverse'] as double;
       
-      debugPrint('Processing reversal: itemId=$itemId, lotId=$lotId, totalToReverse=$totalToReverse');
+      if (kDebugMode) debugPrint('Processing reversal: itemId=$itemId, lotId=$lotId, totalToReverse=$totalToReverse');
       
       if (totalToReverse <= 0) continue;
 
@@ -711,14 +883,14 @@ class _SessionCard extends StatelessWidget {
             final currentQty = ((lotDoc.data()?['qtyRemaining'] as num?) ?? 0).toDouble();
             final newQty = currentQty + totalToReverse;
             
-            debugPrint('Reversing lot: currentQty=$currentQty, newQty=$newQty');
+            if (kDebugMode) debugPrint('Reversing lot: currentQty=$currentQty, newQty=$newQty');
             
             tx.set(lotRef, {
               'qtyRemaining': newQty,
               'updatedAt': FieldValue.serverTimestamp(),
             }, SetOptions(merge: true));
           } else {
-            debugPrint('Lot document not found: $itemId/$lotId');
+            if (kDebugMode) debugPrint('Lot document not found: $itemId/$lotId');
           }
         } else {
           // Reverse item-based deduction  
@@ -729,14 +901,14 @@ class _SessionCard extends StatelessWidget {
             final currentQty = ((itemDoc.data()?['qtyOnHand'] as num?) ?? 0).toDouble();
             final newQty = currentQty + totalToReverse;
             
-            debugPrint('Reversing item: currentQty=$currentQty, newQty=$newQty');
+            if (kDebugMode) debugPrint('Reversing item: currentQty=$currentQty, newQty=$newQty');
             
             tx.set(itemRef, {
               'qtyOnHand': newQty,
               'updatedAt': FieldValue.serverTimestamp(),
             }, SetOptions(merge: true));
           } else {
-            debugPrint('Item document not found: $itemId');
+            if (kDebugMode) debugPrint('Item document not found: $itemId');
           }
         }
       });

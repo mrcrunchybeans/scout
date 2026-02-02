@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
@@ -70,6 +71,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   Timer? _autoSaveTimer;
   bool _autoSavePending = false;
   bool _isSaving = false;
+  bool _dirty = false;
 
   bool get _hasOverAllocatedLines => _overAllocatedLines.values.any((v) => v);
   bool get _isClosed => _status == 'closed';
@@ -150,8 +152,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
           _lines.add(line);
           final lineId = _lineId(line);
           _overAllocatedLines[lineId] = false;
-          _savedLineIds.add(lineId); // Track what's in Firestore
+          _savedLineIds.add(lineId);
         }
+        _dirty = false;
       });
     } catch (e) {
       // Handle error silently or show snackbar
@@ -250,11 +253,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
   
   /// Triggers a debounced auto-save after changes to the cart
   void _triggerAutoSave() {
-    if (_isClosed) return; // Don't auto-save closed sessions
+    if (_isClosed) return;
+    _dirty = true;
     _autoSavePending = true;
     _autoSaveTimer?.cancel();
     _autoSaveTimer = Timer(const Duration(seconds: 3), () async {
-      if (!mounted || _isClosed) return;
+      if (!mounted || _isClosed || !_dirty) return;
       _autoSavePending = false;
       await _saveDraft(silent: true);
     });
@@ -831,6 +835,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
         SoundFeedback.ok();
         ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Draft saved')));
       }
+
+      _dirty = false;
     } catch (e) {
       final ctx = context;
       if (!ctx.mounted) return;
@@ -1044,7 +1050,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _closeSession() async {
-    debugPrint('CartSessionPage: Starting session close for session $_sessionId');
+    if (kDebugMode) debugPrint('CartSessionPage: Starting session close for session $_sessionId');
     if (_hasOverAllocatedLines) {
       if (mounted) {
         SoundFeedback.error();
@@ -1059,7 +1065,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       if (!mounted) return;
       if (_sessionId == null) return;
     }
-    debugPrint('CartSessionPage: Session ID is $_sessionId');
+    if (kDebugMode) debugPrint('CartSessionPage: Session ID is $_sessionId');
     
     if (_interventionId == null) {
       if (mounted) {
@@ -1069,7 +1075,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
       return;
     }
-    debugPrint('CartSessionPage: Intervention ID is $_interventionId');
+    if (kDebugMode) debugPrint('CartSessionPage: Intervention ID is $_interventionId');
 
     final usedLines = _lines.where((line) => line.usedQty > 0).toList();
   final summaryTotalQty = usedLines.fold<num>(0, (acc, line) => acc + line.usedQty);
@@ -1083,14 +1089,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
     );
     if (!mounted) return;
     if (!confirmed) {
-      debugPrint('CartSessionPage: Session close cancelled by user');
+      if (kDebugMode) debugPrint('CartSessionPage: Session close cancelled by user');
       return;
     }
 
     setState(() => _busy = true);
     try {
       final sref = _db.collection('cart_sessions').doc(_sessionId);
-      debugPrint('CartSessionPage: Processing ${_lines.length} lines');
+      if (kDebugMode) debugPrint('CartSessionPage: Processing ${_lines.length} lines');
 
   num totalQtyUsed = 0;
   final auditLogs = <Map<String, dynamic>>[]; // Collect audit data
@@ -1116,7 +1122,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
 
       // Read all documents in parallel
-      debugPrint('CartSessionPage: Reading ${itemRefs.length} items and ${lotRefs.length} lots in parallel');
+      if (kDebugMode) debugPrint('CartSessionPage: Reading ${itemRefs.length} items and ${lotRefs.length} lots in parallel');
   final futures = <Future<DocumentSnapshot<Map<String, dynamic>>>>[];
       futures.addAll(itemRefs.map((ref) => ref.get()));
       futures.addAll(lotRefs.map((ref) => ref.get()));
@@ -1190,7 +1196,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 'lotId': line.lotId,
                 'lotCode': lotData['lotCode'] ?? line.lotId,
               });
-              debugPrint('CartSessionPage: Lot ${line.lotId} will be auto-archived (newLotRem=$newLotRem)');
+              if (kDebugMode) debugPrint('CartSessionPage: Lot ${line.lotId} will be auto-archived (newLotRem=$newLotRem)');
             }
             batch.update(lotRef, lotUpdateData);
             operationCount++;
@@ -1274,19 +1280,19 @@ class _CartSessionPageState extends State<CartSessionPage> {
             'unit': line.baseUnit,
           });
 
-          debugPrint('CartSessionPage: Prepared operations for ${line.itemName}');
+          if (kDebugMode) debugPrint('CartSessionPage: Prepared operations for ${line.itemName}');
         } catch (e) {
-          debugPrint('CartSessionPage: Validation failed for ${line.itemName}: $e');
+          if (kDebugMode) debugPrint('CartSessionPage: Validation failed for ${line.itemName}: $e');
           throw Exception('Validation failed for ${line.itemName}: $e');
         }
       }
 
       // Single atomic commit
-      debugPrint('CartSessionPage: Committing $operationCount operations in single batch');
+      if (kDebugMode) debugPrint('CartSessionPage: Committing $operationCount operations in single batch');
       await batch.commit();
-      debugPrint('CartSessionPage: All operations committed successfully');
+      if (kDebugMode) debugPrint('CartSessionPage: All operations committed successfully');
 
-      debugPrint('CartSessionPage: All lines processed successfully');
+      if (kDebugMode) debugPrint('CartSessionPage: All lines processed successfully');
 
       // Log all audit entries after transactions complete (move outside transaction)
       // Note: Audit.log calls are moved outside transactions to avoid potential issues
@@ -1415,7 +1421,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     setState(() => _busy = true);
     try {
-      debugPrint('CartSessionPage: Reopening session $_sessionId');
+      if (kDebugMode) debugPrint('CartSessionPage: Reopening session $_sessionId');
 
       // Find all usage logs for this session
       final usageLogsQuery = await _db
@@ -1424,10 +1430,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
           .where('isReversal', isEqualTo: false)
           .get();
 
-      debugPrint('CartSessionPage: Found ${usageLogsQuery.docs.length} usage logs to reverse');
+      if (kDebugMode) debugPrint('CartSessionPage: Found ${usageLogsQuery.docs.length} usage logs to reverse');
 
       if (usageLogsQuery.docs.isEmpty) {
-        debugPrint('CartSessionPage: No usage logs found, just updating session status');
+        if (kDebugMode) debugPrint('CartSessionPage: No usage logs found, just updating session status');
         await _db.collection('cart_sessions').doc(_sessionId).update({
           'status': 'open',
           'reopenedAt': DateTime.now(),
@@ -1490,7 +1496,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
         batch.delete(usageDoc.reference);
         operationCount++;
 
-        debugPrint('CartSessionPage: Prepared recredit for item $itemId, qty: $qtyUsed');
+        if (kDebugMode) debugPrint('CartSessionPage: Prepared recredit for item $itemId, qty: $qtyUsed');
       }
 
       // Update session status
@@ -1503,9 +1509,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
       operationCount++;
 
       // Commit all changes atomically
-      debugPrint('CartSessionPage: Committing $operationCount operations');
+      if (kDebugMode) debugPrint('CartSessionPage: Committing $operationCount operations');
       await batch.commit();
-      debugPrint('CartSessionPage: Session reopened successfully');
+      if (kDebugMode) debugPrint('CartSessionPage: Session reopened successfully');
 
       // Add audit log
       try {
@@ -1731,11 +1737,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
       onPopInvokedWithResult: (bool didPop, Object? result) async {
         // Handle browser back button navigation - auto-save draft before leaving
         if (didPop && _status == 'open' && _lines.isNotEmpty && !_busy) {
-          debugPrint('CartSessionPage: Browser back navigation - auto-saving draft');
+          if (kDebugMode) debugPrint('CartSessionPage: Browser back navigation - auto-saving draft');
           try {
             await _saveDraft();
           } catch (e) {
-            debugPrint('CartSessionPage: Failed to auto-save draft on navigation: $e');
+            if (kDebugMode) debugPrint('CartSessionPage: Failed to auto-save draft on navigation: $e');
           }
         }
       },
