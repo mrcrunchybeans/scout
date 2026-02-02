@@ -13,6 +13,7 @@ class SessionsListPage extends StatefulWidget {
 
 class _SessionsListPageState extends State<SessionsListPage> {
   bool _showDeleted = false;
+  String _searchQuery = '';
 
   @override
   Widget build(BuildContext context) {
@@ -24,7 +25,6 @@ class _SessionsListPageState extends State<SessionsListPage> {
         .orderBy('updatedAt', descending: true)
         .limit(50);
 
-    // Build query for completed sessions based on show deleted filter
     Query<Map<String, dynamic>> closedQ;
     if (_showDeleted) {
       closedQ = db
@@ -68,7 +68,7 @@ class _SessionsListPageState extends State<SessionsListPage> {
             tabs: [
               const Tab(icon: Icon(Icons.edit_note), text: 'Open Drafts'),
               Tab(
-                icon: const Icon(Icons.history), 
+                icon: const Icon(Icons.history),
                 text: _showDeleted ? 'All Sessions' : 'Completed'
               ),
             ],
@@ -85,10 +85,31 @@ class _SessionsListPageState extends State<SessionsListPage> {
             );
           },
         ),
-        body: TabBarView(
+        body: Column(
           children: [
-            _SessionsBucket(query: openQ, isOpenBucket: true, showDeleted: false),
-            _SessionsBucket(query: closedQ, isOpenBucket: false, showDeleted: _showDeleted),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: TextField(
+                decoration: const InputDecoration(
+                  hintText: 'Search sessions...',
+                  prefixIcon: Icon(Icons.search),
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value.trim().toLowerCase();
+                  });
+                },
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _SessionsBucket(query: openQ, isOpenBucket: true, showDeleted: false, searchQuery: _searchQuery),
+                  _SessionsBucket(query: closedQ, isOpenBucket: false, showDeleted: _showDeleted, searchQuery: _searchQuery),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -100,10 +121,12 @@ class _SessionsBucket extends StatelessWidget {
   final Query<Map<String, dynamic>> query;
   final bool isOpenBucket;
   final bool showDeleted;
+  final String searchQuery;
   const _SessionsBucket({
-    required this.query, 
+    required this.query,
     required this.isOpenBucket,
     required this.showDeleted,
+    required this.searchQuery,
   });
 
   @override
@@ -125,32 +148,46 @@ class _SessionsBucket extends StatelessWidget {
             ),
           );
         }
-        
+
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        
+
         final docs = snap.data!.docs;
-        if (docs.isEmpty) {
+
+        final filteredDocs = searchQuery.isEmpty
+            ? docs
+            : docs.where((d) {
+                final m = d.data();
+                final name = (m['interventionName'] ?? '').toString().toLowerCase();
+                final location = (m['locationText'] ?? '').toString().toLowerCase();
+                return name.contains(searchQuery) || location.contains(searchQuery);
+              }).toList();
+
+        if (filteredDocs.isEmpty) {
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  isOpenBucket ? Icons.note_add : Icons.history, 
-                  size: 64, 
+                  isOpenBucket ? Icons.note_add : Icons.history,
+                  size: 64,
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  isOpenBucket ? 'No draft sessions' : 'No completed sessions',
+                  searchQuery.isEmpty
+                      ? (isOpenBucket ? 'No draft sessions' : 'No completed sessions')
+                      : 'No matching sessions',
                   style: Theme.of(ctx).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  isOpenBucket 
-                    ? 'Create a new session to get started'
-                    : 'Completed sessions will appear here',
+                  searchQuery.isEmpty
+                      ? (isOpenBucket
+                          ? 'Create a new session to get started'
+                          : 'Completed sessions will appear here')
+                      : 'Try a different search term',
                   style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                   ),
@@ -159,6 +196,19 @@ class _SessionsBucket extends StatelessWidget {
             ),
           );
         }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: filteredDocs.length,
+          itemBuilder: (ctx, i) {
+            final d = filteredDocs[i];
+            final m = d.data();
+            return _SessionCard(
+              doc: d,
+              data: m,
+              isOpenBucket: isOpenBucket,
+              showDeleted: showDeleted,
+            );
         
         return ListView.builder(
           padding: const EdgeInsets.all(16),

@@ -411,7 +411,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
       if (itemId != null) {
         final itemSnap = await _db.collection('items').doc(itemId).get();
         if (!ctx.mounted) return;
-        final data = itemSnap.data()!;
+        if (!itemSnap.exists) return;
+        final data = itemSnap.data();
+        if (data == null) return;
         final name = (data['name'] ?? 'Unnamed') as String;
         final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
         _addOrBumpLine(
@@ -2285,7 +2287,7 @@ class _LineRowState extends State<_LineRow> {
     }
 
     final parsed = num.tryParse(raw);
-    if (parsed == null) {
+    if (parsed == null || parsed < 0) {
       _resetInitialField();
       return;
     }
