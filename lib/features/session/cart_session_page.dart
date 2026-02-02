@@ -13,14 +13,13 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../utils/operator_store.dart';
 import '../../models/option_item.dart';
 import '../../utils/sound_feedback.dart';
-import '../../utils/deep_link_parser.dart';
 import '../../widgets/usb_wedge_scanner.dart';
 import '../../widgets/weight_calculator_dialog.dart';
 import 'cart_models.dart';
-import '../../data/product_enrichment_service.dart';
 import '../../data/lookups_service.dart';
 import '../../services/time_tracking_service.dart';
 import '../../services/cart_print_service.dart';
+import '../../services/barcode_service.dart';
 
 
 
@@ -62,10 +61,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
   
   // Track line IDs that exist in Firestore (for deletion sync)
   final Set<String> _savedLineIds = {};
-  
+
   // Mobile scanner session
   late final String _mobileScannerSessionId;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _scannerSubscription;
+
+  // Barcode service for unified barcode handling
+  final _barcodeService = BarcodeService();
   
   // Auto-save timer
   Timer? _autoSaveTimer;
@@ -100,12 +102,35 @@ class _CartSessionPageState extends State<CartSessionPage> {
     super.initState();
     _sessionId = widget.sessionId;
     _mobileScannerSessionId = const Uuid().v4();
-    _listenForMobileScans();
+    _initializeBarcodeService();
     _syncFormControllers();
     _loadInterventions();
     if (_sessionId != null) {
       _loadSessionData();
     }
+  }
+
+  void _initializeBarcodeService() {
+    _barcodeService.init(
+      onItemFound: _handleItemFound,
+      onDeepLink: _handleDeepLink,
+      onUnknownBarcode: _handleUnknownBarcode,
+      onError: (error) {
+        if (kDebugMode) {
+          debugPrint('Barcode service error: $error');
+        }
+      },
+      onRefocus: _refocusQuickAdd,
+      onProcessed: (barcode) {
+        if (kDebugMode) {
+          debugPrint('Processed barcode: $barcode');
+        }
+      },
+    );
+    _barcodeService.startListening(
+      db: _db,
+      sessionId: _mobileScannerSessionId,
+    );
   }
 
   Future<void> _loadSessionData() async {
@@ -246,8 +271,8 @@ class _CartSessionPageState extends State<CartSessionPage> {
     if (_autoSavePending && _lines.isNotEmpty) {
       _saveDraft(); // Fire and forget on dispose
     }
-    // Clean up scanner session
-    _db.collection('scanner_sessions').doc(_mobileScannerSessionId).delete().catchError((_) {});
+    // Clean up barcode service and scanner session
+    _barcodeService.dispose();
     super.dispose();
   }
   
@@ -264,185 +289,57 @@ class _CartSessionPageState extends State<CartSessionPage> {
     });
   }
 
+  // ---------- Barcode handling via BarcodeService ----------
   Future<void> _handleCode(String rawCode) async {
-    final ctx = context;
     final code = rawCode.trim();
     if (code.isEmpty || _busy) return;
 
     // soft beep to acknowledge capture
     SoundFeedback.ok();
 
-    try {
-      // 1) Try parsing as a lot deep link (new URL format)
-      final lotDeepLink = DeepLinkParser.parseLotDeepLink(code);
-      if (lotDeepLink != null) {
-        final itemId = lotDeepLink['itemId']!;
-        final lotId = lotDeepLink['lotId'];
-        
-        final itemSnap = await _db.collection('items').doc(itemId).get();
-        if (!ctx.mounted) return;
-        if (!itemSnap.exists) throw Exception('Item not found');
-        final m = itemSnap.data()!;
-        final name = (m['name'] ?? 'Unnamed') as String;
-        final baseUnit = (m['baseUnit'] ?? m['unit'] ?? 'each') as String;
+    await _barcodeService.processCode(
+      code,
+      db: _db,
+      context: context,
+      fefoLotIdForItem: _fefoLotIdForItem,
+      offerAttachBarcode: _offerAttachBarcode,
+    );
+  }
 
-        _addOrBumpLine(
-          itemId: itemId,
-          itemName: name,
-          baseUnit: baseUnit,
-          lotId: lotId,
-        );
-        if (!ctx.mounted) return;
-        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
-        _refocusQuickAdd();
-        return;
-      }
+  /// Handle item found by barcode - called by BarcodeService
+  Future<void> _handleItemFound({
+    required String barcode,
+    required String itemId,
+    required Map<String, dynamic> itemData,
+    String? lotId,
+  }) async {
+    final name = (itemData['name'] ?? 'Unnamed') as String;
+    final baseUnit = (itemData['baseUnit'] ?? itemData['unit'] ?? 'each') as String;
 
-      // 2) Legacy SCOUT lot QR: SCOUT:LOT:item={ITEM_ID};lot={LOT_ID}
-      if (code.startsWith('SCOUT:LOT:')) {
-        String? itemId, lotId;
-        for (final p in code.substring('SCOUT:LOT:'.length).split(';')) {
-          final kv = p.split('=');
-          if (kv.length == 2) {
-            if (kv[0] == 'item') itemId = kv[1];
-            if (kv[0] == 'lot') lotId = kv[1];
-          }
-        }
-        if (itemId != null) {
-          final itemSnap = await _db.collection('items').doc(itemId).get();
-          if (!ctx.mounted) return;
-          if (!itemSnap.exists) throw Exception('Item not found');
-          final m = itemSnap.data()!;
-          final name = (m['name'] ?? 'Unnamed') as String;
-          final baseUnit = (m['baseUnit'] ?? m['unit'] ?? 'each') as String;
+    _addOrBumpLine(itemId: itemId, itemName: name, baseUnit: baseUnit, lotId: lotId);
+  }
 
-          _addOrBumpLine(
-            itemId: itemId,
-            itemName: name,
-            baseUnit: baseUnit,
-            lotId: lotId,
-          );
-          if (!ctx.mounted) return;
-          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
-          _refocusQuickAdd();
-          return;
-        }
-      }
+  /// Handle lot deep link - called by BarcodeService
+  Future<void> _handleDeepLink({
+    required String itemId,
+    String? lotId,
+    required Map<String, dynamic> itemData,
+  }) async {
+    final name = (itemData['name'] ?? 'Unnamed') as String;
+    final baseUnit = (itemData['baseUnit'] ?? itemData['unit'] ?? 'each') as String;
 
-      // 3) Item barcode search (support 'barcode' and 'barcodes' array)
-      QueryDocumentSnapshot<Map<String, dynamic>>? d;
-      var q = await _db.collection('items').where('barcode', isEqualTo: code).limit(1).get();
-      if (q.docs.isNotEmpty) {
-        d = q.docs.first;
-      } else {
-        q = await _db.collection('items').where('barcodes', arrayContains: code).limit(1).get();
-        if (q.docs.isNotEmpty) d = q.docs.first;
-      }
+    _addOrBumpLine(
+      itemId: itemId,
+      itemName: name,
+      baseUnit: baseUnit,
+      lotId: lotId,
+    );
+  }
 
-      if (d != null) {
-        final data = d.data();
-        final isArchived = data['archived'] == true;
-        
-        // If item is archived, offer to reactivate it
-        if (isArchived) {
-          if (!ctx.mounted) return;
-          final shouldReactivate = await showDialog<bool>(
-            context: ctx,
-            builder: (dialogCtx) => AlertDialog(
-              title: const Text('Reactivate Item?'),
-              content: Text(
-                'The item "${data['name'] ?? 'Unnamed'}" was previously archived. '
-                'Would you like to reactivate it to preserve its usage history?'
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogCtx, false),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(dialogCtx, true),
-                  child: const Text('Reactivate'),
-                ),
-              ],
-            ),
-          );
-          
-          if (shouldReactivate == true) {
-            // Unarchive the item
-            await _db.collection('items').doc(d.id).update({
-              'archived': false,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-            
-            // Log the reactivation
-            await _db.collection('audit_logs').add({
-              'type': 'item.unarchive',
-              'data': {
-                'itemId': d.id,
-                'name': data['name'],
-                'reason': 'barcode_scan_reactivation',
-              },
-              'operatorName': _operatorName,
-              'createdBy': FirebaseAuth.instance.currentUser?.uid,
-              'createdAt': FieldValue.serverTimestamp(),
-            });
-            
-            if (!ctx.mounted) return;
-            ScaffoldMessenger.of(ctx).showSnackBar(
-              SnackBar(content: Text('Reactivated: ${data['name']}')),
-            );
-          } else {
-            _refocusQuickAdd();
-            return;
-          }
-        }
-        
-        final name = (data['name'] ?? 'Unnamed') as String;
-        final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
-
-        // FEFO lot (prefer first with qtyRemaining > 0)
-        final lotId = await _fefoLotIdForItem(d.id);
-
-        _addOrBumpLine(itemId: d.id, itemName: name, baseUnit: baseUnit, lotId: lotId);
-        if (!ctx.mounted) return;
-        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Added: $name')));
-        _refocusQuickAdd();
-        return;
-      }
-
-      // d == null: unknown barcode -> try auto-create with enrichment
-      final itemId = await ProductEnrichmentService.createItemWithEnrichment(code, _db);
-      if (itemId != null) {
-        final itemSnap = await _db.collection('items').doc(itemId).get();
-        if (!ctx.mounted) return;
-        if (!itemSnap.exists) return;
-        final data = itemSnap.data();
-        if (data == null) return;
-        final name = (data['name'] ?? 'Unnamed') as String;
-        final baseUnit = (data['baseUnit'] ?? data['unit'] ?? 'each') as String;
-        _addOrBumpLine(
-          itemId: itemId,
-          itemName: name,
-          baseUnit: baseUnit,
-        );
-        if (!ctx.mounted) return;
-        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Created and added: $name')));
-        _refocusQuickAdd();
-        return;
-      } else {
-        // fallback to offer attach
-        SoundFeedback.error();
-        if (!ctx.mounted) return;
-        await _offerAttachBarcode(code);
-        _refocusQuickAdd();
-        return;
-      }
-    } catch (e) {
-      if (!ctx.mounted) return;
-      SoundFeedback.error();
-      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Scan error: $e')));
-      _refocusQuickAdd();
-    }
+  /// Handle unknown barcode - called by BarcodeService
+  Future<void> _handleUnknownBarcode(String barcode) async {
+    SoundFeedback.error();
+    await _offerAttachBarcode(barcode);
   }
 
   // Camera sheet -> just capture code and hand to unified handler
@@ -455,29 +352,6 @@ class _CartSessionPageState extends State<CartSessionPage> {
     );
     if (code == null || !mounted) return;
     await _handleCode(code);
-  }
-
-  void _listenForMobileScans() {
-    _scannerSubscription = _db
-        .collection('scanner_sessions')
-        .doc(_mobileScannerSessionId)
-        .collection('scans')
-        .orderBy('timestamp', descending: true)
-        .limit(1)
-        .snapshots()
-        .listen((snapshot) {
-      if (snapshot.docs.isNotEmpty) {
-        final scan = snapshot.docs.first;
-        final barcode = scan.data()['barcode'] as String?;
-        final processed = scan.data()['processed'] as bool? ?? false;
-        
-        if (barcode != null && !processed && mounted) {
-          _handleCode(barcode);
-          // Mark as processed
-          scan.reference.update({'processed': true});
-        }
-      }
-    });
   }
 
   void _showMobileScannerQR() {
