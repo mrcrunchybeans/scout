@@ -1396,26 +1396,25 @@ class _CartSessionPageState extends State<CartSessionPage> {
         }
       }
 
-      // Single atomic commit
-      if (kDebugMode) debugPrint('CartSessionPage: Committing $operationCount operations in single batch');
-      await batch.commit();
-      if (kDebugMode) debugPrint('CartSessionPage: All operations committed successfully');
-
-      if (kDebugMode) debugPrint('CartSessionPage: All lines processed successfully');
-
-      // Log all audit entries after transactions complete (move outside transaction)
-      // Note: Audit.log calls are moved outside transactions to avoid potential issues
-
-      await sref.set(
+      // Include session status update in the same batch for atomicity
+      // Either all operations succeed (including session close) or none do
+      batch.set(
+        sref,
         {
           'status': 'closed',
-          'closedAt': now,
+          'closedAt': Timestamp.fromDate(now),
           'closedBy': FirebaseAuth.instance.currentUser?.uid,
           'operatorName': _operatorName,
-          'updatedAt': now,
+          'updatedAt': Timestamp.fromDate(now),
         },
         SetOptions(merge: true),
       );
+      operationCount++;
+
+      // Single atomic commit - includes inventory deductions AND session status update
+      if (kDebugMode) debugPrint('CartSessionPage: Committing $operationCount operations in single batch');
+      await batch.commit();
+      if (kDebugMode) debugPrint('CartSessionPage: All operations committed successfully');
 
       if (mounted) {
         setState(() {
