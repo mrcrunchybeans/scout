@@ -232,6 +232,116 @@ class _CartSessionPageState extends State<CartSessionPage> {
   String? get _grantName =>
       _defaultGrantId == null ? null : _grantNames[_defaultGrantId!] ?? _defaultGrantId;
 
+  /// Fetch items with expiring or expired lots for a grant
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _getExpiringItemsForGrant(String grantId) async {
+    try {
+      // Query items with expiring soon flag
+      final expiringSnap = await _db
+          .collection('items')
+          .where('grantId', isEqualTo: grantId)
+          .where('flagExpiringSoon', isEqualTo: true)
+          .get();
+      return expiringSnap.docs;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// Fetch items with expired lots for a grant
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _getExpiredItemsForGrant(String grantId) async {
+    try {
+      final expiredSnap = await _db
+          .collection('items')
+          .where('grantId', isEqualTo: grantId)
+          .where('flagExpired', isEqualTo: true)
+          .get();
+      return expiredSnap.docs;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// Show dialog with expiring items for the selected grant
+  Future<void> _showExpiringItemsDialog(String grantId) async {
+    final expiringItems = await _getExpiringItemsForGrant(grantId);
+    final expiredItems = await _getExpiredItemsForGrant(grantId);
+
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Expiring Items'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              if (expiredItems.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('Expired Items', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red[700])),
+                ),
+                ...expiredItems.map((item) {
+                  final data = item.data();
+                  final name = data['name'] ?? 'Unnamed';
+                  final expDate = data['earliestExpiresAt'];
+                  final expDateStr = expDate != null
+                      ? MaterialLocalizations.of(context).formatShortDate((expDate as Timestamp).toDate())
+                      : 'Unknown';
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(Icons.error, color: Colors.red[700]),
+                    title: Text(name),
+                    subtitle: Text('Expired: $expDateStr'),
+                  );
+                }),
+                const Divider(),
+              ],
+              if (expiringItems.isNotEmpty) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('Expiring Soon', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange[700])),
+                ),
+                ...expiringItems.map((item) {
+                  final data = item.data();
+                  final name = data['name'] ?? 'Unnamed';
+                  final expDate = data['earliestExpiresAt'];
+                  final expDateStr = expDate != null
+                      ? MaterialLocalizations.of(context).formatShortDate((expDate as Timestamp).toDate())
+                      : 'Unknown';
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(Icons.warning, color: Colors.orange[700]),
+                    title: Text(name),
+                    subtitle: Text('Expires: $expDateStr'),
+                  );
+                }),
+              ],
+              if (expiredItems.isEmpty && expiringItems.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('No expiring items found for this grant.'),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ---------- Unified code handler (USB / camera / manual) ----------
   void _refocusQuickAdd() {
     if (!mounted) return;
@@ -2052,6 +2162,87 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       if (!mounted) return;
 
+      // Check for expired items before copying
+      final expiredItemNames = <String>[];
+      final now = DateTime.now();
+
+      for (final d in lines.docs) {
+        final m = d.data();
+        final lotId = m['lotId'] as String?;
+        final itemId = m['itemId'] as String?;
+        final itemName = m['itemName'] as String? ?? 'Unknown';
+
+        if (lotId != null && itemId != null) {
+          try {
+            final lotDoc = await _db
+                .collection('items')
+                .doc(itemId)
+                .collection('lots')
+                .doc(lotId)
+                .get();
+
+            if (lotDoc.exists) {
+              final expiresAt = lotDoc.data()?['expiresAt'];
+              if (expiresAt != null) {
+                final expDate = (expiresAt as Timestamp).toDate();
+                if (expDate.isBefore(now)) {
+                  expiredItemNames.add(itemName);
+                }
+              }
+            }
+          } catch (e) {
+            // Ignore lot lookup errors
+          }
+        }
+      }
+
+      // Show warning if expired items found
+      if (expiredItemNames.isNotEmpty) {
+        final proceed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning, color: Colors.red),
+                SizedBox(width: 8),
+                Text('Expired Items Warning'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('The following items from the previous cart have expired lots:'),
+                const SizedBox(height: 8),
+                ...expiredItemNames.take(5).map((name) => Text('• $name')),
+                if (expiredItemNames.length > 5)
+                  Text('... and ${expiredItemNames.length - 5} more'),
+                const SizedBox(height: 16),
+                const Text(
+                  'These items may no longer be available. Do you want to continue?',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Continue'),
+              ),
+            ],
+          ),
+        );
+
+        if (proceed != true) {
+          setState(() => _busy = false);
+          return;
+        }
+      }
+
       int copiedCount = 0;
       setState(() {
         _lines.clear();
@@ -2469,6 +2660,33 @@ class _CartSessionPageState extends State<CartSessionPage> {
                   enabled: !_isClosed,
                   onChanged: (s) => _notes = s,
                 ),
+
+                // Expiring items warning card (show when grant is selected)
+                if (_defaultGrantId != null && !_isClosed) ...[
+                  const SizedBox(height: 12),
+                  FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+                    future: _getExpiringItemsForGrant(_defaultGrantId!),
+                    builder: (context, snapshot) {
+                      final expiringCount = snapshot.data?.length ?? 0;
+                      if (!snapshot.hasData || expiringCount == 0) {
+                        return const SizedBox.shrink();
+                      }
+                      return Card(
+                        color: Colors.yellow.withValues(alpha: 0.1),
+                        child: ListTile(
+                          leading: Icon(Icons.warning, color: Colors.orange[700]),
+                          title: Text('$expiringCount item${expiringCount == 1 ? '' : 's'} expiring soon'),
+                          subtitle: const Text('Consider including these in your cart'),
+                          trailing: TextButton(
+                            onPressed: () => _showExpiringItemsDialog(_defaultGrantId!),
+                            child: const Text('View'),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+
                 const SizedBox(height: 12),
                 InkWell(
                   onTap: _isClosed ? null : () async {
@@ -2781,6 +2999,9 @@ class _LineRowState extends State<_LineRow> {
   num? _lotRemaining;
   bool _overAllocated = false;
   bool? _lastReportedOverAllocation;
+  DateTime? _expiresAt;
+  bool _isExpired = false;
+  bool _isExpiringSoon = false;
 
   void _notifyOverAllocation() {
     final cb = widget.onOverAllocationChanged;
@@ -2814,12 +3035,15 @@ class _LineRowState extends State<_LineRow> {
   Future<void> _loadLotCode() async {
     final lotId = widget.line.lotId;
     if (lotId == null) {
-      if (_lotCode != null || _variety != null || _lotRemaining != null || _overAllocated) {
+      if (_lotCode != null || _variety != null || _lotRemaining != null || _overAllocated || _expiresAt != null) {
         setState(() {
           _lotCode = null;
           _variety = null;
           _lotRemaining = null;
           _overAllocated = false;
+          _expiresAt = null;
+          _isExpired = false;
+          _isExpiringSoon = false;
         });
       }
       _notifyOverAllocation();
@@ -2840,11 +3064,29 @@ class _LineRowState extends State<_LineRow> {
         final variety = data?['variety'] as String?;
         final qtyRemainingRaw = data?['qtyRemaining'];
         final qtyRemaining = qtyRemainingRaw is num ? qtyRemainingRaw : null;
+        final expiresAtTs = data?['expiresAt'];
+        final expiresAt = expiresAtTs is Timestamp ? expiresAtTs.toDate() : null;
+
+        // Calculate expiration status
+        final now = DateTime.now();
+        bool isExpired = false;
+        bool isExpiringSoon = false;
+        if (expiresAt != null) {
+          isExpired = expiresAt.isBefore(now);
+          if (!isExpired) {
+            final daysUntil = expiresAt.difference(now).inDays;
+            isExpiringSoon = daysUntil <= 14;
+          }
+        }
+
         setState(() {
           _lotCode = lotCode ?? lotId.substring(0, 6);
           _variety = variety;
           _lotRemaining = qtyRemaining;
           _overAllocated = qtyRemaining != null && widget.line.initialQty > qtyRemaining;
+          _expiresAt = expiresAt;
+          _isExpired = isExpired;
+          _isExpiringSoon = isExpiringSoon;
         });
       } else {
         setState(() {
@@ -2852,6 +3094,9 @@ class _LineRowState extends State<_LineRow> {
           _variety = null;
           _lotRemaining = null;
           _overAllocated = false;
+          _expiresAt = null;
+          _isExpired = false;
+          _isExpiringSoon = false;
         });
       }
     } catch (e) {
@@ -2861,6 +3106,9 @@ class _LineRowState extends State<_LineRow> {
         _variety = null;
         _lotRemaining = null;
         _overAllocated = false;
+        _expiresAt = null;
+        _isExpired = false;
+        _isExpiringSoon = false;
       });
     }
     _notifyOverAllocation();
@@ -3021,12 +3269,47 @@ class _LineRowState extends State<_LineRow> {
       if (_lotRemaining != null) {
         lotPieces.add('${_formatQty(_lotRemaining!)} ${widget.line.baseUnit} available');
       }
+      // Add expiration date to lot info
+      if (_expiresAt != null) {
+        final expDateStr = MaterialLocalizations.of(context).formatShortDate(_expiresAt!);
+        lotPieces.add('Expires: $expDateStr');
+      }
       unitText.add(lotPieces.join(' • '));
     }
 
+    // Set card color based on expiration status
+    Color? cardColor;
+    if (_isExpired) {
+      cardColor = Colors.red.withValues(alpha: 0.1);
+    } else if (_isExpiringSoon) {
+      cardColor = Colors.yellow.withValues(alpha: 0.1);
+    }
+
     return Card(
+      color: cardColor,
       child: ListTile(
-        title: Text(widget.line.itemName),
+        leading: _isExpired
+            ? Icon(Icons.error, color: Colors.red[700])
+            : _isExpiringSoon
+                ? Icon(Icons.warning, color: Colors.orange[700])
+                : null,
+        title: Row(
+          children: [
+            Expanded(child: Text(widget.line.itemName)),
+            if (_expiresAt != null && (_isExpired || _isExpiringSoon))
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _isExpired ? Colors.red : Colors.orange,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _isExpired ? 'EXPIRED' : 'Expiring soon',
+                  style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+              ),
+          ],
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -3235,7 +3518,27 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                           : null;
                       final lotCode = lotData['lotCode'] ?? lot.id;
                       final variety = lotData['variety'] as String?;
-                      
+
+                      // Calculate expiration status
+                      final now = DateTime.now();
+                      bool isExpired = false;
+                      bool isExpiringSoon = false;
+                      if (expiresAt != null) {
+                        isExpired = expiresAt.isBefore(now);
+                        if (!isExpired) {
+                          final daysUntil = expiresAt.difference(now).inDays;
+                          isExpiringSoon = daysUntil <= 14;
+                        }
+                      }
+
+                      // Set tile color based on expiration status
+                      Color? tileColor;
+                      if (isExpired) {
+                        tileColor = Colors.red.withValues(alpha: 0.1);
+                      } else if (isExpiringSoon) {
+                        tileColor = Colors.yellow.withValues(alpha: 0.1);
+                      }
+
                       // Build display with variety if present
                       final lotDisplay = variety != null && variety.isNotEmpty
                           ? '$lotCode - $variety • $qtyRemaining $baseUnit'
@@ -3244,9 +3547,39 @@ class _LotSelectionDialogState extends State<LotSelectionDialog> {
                       // ignore: deprecated_member_use
                       final isSelected = selectedLots.contains(lot.id);
                       return CheckboxListTile(
-                        title: Text(lotDisplay),
+                        tileColor: tileColor,
+                        title: Row(
+                          children: [
+                            if (isExpired)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 4),
+                                child: Icon(Icons.error, color: Colors.red[700], size: 18),
+                              )
+                            else if (isExpiringSoon)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 4),
+                                child: Icon(Icons.warning, color: Colors.orange[700], size: 18),
+                              ),
+                            Expanded(child: Text(lotDisplay)),
+                          ],
+                        ),
                         subtitle: expiresAt != null
-                            ? Text('Expires: ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}')
+                            ? Row(
+                                children: [
+                                  Text(
+                                    'Expires: ${MaterialLocalizations.of(context).formatShortDate(expiresAt)}',
+                                    style: TextStyle(
+                                      color: isExpired ? Colors.red : isExpiringSoon ? Colors.orange : null,
+                                      fontWeight: isExpired || isExpiringSoon ? FontWeight.bold : null,
+                                    ),
+                                  ),
+                                  if (isExpired)
+                                    const Padding(
+                                      padding: EdgeInsets.only(left: 8),
+                                      child: Text('EXPIRED', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                                    ),
+                                ],
+                              )
                             : null,
                         value: isSelected,
                         onChanged: qtyRemaining > 0

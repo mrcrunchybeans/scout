@@ -8,6 +8,9 @@ class CartLine {
   final String? lotCode;      // the human-readable lot code (e.g., "2509-001")
   final num initialQty;
   final num? endQty;          // null until closing
+  final DateTime? expiresAt;   // expiration date of the lot
+  final bool? isExpired;      // true if lot is expired
+  final bool? isExpiringSoon; // true if lot expires within 14 days
 
   CartLine({
     required this.itemId,
@@ -17,6 +20,9 @@ class CartLine {
     this.lotCode,
     required this.initialQty,
     this.endQty,
+    this.expiresAt,
+    this.isExpired,
+    this.isExpiringSoon,
   });
 
   CartLine copyWith({
@@ -27,6 +33,9 @@ class CartLine {
     String? lotCode,
     num? initialQty,
     num? endQty,
+    DateTime? expiresAt,
+    bool? isExpired,
+    bool? isExpiringSoon,
   }) {
     return CartLine(
       itemId: itemId ?? this.itemId,
@@ -36,6 +45,9 @@ class CartLine {
       lotCode: lotCode ?? this.lotCode,
       initialQty: initialQty ?? this.initialQty,
       endQty: endQty ?? this.endQty,
+      expiresAt: expiresAt ?? this.expiresAt,
+      isExpired: isExpired ?? this.isExpired,
+      isExpiringSoon: isExpiringSoon ?? this.isExpiringSoon,
     );
   }
 
@@ -49,17 +61,27 @@ class CartLine {
     'lotCode': lotCode,
     'initialQty': initialQty,
     'endQty': endQty,
+    if (expiresAt != null) 'expiresAt': Timestamp.fromDate(expiresAt!),
+    if (isExpired != null) 'isExpired': isExpired,
+    if (isExpiringSoon != null) 'isExpiringSoon': isExpiringSoon,
   };
 
-  static CartLine fromMap(Map<String, dynamic> m) => CartLine(
-    itemId: m['itemId'] as String,
-    itemName: (m['itemName'] ?? 'Unnamed') as String,
-    baseUnit: (m['baseUnit'] ?? 'each') as String,
-    lotId: m['lotId'] as String?,
-    lotCode: m['lotCode'] as String?,
-    initialQty: (m['initialQty'] ?? 0) as num,
-    endQty: m['endQty'] as num?,
-  );
+  static CartLine fromMap(Map<String, dynamic> m) {
+    final expTs = m['expiresAt'];
+    final expiresAt = expTs is Timestamp ? expTs.toDate() : null;
+    return CartLine(
+      itemId: m['itemId'] as String,
+      itemName: (m['itemName'] ?? 'Unnamed') as String,
+      baseUnit: (m['baseUnit'] ?? 'each') as String,
+      lotId: m['lotId'] as String?,
+      lotCode: m['lotCode'] as String?,
+      initialQty: (m['initialQty'] ?? 0) as num,
+      endQty: m['endQty'] as num?,
+      expiresAt: expiresAt,
+      isExpired: m['isExpired'] as bool?,
+      isExpiringSoon: m['isExpiringSoon'] as bool?,
+    );
+  }
 }
 
 // ==================== Cart Session Metric Model ====================
