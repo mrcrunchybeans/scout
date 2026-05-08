@@ -617,6 +617,30 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                     const Divider(height: 1),
                     ListTile(
+                      leading: const Icon(Icons.inventory_2_outlined),
+                      title: const Text('Recent Inventory Changes'),
+                      subtitle: const Text('Review and undo recent inventory adjustments or waste'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const AuditLogsPage(
+                              initialFilters: {
+                                AuditLogTypes.lotWaste,
+                                AuditLogTypes.lotAddStock,
+                                AuditLogTypes.lotAdjust,
+                                AuditLogTypes.inventoryBulkAdjust,
+                                AuditLogTypes.inventoryBulkAdd,
+                                AuditLogTypes.itemUpdate,
+                                AuditLogTypes.lotUpdate,
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
                       leading: const Icon(Icons.history),
                       title: const Text('Audit Logs'),
                       subtitle: const Text('View inventory operations and changes'),

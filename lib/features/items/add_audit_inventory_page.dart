@@ -967,15 +967,26 @@ class _AuditOptionsState extends State<_AuditOptions> {
         await _updateTotalQuantity();
 
         // Log audit
-        await Audit.log('lot.add_stock', {
-          'itemId': widget.itemId,
-          'itemName': widget.itemName,
-          'lotId': lotDoc.id,
-          'lotCode': lotCode,
-          'addedAmount': result,
-          'remainingAfterAdd': newQtyRemaining,
-          'baseUnit': baseUnit,
-        });
+        await Audit.log(
+          'lot.add_stock', 
+          {
+            'itemId': widget.itemId,
+            'itemName': widget.itemName,
+            'lotId': lotDoc.id,
+            'lotCode': lotCode,
+            'addedAmount': result,
+            'remainingAfterAdd': newQtyRemaining,
+            'baseUnit': baseUnit,
+          },
+          canUndo: true,
+          undoData: {
+            'itemId': widget.itemId,
+            'lotId': lotDoc.id,
+            'previousValues': {
+              'qtyRemaining': qtyRemaining,
+            },
+          },
+        );
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1082,16 +1093,27 @@ class _AuditOptionsState extends State<_AuditOptions> {
         await _updateTotalQuantity();
 
         // Log audit
-        await Audit.log('lot.waste', {
-          'itemId': widget.itemId,
-          'itemName': widget.itemName,
-          'lotId': lotDoc.id,
-          'lotCode': lotCode,
-          'wastedAmount': result,
-          'remainingAfterWaste': newQtyRemaining,
-          'baseUnit': baseUnit,
-          'reason': reasonController.text.trim().isEmpty ? null : reasonController.text.trim(),
-        });
+        await Audit.log(
+          'lot.waste', 
+          {
+            'itemId': widget.itemId,
+            'itemName': widget.itemName,
+            'lotId': lotDoc.id,
+            'lotCode': lotCode,
+            'wastedAmount': result,
+            'remainingAfterWaste': newQtyRemaining,
+            'baseUnit': baseUnit,
+            'reason': reasonController.text.trim().isEmpty ? null : reasonController.text.trim(),
+          },
+          canUndo: true,
+          undoData: {
+            'itemId': widget.itemId,
+            'lotId': lotDoc.id,
+            'previousValues': {
+              'qtyRemaining': qtyRemaining,
+            },
+          },
+        );
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

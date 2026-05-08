@@ -105,14 +105,22 @@ class AuditLogTypes {
 }
 
 class AuditLogsPage extends StatefulWidget {
-  const AuditLogsPage({super.key});
+  final Set<String>? initialFilters;
+  
+  const AuditLogsPage({super.key, this.initialFilters});
 
   @override
   State<AuditLogsPage> createState() => _AuditLogsPageState();
 }
 
 class _AuditLogsPageState extends State<AuditLogsPage> {
-  final Set<String> _selectedTypes = {}; // For multi-select filter
+  late final Set<String> _selectedTypes;
+  
+  @override
+  void initState() {
+    super.initState();
+    _selectedTypes = Set<String>.from(widget.initialFilters ?? {});
+  }
   
   @override
   Widget build(BuildContext context) {
@@ -187,15 +195,58 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
               final doc = filteredDocs[index];
               final data = doc.data() as Map<String, dynamic>;
 
+              final type = data['type'] as String? ?? 'Unknown';
+              final logData = data['data'] as Map<String, dynamic>? ?? {};
+              
+              bool canUndo = data['canUndo'] as bool? ?? false;
+              Map<String, dynamic>? undoData = data['undoData'] as Map<String, dynamic>?;
+              
+              // Synthesize undo logic for legacy waste/add logs
+              if (!canUndo && data['undoneAt'] == null && undoData == null) {
+                if (type == 'lot.waste' && logData.containsKey('wastedAmount') && logData.containsKey('itemId') && logData.containsKey('lotId')) {
+                  canUndo = true;
+                  undoData = {
+                    'itemId': logData['itemId'],
+                    'lotId': logData['lotId'],
+                    'incrementAmount': logData['wastedAmount'],
+                  };
+                } else if (type == 'lot.add_stock' && logData.containsKey('addedAmount') && logData.containsKey('itemId') && logData.containsKey('lotId')) {
+                  canUndo = true;
+                  undoData = {
+                    'itemId': logData['itemId'],
+                    'lotId': logData['lotId'],
+                    'incrementAmount': -(logData['addedAmount'] as num).toDouble(),
+                  };
+                } else if (type == 'lot.adjust' && logData.containsKey('delta') && logData.containsKey('itemId') && logData.containsKey('lotId')) {
+                  canUndo = true;
+                  undoData = {
+                    'itemId': logData['itemId'],
+                    'lotId': logData['lotId'],
+                    'incrementAmount': -(logData['delta'] as num).toDouble(),
+                  };
+                }
+              }
+
+              // Debug info
+              String debugStr = '';
+              if (!canUndo && (type == 'lot.waste' || type == 'lot.adjust')) {
+                debugStr = 'DEBUG: type=$type, undoneAt=${data['undoneAt']}, undoData=${undoData != null}, keys=${logData.keys.join(", ")}';
+              }
+
               return _AuditLogTile(
                 docId: doc.id,
-                type: data['type'] as String? ?? 'Unknown',
+                type: type,
                 operatorName: data['operatorName'] as String?,
                 createdAt: data['createdAt'] as Timestamp?,
-                details: data['data'] as Map<String, dynamic>? ?? {},
-                undoData: data['undoData'] as Map<String, dynamic>?,
-                canUndo: data['canUndo'] as bool? ?? false,
-                onUndo: () => _handleUndo(doc.id, data),
+                details: debugStr.isNotEmpty ? {...logData, 'DEBUG_INFO': debugStr} : logData,
+                undoData: undoData,
+                canUndo: canUndo,
+                onUndo: () {
+                  final undoPayload = Map<String, dynamic>.from(data);
+                  undoPayload['type'] = type;
+                  undoPayload['undoData'] = undoData;
+                  _handleUndo(doc.id, undoPayload);
+                },
               );
             },
           );
@@ -253,6 +304,8 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
         case 'item.update':
         case 'lot.update':
         case 'lot.adjust':
+        case 'lot.waste':
+        case 'lot.add_stock':
           await _undoUpdate(db, type, undoData);
           break;
         default:
@@ -386,19 +439,49 @@ class _AuditLogsPageState extends State<AuditLogsPage> {
   }
   
   Future<void> _undoUpdate(FirebaseFirestore db, String type, Map<String, dynamic> undoData) async {
-    final previousValues = undoData['previousValues'] as Map<String, dynamic>?;
-    if (previousValues == null) throw Exception('No previous values found');
+    final itemId = undoData['itemId'] as String?;
+    final lotId = undoData['lotId'] as String?;
     
     if (type == 'item.update') {
-      final itemId = undoData['itemId'] as String?;
+      final previousValues = undoData['previousValues'] as Map<String, dynamic>?;
+      if (previousValues == null) throw Exception('No previous values found');
       if (itemId != null) {
         await db.collection('items').doc(itemId).update(previousValues);
       }
-    } else if (type == 'lot.update' || type == 'lot.adjust') {
-      final itemId = undoData['itemId'] as String?;
-      final lotId = undoData['lotId'] as String?;
+    } else if (type == 'lot.update' || type == 'lot.adjust' || type == 'lot.waste' || type == 'lot.add_stock') {
       if (itemId != null && lotId != null) {
-        await db.collection('items').doc(itemId).collection('lots').doc(lotId).update(previousValues);
+        final lotRef = db.collection('items').doc(itemId).collection('lots').doc(lotId);
+        
+        if (undoData.containsKey('incrementAmount')) {
+          await lotRef.update({
+            'qtyRemaining': FieldValue.increment(undoData['incrementAmount']),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } else {
+          final previousValues = undoData['previousValues'] as Map<String, dynamic>?;
+          if (previousValues == null) throw Exception('No previous values found');
+          await lotRef.update(previousValues);
+        }
+        
+        // Recalculate total item quantity
+        final primaryLotsSnapshot = await db
+            .collection('items')
+            .doc(itemId)
+            .collection('lots')
+            .get();
+            
+        num totalQty = 0;
+        for (final lotDoc in primaryLotsSnapshot.docs) {
+          final lotData = lotDoc.data();
+          if (lotData['archived'] != true) {
+            totalQty += (lotData['qtyRemaining'] as num?) ?? 0;
+          }
+        }
+        
+        await db.collection('items').doc(itemId).update({
+          'qtyOnHand': totalQty,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
       }
     }
   }

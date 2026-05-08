@@ -29,14 +29,26 @@ class Audit {
   }
 
   /// Write an entry to /audit_logs (append-only).
-  static Future<void> log(String type, Map<String, dynamic> data) async {
-    await _db.collection('audit_logs').add({
+  static Future<void> log(
+    String type,
+    Map<String, dynamic> data, {
+    Map<String, dynamic>? undoData,
+    bool canUndo = false,
+  }) async {
+    final payload = <String, dynamic>{
       'type': type,                 // e.g. item.create, lot.create, session.close
       'data': data,                 // free-form details
       'operatorName': _currentOperatorName(),
       'createdBy': FirebaseAuth.instance.currentUser?.uid,
       'createdAt': FieldValue.serverTimestamp(),
-    });
+    };
+    
+    if (undoData != null) {
+      payload['undoData'] = undoData;
+      payload['canUndo'] = canUndo;
+    }
+
+    await _db.collection('audit_logs').add(payload);
   }
 
   /// If you already know you’re updating (not creating), use this to only bump updatedAt.

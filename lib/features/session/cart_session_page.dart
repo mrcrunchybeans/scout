@@ -61,6 +61,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
   final List<CartLine> _lines = [];
   final Map<String, bool> _overAllocatedLines = {};
   String _sortBy = 'order'; // order, name, lot
+
+  // Cached future for the expiring-items banner — avoids a new Firestore read on every rebuild.
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>? _expiringItemsFuture;
   
   // Track line IDs that exist in Firestore (for deletion sync)
   final Set<String> _savedLineIds = {};
@@ -163,6 +166,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
         if (_interventionId != null && _interventions != null) {
           _selectedIntervention = _interventions!.where((i) => i.id == _interventionId).firstOrNull;
         }
+        // Prime the expiring-items cache for the banner.
+        _expiringItemsFuture = _defaultGrantId != null
+            ? _getExpiringItemsForGrant(_defaultGrantId!)
+            : null;
       });
 
       _syncFormControllers();
@@ -381,9 +388,11 @@ class _CartSessionPageState extends State<CartSessionPage> {
     _notesC.dispose();
     _scannerSubscription?.cancel();
     _autoSaveTimer?.cancel();
-    // Perform final save if there are pending changes
-    if (_autoSavePending && _lines.isNotEmpty) {
-      _saveDraft(); // Fire and forget on dispose
+    // Perform final save if there are unsaved changes (fire-and-forget).
+    // Checking _dirty is more reliable than _autoSavePending, which may have
+    // already been cleared even if the actual save failed.
+    if (_dirty && _lines.isNotEmpty) {
+      _saveDraft();
     }
     // Clean up barcode service and scanner session
     _barcodeService.dispose();
@@ -398,8 +407,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
     _autoSaveTimer?.cancel();
     _autoSaveTimer = Timer(const Duration(seconds: 3), () async {
       if (!mounted || _isClosed || !_dirty) return;
-      _autoSavePending = false;
       await _saveDraft(silent: true);
+      // Clear the pending flag only after a successful save so that a
+      // failed save doesn't silently suppress the indicator.
+      if (mounted) _autoSavePending = false;
     });
   }
 
@@ -825,13 +836,15 @@ class _CartSessionPageState extends State<CartSessionPage> {
       }
     });
 
-    // Log audit entry
+    // Log audit entry. We omit lotCode here because we only have the lotId
+    // (Firestore doc ID), not the human-readable lot code — logging a
+    // truncated doc ID would be misleading in the audit trail.
     _logAudit(
       action: isBump ? AuditAction.quantityChanged : AuditAction.itemAdded,
       details: {
         'itemId': itemId,
         'itemName': itemName,
-        'lotCode': lotId?.substring(0, 6),
+        if (lotId != null) 'lotId': lotId,
         if (isBump && oldQty != null) 'oldQty': oldQty,
         'newQty': (oldQty ?? 0) + 1,
       },
@@ -844,13 +857,14 @@ class _CartSessionPageState extends State<CartSessionPage> {
     final ctx = context;
     if (!mounted) return;
 
+    // null = cancelled, false = create new item, true = attach to existing
     final ok = await showDialog<bool>(
       context: ctx,
       builder: (ctx) => AlertDialog(
         title: const Text('Unknown barcode'),
         content: Text('No item found with code: $code\nAttach this barcode to an item or create a new one?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Create new item…'),
@@ -862,6 +876,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     if (!ctx.mounted) return;
 
+    // cancelled
+    if (ok == null) return;
+
     // "Create new item" chosen
     if (ok == false) {
       Navigator.of(ctx).pushNamed(
@@ -872,63 +889,70 @@ class _CartSessionPageState extends State<CartSessionPage> {
     }
 
     // Attach to existing
-    if (ok == true) {
-      final items = await _db
-          .collection('items')
-          .orderBy('updatedAt', descending: true)
-          .limit(50)
-          .get();
-      if (!ctx.mounted) return;
+    // Fetch all active (non-archived, in-stock) items — same approach as _addItems.
+    final itemsSnap = await _db.collection('items').get();
+    if (!ctx.mounted) return;
 
-      await showModalBottomSheet(
-        context: ctx,
-        isScrollControlled: true,
-        builder: (sheetCtx) => ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text('Attach to item', style: Theme.of(sheetCtx).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            for (final d in items.docs)
-              ListTile(
-                title: Text((d.data()['name'] ?? 'Unnamed') as String),
-                subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
-                onTap: () async {
-                  final data = d.data();
-                  final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
-                  final now = DateTime.now();
-                  
-                  await d.reference.set(
-                    {
-                      'barcodes': FieldValue.arrayUnion([code]),
-                      if (!hasSingle) 'barcode': code,
-                      'operatorName': _operatorName,
-                      'updatedAt': now,
-                    },
-                    SetOptions(merge: true),
-                  );
-                  
-                  await _db.collection('audit_logs').add({
-                    'type': 'item.barcode.attach',
-                    'data': {
-                      'itemId': d.id,
-                      'barcode': code,
-                    },
+    final activeItems = itemsSnap.docs.where((doc) {
+      final data = doc.data();
+      final isArchived = (data['archived'] ?? false) as bool;
+      final qty = (data['qtyOnHand'] ?? 0) as num;
+      return !isArchived && qty > 0;
+    }).toList()
+      ..sort((a, b) {
+        final aName = (a.data()['name'] ?? '') as String;
+        final bName = (b.data()['name'] ?? '') as String;
+        return aName.toLowerCase().compareTo(bName.toLowerCase());
+      });
+
+    await showModalBottomSheet(
+      context: ctx,
+      isScrollControlled: true,
+      builder: (sheetCtx) => ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text('Attach to item', style: Theme.of(sheetCtx).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          for (final d in activeItems)
+            ListTile(
+              title: Text((d.data()['name'] ?? 'Unnamed') as String),
+              subtitle: Text('On hand: ${(d.data()['qtyOnHand'] ?? 0)}'),
+              onTap: () async {
+                final data = d.data();
+                final hasSingle = (data['barcode'] as String?)?.isNotEmpty == true;
+                final now = DateTime.now();
+                
+                await d.reference.set(
+                  {
+                    'barcodes': FieldValue.arrayUnion([code]),
+                    if (!hasSingle) 'barcode': code,
                     'operatorName': _operatorName,
-                    'createdBy': FirebaseAuth.instance.currentUser?.uid,
-                    'createdAt': now,
-                  });
-                  if (sheetCtx.mounted) Navigator.pop(sheetCtx);
-                  if (sheetCtx.mounted) {
-                    SoundFeedback.ok();
-                    ScaffoldMessenger.of(sheetCtx)
-                        .showSnackBar(const SnackBar(content: Text('Barcode attached')));
-                  }
-                },
-              ),
-          ],
-        ),
-      );
-    }
+                    'updatedAt': now,
+                  },
+                  SetOptions(merge: true),
+                );
+                
+                await _db.collection('audit_logs').add({
+                  'type': 'item.barcode.attach',
+                  'data': {
+                    'itemId': d.id,
+                    'barcode': code,
+                  },
+                  'operatorName': _operatorName,
+                  'createdBy': FirebaseAuth.instance.currentUser?.uid,
+                  'createdAt': now,
+                });
+                if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                if (sheetCtx.mounted) {
+                  SoundFeedback.ok();
+                  ScaffoldMessenger.of(sheetCtx)
+                      .showSnackBar(const SnackBar(content: Text('Barcode attached')));
+                }
+              },
+            ),
+        ],
+      ),
+    );
   }
 
   // ---------- Save / close ----------
@@ -1662,11 +1686,12 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
       if (usageLogsQuery.docs.isEmpty) {
         if (kDebugMode) debugPrint('CartSessionPage: No usage logs found, just updating session status');
+        final now = DateTime.now();
         await _db.collection('cart_sessions').doc(_sessionId).update({
           'status': 'open',
-          'reopenedAt': DateTime.now(),
+          'reopenedAt': Timestamp.fromDate(now),
           'reopenedBy': FirebaseAuth.instance.currentUser?.uid,
-          'updatedAt': DateTime.now(),
+          'updatedAt': Timestamp.fromDate(now),
         });
 
         if (mounted) {
@@ -2070,9 +2095,20 @@ class _CartSessionPageState extends State<CartSessionPage> {
   }
 
   Future<void> _addItems() async {
-    final itemsSnap =
-        await _db.collection('items').orderBy('updatedAt', descending: true).limit(50).get();
+    // Fetch all active (non-archived) items. We don't filter qtyOnHand server-side
+    // to avoid requiring a composite index; instead we filter client-side below.
+    final itemsSnap = await _db.collection('items').get();
     if (!mounted) return;
+
+    // Filter client-side: exclude archived items and items with no stock.
+    // Using client-side filtering matches the rest of the app's pattern and
+    // avoids issues with legacy documents that lack the 'archived' field.
+    final activeItems = itemsSnap.docs.where((doc) {
+      final data = doc.data();
+      final isArchived = (data['archived'] ?? false) as bool;
+      final qty = (data['qtyOnHand'] ?? 0) as num;
+      return !isArchived && qty > 0;
+    }).toList();
 
     final result = await showModalBottomSheet<List<Map<String, dynamic>>>(
       context: context,
@@ -2080,7 +2116,7 @@ class _CartSessionPageState extends State<CartSessionPage> {
       builder: (sheetCtx) {
         return SizedBox(
           height: MediaQuery.of(context).size.height * 0.8,
-          child: _AddItemsSheet(items: itemsSnap.docs),
+          child: _AddItemsSheet(items: activeItems),
         );
       },
     );
@@ -2526,15 +2562,13 @@ class _CartSessionPageState extends State<CartSessionPage> {
 
     return PopScope(
       canPop: true,
-      onPopInvokedWithResult: (bool didPop, Object? result) async {
-        // Handle browser back button navigation - auto-save draft before leaving
-        if (didPop && _status == 'open' && _lines.isNotEmpty && !_busy) {
-          if (kDebugMode) debugPrint('CartSessionPage: Browser back navigation - auto-saving draft');
-          try {
-            await _saveDraft();
-          } catch (e) {
-            if (kDebugMode) debugPrint('CartSessionPage: Failed to auto-save draft on navigation: $e');
-          }
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        // Auto-save on navigate-away is handled by dispose(), which fires
+        // _saveDraft() when _dirty is true. Attempting an async save here is
+        // unsafe because onPopInvokedWithResult runs after the pop has already
+        // committed, meaning the widget may already be disposing.
+        if (kDebugMode && didPop && _dirty) {
+          debugPrint('CartSessionPage: Navigating away with unsaved changes — dispose will save.');
         }
       },
       child: Scaffold(
@@ -2626,6 +2660,10 @@ class _CartSessionPageState extends State<CartSessionPage> {
                       _interventionId = v?.id;
                       _interventionName = v?.name;
                       _defaultGrantId = v == null ? null : _intToGrant[v.id];
+                      // Refresh the expiring-items banner for the new grant.
+                      _expiringItemsFuture = _defaultGrantId != null
+                          ? _getExpiringItemsForGrant(_defaultGrantId!)
+                          : null;
                     });
                   },
                   decoration: const InputDecoration(labelText: 'Intervention *'),
@@ -2665,7 +2703,9 @@ class _CartSessionPageState extends State<CartSessionPage> {
                 if (_defaultGrantId != null && !_isClosed) ...[
                   const SizedBox(height: 12),
                   FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
-                    future: _getExpiringItemsForGrant(_defaultGrantId!),
+                    // Use the cached future — _expiringItemsFuture is updated only when
+                    // the grant changes, so this doesn't re-fetch on every setState.
+                    future: _expiringItemsFuture,
                     builder: (context, snapshot) {
                       final expiringCount = snapshot.data?.length ?? 0;
                       if (!snapshot.hasData || expiringCount == 0) {
@@ -3080,7 +3120,7 @@ class _LineRowState extends State<_LineRow> {
         }
 
         setState(() {
-          _lotCode = lotCode ?? lotId.substring(0, 6);
+          _lotCode = lotCode ?? lotId.substring(0, lotId.length.clamp(0, 6));
           _variety = variety;
           _lotRemaining = qtyRemaining;
           _overAllocated = qtyRemaining != null && widget.line.initialQty > qtyRemaining;
@@ -3090,7 +3130,7 @@ class _LineRowState extends State<_LineRow> {
         });
       } else {
         setState(() {
-          _lotCode = lotId.substring(0, 6);
+          _lotCode = lotId.substring(0, lotId.length.clamp(0, 6));
           _variety = null;
           _lotRemaining = null;
           _overAllocated = false;
@@ -3102,7 +3142,7 @@ class _LineRowState extends State<_LineRow> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _lotCode = lotId.substring(0, 6);
+        _lotCode = lotId.substring(0, lotId.length.clamp(0, 6));
         _variety = null;
         _lotRemaining = null;
         _overAllocated = false;
@@ -4000,9 +4040,18 @@ class _QuickItemSearchSheetState extends State<_QuickItemSearchSheet> {
     final coll = FirebaseFirestore.instance.collection('items');
     final trimmed = query.trim();
 
+    // Helper to exclude archived and zero-stock items from any result set.
+    bool isActive(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+      final data = doc.data();
+      final isArchived = (data['archived'] ?? false) as bool;
+      final qty = (data['qtyOnHand'] ?? 0) as num;
+      return !isArchived && qty > 0;
+    }
+
     if (trimmed.isEmpty) {
-      final snap = await coll.orderBy('updatedAt', descending: true).limit(50).get();
-      return snap.docs;
+      // No query: show all active items (same behaviour as the Add Items sheet).
+      final snap = await coll.get();
+      return snap.docs.where(isActive).toList();
     }
 
     final normalized = trimmed.toLowerCase();
@@ -4015,7 +4064,7 @@ class _QuickItemSearchSheetState extends State<_QuickItemSearchSheet> {
           .limit(50)
           .get();
       if (snap.docs.isNotEmpty) {
-        return snap.docs;
+        return snap.docs.where(isActive).toList();
       }
     } catch (_) {
       // Fallback to other strategies
@@ -4029,14 +4078,17 @@ class _QuickItemSearchSheetState extends State<_QuickItemSearchSheet> {
           .limit(50)
           .get();
       if (snap.docs.isNotEmpty) {
-        return snap.docs;
+        return snap.docs.where(isActive).toList();
       }
     } catch (_) {
       // Continue to fallback
     }
 
-    final fallback = await coll.orderBy('updatedAt', descending: true).limit(120).get();
+    // Last resort: full scan with client-side text match.
+    // This handles typos, substring matches, and barcode searches.
+    final fallback = await coll.get();
     return fallback.docs.where((doc) {
+      if (!isActive(doc)) return false;
       final data = doc.data();
       final name = (data['name'] ?? '') as String;
       final barcode = (data['barcode'] ?? '') as String;
